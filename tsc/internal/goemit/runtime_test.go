@@ -18,7 +18,7 @@ import (
 // pointer-based completion publication does not share mutable loop state.
 func TestRuntimeWorkers(t *testing.T) {
 	dir := t.TempDir()
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,9 +27,47 @@ func TestRuntimeWorkers(t *testing.T) {
 	}
 	tests := `package main
 import("testing";"runtime";"strings";"unsafe";"math")
+func BenchmarkDenseInt64Push(b *testing.B){storage:=&tsGrowableStorage[int64]{values:make([]int64,0,1)};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{storage.values=storage.values[:0];tsDensePush(storage,int64(i))};runtime.KeepAlive(storage)}
+func BenchmarkAnyInt64Push(b *testing.B){loop:=tsNewLoop();array:=&tsArray{values:make([]tsValue,0,1)};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{array.values=array.values[:0];array.appendItems(loop,tsInt64Value(int64(i)))};runtime.KeepAlive(array)}
+func BenchmarkDenseInt64Read(b *testing.B){storage:=&tsGrowableStorage[int64]{values:[]int64{7}};var sum int64;b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{sum+=tsDenseRead(storage,0)};runtime.KeepAlive(sum)}
+func BenchmarkAnyInt64Read(b *testing.B){loop:=tsNewLoop();value:=tsArrayValue(&tsArray{values:[]tsValue{tsInt64Value(7)}});key:=tsNumberValue(0);var sum int64;b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{sum+=tsNative[int64](tsGet(loop,value,key))};runtime.KeepAlive(sum)}
+func BenchmarkDenseInt64NullablePush(b *testing.B){loop:=tsNewLoop();array:=tsNewGrowableArray(loop,"int64",3,false);storage:=(*tsGrowableStorage[int64])(array.native);storage.values=make([]int64,0,1);storage.tags=make([]uint8,0,1);b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{storage.values=storage.values[:0];storage.tags=storage.tags[:0];tsNullablePush(storage,tsOptional[int64]{value:int64(i)})};runtime.KeepAlive(storage)}
+func BenchmarkDenseInt64ForEach(b *testing.B){loop:=tsNewLoop();array:=tsNewGrowableArray(loop,"int64",0,false);storage:=(*tsGrowableStorage[int64])(array.native);storage.values=make([]int64,64);for i:=range storage.values{storage.values[i]=1};var sum int64;callback:=func(i int){sum+=storage.values[i]};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{tsDenseForEach(storage,callback)};runtime.KeepAlive(sum)}
+func BenchmarkAnyInt64ForEach(b *testing.B){loop:=tsNewLoop();array:=&tsArray{values:make([]tsValue,64)};for i:=range array.values{array.values[i]=tsInt64Value(1)};method:=tsSequenceMethod(tsArrayValue(array),"forEach");var sum int64;callback:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{sum+=tsNative[int64](tsArg(args,0));return tsU});b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{tsCall(loop,method,tsFunctionValue(callback))};runtime.KeepAlive(sum)}
 func TestIteratorUsesConsumerLoop(t *testing.T){
  wanted:=tsNewLoop();called:=false;it:=&tsIterator{pull:func(loop *tsLoop)(tsValue,bool){called=true;if loop!=wanted{t.Fatal("iterator used its creation loop")};return tsU,false}}
  if it.next(wanted)||!called{t.Fatal("iterator pull was not executed")}
+}
+func TestNullablePackedStorage(t *testing.T){
+ loop:=tsNewLoop();array:=tsNewGrowableArray(loop,"int64",3,true);storage:=(*tsGrowableStorage[int64])(array.native)
+ tsNullablePush(storage,tsOptional[int64]{value:math.MaxInt64},tsOptional[int64]{tag:1},tsOptional[int64]{tag:2})
+ if array.values!=nil||len(storage.values)!=3||len(storage.tags)!=3||unsafe.Sizeof(storage.values[0])+unsafe.Sizeof(storage.tags[0])!=9{t.Fatal("nullable slots are not packed native values and bytes")}
+ array.appendItems(loop,tsInt64Value(7));if len(storage.tags)!=4||storage.tags[3]!=0{t.Fatal("dynamic alias lost tag alignment")}
+ tsDenseReverse(storage);tsDenseCopyWithin(storage,1,0,2);if tsNullableAt(storage,1).value!=7||tsNullableAt(storage,2).tag!=2{t.Fatal("bulk operations lost tags")}
+ array.resize(1);if len(storage.values)!=1||len(storage.tags)!=1{t.Fatal("shrink lost tag alignment")}
+ stringsArray:=tsNewGrowableArray(loop,"string",1,false);refs:=(*tsGrowableStorage[*tsString])(stringsArray.native);tsNullablePush(refs,tsOptional[*tsString]{value:tsStringUTF8("retained")},tsOptional[*tsString]{tag:1});runtime.GC();if refs.values[0].String()!="retained"||refs.values[1]!=nil{t.Fatal("GC or absent pointer storage is wrong")};tsNullableFill(refs,tsOptional[*tsString]{tag:1},0,math.Inf(1));if refs.values[0]!=nil{t.Fatal("null retained a pointer")}
+}
+func TestGrowableNativeStorage(t *testing.T){
+ loop:=tsNewLoop();array:=tsNewGrowableArray(loop,"int32",0,true);array.appendItems(loop,tsInt32Value(1),tsInt32Value(2));storage:=(*tsGrowableStorage[int32])(array.native)
+ if unsafe.Sizeof(storage.values[0])!=4||array.values!=nil{t.Fatal("array is not stored in native slots")}
+ array.appendItems(loop,tsStringReference(tsStringUTF8("3")));if array.length()!=3||array.at(2).kind!=tsInt32Kind{t.Fatal("push failed checked conversion")}
+ runtime.GC();if tsNative[int32](array.at(0))!=1{t.Fatal("GC lost native storage")}
+ tsCall(loop,tsSequenceMethod(tsArrayValue(array),"reverse"));if tsNative[int32](array.at(0))!=3{t.Fatal("reverse failed")}
+}
+func checkGrowableSlots[T tsPrimitive](t *testing.T,kind string,width uintptr,initial T){
+ loop:=tsNewLoop();array:=tsNewGrowableArray(loop,kind,0,false);value:=tsArrayValue(array)
+ for i:=0;i<1024;i++ {tsGrowableArrayPush[T](loop,value,kind,tsPrimitiveValue(initial))}
+ storage:=(*tsGrowableStorage[T])(array.native);if unsafe.Sizeof(storage.values[0])!=width||len(storage.values)!=1024||array.values!=nil{t.Fatal("wrong native storage",kind)}
+ runtime.GC();got:=tsGrowableArrayRead[T](loop,value,tsNumberValue(1023),kind);if tsNative[T](got)!=initial||tsNative[T](array.at(1023))!=initial{t.Fatal("growth or GC lost the value",kind)}
+ tsGrowableArrayWrite[T](loop,value,tsNumberValue(1024),tsPrimitiveValue(initial),kind);if array.length()!=1025||tsNative[T](array.at(1024))!=initial{t.Fatal("indexed append broke shared storage",kind)}
+}
+func TestPrimitiveSlotWidths(t *testing.T){
+ checkGrowableSlots[int8](t,"int8",1,-128);checkGrowableSlots[uint8](t,"uint8",1,255)
+ checkGrowableSlots[int16](t,"int16",2,-32768);checkGrowableSlots[uint16](t,"uint16",2,65535)
+ checkGrowableSlots[int32](t,"int32",4,-2147483648);checkGrowableSlots[uint32](t,"uint32",4,4294967295)
+ checkGrowableSlots[int64](t,"int64",8,math.MaxInt64);checkGrowableSlots[uint64](t,"uint64",8,math.MaxUint64)
+ checkGrowableSlots[float32](t,"float32",4,1.5);checkGrowableSlots[float64](t,"number",8,1.5)
+ checkGrowableSlots[bool](t,"boolean",1,true);checkGrowableSlots[*tsString](t,"string",unsafe.Sizeof((*tsString)(nil)),tsStringUTF8("retained"))
 }
 func TestNativeArrayStorageAndGC(t *testing.T){
  array:=tsNativeArray(make([]float64,1024),"Float64Array",func(n float64)float64{return n})
@@ -132,12 +170,22 @@ func TestPrimitiveTags(t *testing.T){
 	if err != nil {
 		t.Fatalf("runtime tests: %v\n%s", err, output)
 	}
+	if os.Getenv("TSC_GO_ARRAY_BENCH") == "1" {
+		bench := exec.CommandContext(ctx, "go", "test", "-run=^$", "-bench=Benchmark(Dense|Any)Int64", "-benchmem", "-benchtime=100ms", "-count=3", ".")
+		bench.Dir = dir
+		bench.Env = cmd.Env
+		out, err := bench.CombinedOutput()
+		if err != nil {
+			t.Fatalf("array benchmarks: %v\n%s", err, out)
+		}
+		t.Logf("array benchmarks:\n%s", out)
+	}
 }
 
 // Only host APIs and generic static-type selection may inspect Go interfaces.
 // Application values must never fall back to interface boxing or assertions.
 func TestRuntimeInterfaceBoundaries(t *testing.T) {
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
 	if err != nil {
 		t.Fatal(err)
 	}

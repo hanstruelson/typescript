@@ -358,7 +358,7 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 		shape := b.e.primitive(c.fields[name])
 		value := "self." + id
 		storage := shape.goType()
-		checked := "value"
+		checked := b.arrayBoundary("value", c.fields[name])
 		if shape.kind != "" {
 			checked = fmt.Sprintf("tsBoundary(value,%q,%d,%t)", shape.kind, shape.nulls, b.e.coerce)
 		}

@@ -133,13 +133,22 @@ func (p primitive) goType() string {
 	return "tsValue"
 }
 func (cell *binding) pointerType() string {
+	if cell.arrayElement.kind != "" {
+		return "*tsDenseArrayCell[" + cell.arrayElement.goType() + "]"
+	}
 	if cell.primitive.kind != "" {
 		return "*tsTypedCell[" + cell.primitive.goType() + "]"
 	}
 	return "*tsCell"
 }
 func (b *machineBuilder) bindingFactory(cell *binding, initialized bool) string {
+	if p := cell.arrayElement; p.kind != "" {
+		return fmt.Sprintf("tsDenseArrayBinding[%s](%t,%t,%q,%t,%d)", p.goType(), initialized, cell.constant, p.kind, b.e.coerce, p.nulls)
+	}
 	if cell.primitive.kind == "" {
+		if p := b.e.arrayElementPrimitive(cell.declaration); p.kind != "" && !ast.IsFunctionLike(cell.declaration) {
+			return fmt.Sprintf("tsArrayBinding(%t,%t,%q,%d,%t)", initialized, cell.constant, p.kind, p.nulls, b.e.coerce)
+		}
 		return fmt.Sprintf("tsBinding(%t,%t)", initialized, cell.constant)
 	}
 	return fmt.Sprintf("tsTypedBinding[%s](%t,%t,%q,%d,%t)", cell.primitive.goType(), initialized, cell.constant, cell.primitive.kind, cell.primitive.nulls, b.e.coerce)
@@ -166,6 +175,9 @@ func (b *machineBuilder) validateParameter(param *ast.Node) {
 func (b *machineBuilder) returnValue(value string) string {
 	p := b.e.returnPrimitive(b.owner)
 	if p.kind == "" || b.constructor {
+		if !b.constructor {
+			return b.arrayBoundary(value, b.owner)
+		}
 		return value
 	}
 	return fmt.Sprintf("tsBoundary(%s,%s,%d,%t)", value, strconv.Quote(p.kind), p.nulls, b.e.coerce)
@@ -291,4 +303,14 @@ func (e *emitter) returnPrimitive(owner *ast.Node) primitive {
 		}
 	}
 	return e.annotationPrimitive(node)
+}
+
+func (p primitive) elementGoType() string {
+	if p.kind == "" {
+		return "tsValue"
+	}
+	if p.nulls != 0 {
+		return "tsOptional[" + p.goType() + "]"
+	}
+	return p.goType()
 }

@@ -166,7 +166,6 @@ func TestGoClassDiagnostics(t *testing.T) {
 		`class A {#age:number=1;}`,
 		`class A {*f(){}}`,
 		`function base(){return 0;}class A extends base(){}`,
-		`class A {constructor(public age:number){}}`,
 		`class A extends B {}class B extends A {}`,
 	} {
 		t.Run(source, func(t *testing.T) {

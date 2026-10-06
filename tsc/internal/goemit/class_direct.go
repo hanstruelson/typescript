@@ -49,17 +49,35 @@ func (b *machineBuilder) directStatement(node *ast.Node) {
 	case ast.KindVariableStatement:
 		b.declarations(node.AsVariableStatement().DeclarationList)
 	case ast.KindReturnStatement:
+		if b.nativeArrayResult.kind != "" {
+			expr := node.AsReturnStatement().Expression
+			if expr == nil {
+				b.emit("panic(\"Missing typed array return\")")
+			} else {
+				value := b.denseStorage(expr, b.nativeArrayResult)
+				b.emit("return " + value)
+			}
+			return
+		}
 		value := "tsU"
 		expr := node.AsReturnStatement().Expression
 		if expr != nil {
-			if p := b.e.returnPrimitive(b.owner); p.numeric() && p.nulls == 0 {
+			p := b.e.returnPrimitive(b.owner)
+			if b.nativeResult.kind != "" {
+				p = b.nativeResult
+			}
+			if p.numeric() && p.nulls == 0 {
 				value = b.numericExpression(expr, p)
 			} else {
 				value = b.expression(expr)
 			}
 		}
 		if b.nativeReturn != "" {
-			if b.tempType(value) != b.nativeReturn {
+			if b.nativeReturn == "tsValue" {
+				value = b.returnValue(value)
+			} else if b.nativeResult.kind != "" {
+				value = b.comparisonBoundary(value, b.nativeResult)
+			} else if b.tempType(value) != b.nativeReturn {
 				value = "tsNative[" + b.nativeReturn + "](" + b.returnValue(value) + ")"
 			}
 			b.emit("return " + value)
@@ -102,7 +120,13 @@ func (b *machineBuilder) finishDirect() string {
 		out.WriteString(line + "\n")
 	}
 	if b.nativeReturn != "" {
-		out.WriteString("panic(\"Missing typed return value\")\n")
+		if b.nativeReturn == "tsValue" {
+			out.WriteString("return tsU\n")
+		} else if strings.HasPrefix(b.nativeReturn, "tsOptional[") {
+			out.WriteString("return " + b.nativeReturn + "{tag:2}\n")
+		} else {
+			out.WriteString("panic(\"Missing typed return value\")\n")
+		}
 	} else {
 		out.WriteString("return tsU\n")
 	}

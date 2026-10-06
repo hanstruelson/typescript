@@ -8505,6 +8505,27 @@ func (c *Checker) checkImportCallExpression(node *ast.Node) *Type {
  * @returns On success, the expression's signature's return type. On failure, anyType.
  */
 func (c *Checker) checkCallExpression(node *ast.Node, checkMode CheckMode) *Type {
+	if node.Kind == ast.KindCallExpression && node.Expression().Kind == ast.KindPropertyAccessExpression && len(node.Arguments()) == 0 {
+		property := node.Expression().AsPropertyAccessExpression()
+		target := core.ConversionMethodTarget(property.Name().Text())
+		operand := c.checkExpression(property.Expression)
+		if target != "" && operand.Flags()&(TypeFlagsAny|TypeFlagsUnknown|TypeFlagsNumberLike|TypeFlagsStringLike|TypeFlagsBooleanLike) != 0 {
+			switch target {
+			case "number":
+				return c.numberType
+			case "string":
+				return c.stringType
+			case "boolean":
+				return c.booleanType
+			}
+			for _, typ := range c.nativeNumericTypes {
+				if typ.AsIntrinsicType().IntrinsicName() == target {
+					return typ
+				}
+			}
+		}
+	}
+
 	c.checkGrammarTypeArguments(node, node.TypeArgumentList())
 	signature := c.getResolvedSignature(node, nil /*candidatesOutArray*/, checkMode)
 	if signature == c.resolvingSignature {

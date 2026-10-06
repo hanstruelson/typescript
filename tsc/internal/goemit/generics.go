@@ -437,6 +437,9 @@ func (b *machineBuilder) specializedBody(call *ast.Node, f *genericFunction, par
 		}
 		clone := *cell
 		clone.primitive = e.primitive(node)
+		if !ast.IsFunctionLike(node) {
+			clone.arrayElement = e.arrayElementPrimitive(node)
+		}
 		e.bindings[node] = &clone
 	}
 	child := e.newMachine(f.node, b, false)

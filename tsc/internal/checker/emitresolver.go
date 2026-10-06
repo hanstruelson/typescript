@@ -1470,3 +1470,68 @@ func (r *EmitResolver) GetEmitSpecializedPrimitiveType(node *ast.Node, calls []*
 	}
 	return emitPrimitiveShape(t)
 }
+
+func (r *EmitResolver) GetEmitPrimitiveConversion(node *ast.Node) string {
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	if node == nil || node.Kind != ast.KindCallExpression || node.Expression().Kind != ast.KindPropertyAccessExpression {
+		return ""
+	}
+	property := node.Expression().AsPropertyAccessExpression()
+	target := core.ConversionMethodTarget(property.Name().Text())
+	if target == "" {
+		return ""
+	}
+	flags := r.checker.GetTypeAtLocation(property.Expression).Flags()
+	if flags&(TypeFlagsAny|TypeFlagsUnknown|TypeFlagsNumberLike|TypeFlagsStringLike|TypeFlagsBooleanLike) != 0 {
+		return target
+	}
+	return ""
+}
+func (r *EmitResolver) GetEmitArrayElementType(node *ast.Node, context []*ast.Node) (string, uint8) {
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	c := r.checker
+	if node == nil {
+		return "", 0
+	}
+	var t *Type
+	if ast.IsFunctionLike(node) {
+		t = c.getReturnTypeOfSignature(c.getSignatureFromDeclaration(node))
+		if ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync) {
+			t = c.getAwaitedTypeNoAlias(t)
+		}
+	} else {
+		t = c.GetTypeAtLocation(node)
+		if node.Kind == ast.KindArrayLiteralExpression {
+			if contextual := c.getContextualType(node, ContextFlagsNone); contextual != nil && IsTypeAny(contextual) {
+				return "", 0
+			}
+			if contextual := c.getContextualType(node, ContextFlagsNone); contextual != nil && c.isArrayType(contextual) {
+				t = contextual
+			}
+		}
+	}
+	for i := len(context) - 1; i >= 0; i-- {
+		if signature := c.getResolvedSignature(context[i], nil, CheckModeNormal); signature != nil {
+			t = c.instantiateType(t, signature.mapper)
+		}
+	}
+	return emitPrimitiveShape(c.getElementTypeOfArrayType(t))
+}
+
+// GetEmitFunctionReturnPrimitiveType preserves contextual callback return types.
+func (r *EmitResolver) GetEmitFunctionReturnPrimitiveType(node *ast.Node, context []*ast.Node) (string, uint8) {
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	if node == nil || !ast.IsFunctionLike(node) {
+		return "", 0
+	}
+	t := r.checker.getReturnTypeOfSignature(r.checker.getSignatureFromDeclaration(node))
+	for i := len(context) - 1; i >= 0; i-- {
+		if signature := r.checker.getResolvedSignature(context[i], nil, CheckModeNormal); signature != nil {
+			t = r.checker.instantiateType(t, signature.mapper)
+		}
+	}
+	return emitPrimitiveShape(t)
+}

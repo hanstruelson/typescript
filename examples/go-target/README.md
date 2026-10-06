@@ -93,12 +93,16 @@ Objects, destructuring, spread, classes, regular expressions, optional chaining,
 named function expressions, logical assignments, exponentiation, bitwise
 operators, loose equality, property membership, and numeric/string enums are
 also supported. Enums include numeric reverse mappings and declaration merging.
-Array elisions and gaps created by index or length assignments remain absent
+For general `any[]` arrays, elisions and gaps created by index or length assignments remain absent
 properties. Iteration yields `undefined` for those slots, while spread creates
 present `undefined` elements; property membership and key enumeration distinguish
 these cases.
 
-Ordinary arrays retain `tsValue` elements and sparse-slot tracking. Array methods
+Primitive arrays such as `number[]`, `int32[]`, `uint64[]`, `string[]`, and
+`boolean[]` use dense, growable native Go slices. They reject holes, skipped-index writes, and length increases; shrinking length and appending at the current length are supported. `new Array<T>(n)` initializes native primitive elements to their zero values. `any[]`,
+object arrays, and mixed primitive unions retain `tsValue` elements. Nullable
+primitive arrays use a native value slice plus a byte tag per element, preserving
+`null` and `undefined` separately without padding each native value. Array methods
 include iteration, search, map/filter, reduce, flattening, slicing/splicing,
 concatenation, fill, sorting, reversal, copyWithin, and the copy-returning
 `with`, `toReversed`, `toSorted`, and `toSpliced` variants. Array construction,
@@ -110,8 +114,36 @@ reads and writes select concrete Go helpers with runtime layout guards; other
 accesses use the tagged adapter. ArrayBuffer views and subarrays share storage;
 `slice` copies it. Typed-array copyWithin uses a native byte copy. Native storage
 reduces element widths, but end-to-end performance has not yet been benchmarked.
-Ordinary `number[]` and custom `int64[]` arrays still use the tagged array store;
-specializing those representations remains separate work. DataView, BigInt typed
+Growable primitive-array contracts check writes through shared references, including
+`push`, `splice`, and indexed assignment. Known primitive indexing, length,
+`push`, `unshift`, `pop`, `shift`, `slice`, `splice`, `fill`, `reverse`, and
+`copyWithin` select concrete Go helpers. Matching element types use native values
+without boxing or conversion; safe widening uses direct Go conversion. Narrowing
+uses native checked conversion helpers when coercion is enabled, and is rejected
+when coercion is disabled. An actual `any` source dispatches on its TS value tag
+before producing the native element. Typed bindings and eligible native function
+parameters carry native storage pointers. Known synchronous callbacks for `map`,
+`flatMap`, `filter`, `forEach`, predicates, find methods, reducers, and sorting use
+native element and result types. This includes loops, exception handling, and
+default parameters. Dynamic callbacks and mixed union values use tagged dispatch.
+Callback iteration captures the initial length; appended elements are not visited.
+Operations that would create holes in a native result reject those holes.
+
+Arrays retain shared identity when growing. Integer elements are copied by value.
+Element widths match Go types (8 bytes for `int64`, 4 for `int32`, and 1 for
+`int8`). Nullable `int64` elements require 8 bytes of value storage and one byte
+of tag storage, or 72 bytes per eight elements; slice headers, wrappers, and
+spare capacity are additional. These growable arrays
+are separate from the standard JavaScript buffer-backed typed arrays.
+
+Preallocated helper microbenchmarks on linux/amd64 measured native `int64` push
+at approximately 1.7 ns/op and indexed read at 1.2 ns/op, with zero allocations.
+The corresponding `any[]` helpers measured approximately 5.1 and 13 ns/op after
+optimizing numeric indexing. These measure individual helpers, not complete
+transpiled programs or array growth. Run them with
+`TSC_GO_ARRAY_BENCH=1 go test ./internal/goemit -run TestRuntimeWorkers -count=1 -v`
+from `tsc`.
+DataView, BigInt typed
 arrays, resizable buffers, and buffer transfer are not implemented yet.
 
 Map and Set use native hash indexes and preserve insertion order. Keys use
@@ -305,7 +337,9 @@ The [implementation plan](IMPLEMENTATION_PLAN.md) describes the remaining featur
 performance work, dynamic representation, and proposed comparison policy.
 
 The [dynamic-value benchmarks](benchmarks/README.md) compare Go interfaces with
-custom tagged containers; the production dynamic representation is still `any`.
+custom tagged containers. The production dynamic representation is the 24-byte
+TSValue layout. See the [current Node.js and Bun benchmarks](../../benchmarks/README.md)
+for measured generated-program comparisons.
 
 ## Native numeric types and user workers
 
@@ -319,8 +353,22 @@ Conversions always check representability, regardless of `coerceAny`. Invalid
 constants produce an emit diagnostic; runtime overflow, fractional integer
 conversion, NaN, or infinity converted to an integer raise `RangeError`.
 `float32` rounds to native precision, rejecting finite values that overflow.
-`coerceAny` controls conversion from nonnumeric dynamic values and defaults to
-true. Same-type native integer arithmetic uses Go's integer arithmetic semantics.
+`coerceAny` defaults to true and permits checked implicit conversions. With
+`coerceAny: false`, guaranteed lossless numeric widening remains automatic
+(`int32` to `int64`, `uint8` to `int16`, `float32` to `number`, and small integers
+to a float that exactly represents their full range). Narrowing, sign changes
+that cannot represent the full source range, and string conversions require an
+explicit method. An `int64` to `number` conversion is not guaranteed lossless. Explicit
+conversion methods work in either mode: `.number()`, `.float32()`, `.int8()`,
+`.int16()`, `.int32()`, `.int64()`, and the corresponding `.uint*()` methods.
+`.string()` and the compatible `.toString()` both convert to text; `.boolean()`
+converts to boolean. Invalid numeric strings raise `RangeError`, and decimal
+strings converting to 64-bit integers retain their exact precision.
+Numeric comparisons widen either operand when safe and otherwise compare
+exactly, including signed/unsigned 64-bit values and integer/float pairs. Loose
+numeric/string comparisons use checked parsing when coercion is enabled and
+raise `TypeError` when disabled, including when both operands are `any`.
+Same-type native integer arithmetic uses Go's integer arithmetic semantics.
 Mixed native arithmetic promotes to a common native type and checks operand
 conversions; explicit `number` operands select `float64`. Inferred arithmetic
 results retain their native type.

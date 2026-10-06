@@ -90,6 +90,26 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 	case ast.KindExpressionStatement:
 		b.expression(node.AsExpressionStatement().Expression)
 	case ast.KindReturnStatement:
+		if b.nativeOutput != "" {
+			value := "tsU"
+			if expr := node.AsReturnStatement().Expression; expr != nil {
+				if b.nativeArrayResult.kind != "" {
+					value = b.denseStorage(expr, b.nativeArrayResult)
+				} else if b.nativeResult.kind != "" {
+					value = b.denseElement(expr, b.nativeResult)
+				} else {
+					value = b.expression(expr)
+				}
+			} else if b.nativeResult.kind != "" && b.nativeResult.nulls&2 != 0 {
+				value = b.nativeResult.elementGoType() + "{tag:2}"
+			}
+			b.nativeReturnCount++
+			slot := b.nativeReturnCount
+			b.emit(fmt.Sprintf("%s[%d]=%s", b.nativeOutput, slot, value))
+			b.emit(fmt.Sprintf("m.transfer(tsAbrupt{kind:\"return\",value:tsU,nativeSlot:%d});return", slot))
+			b.current = b.block()
+			return
+		}
 		value := "tsU"
 		if node.AsReturnStatement().Expression != nil {
 			value = b.expression(node.AsReturnStatement().Expression)
@@ -207,7 +227,9 @@ func (b *machineBuilder) forStatement(node *ast.Node, label string) {
 	clone := func() {
 		for _, cell := range iteration {
 			clone := "tsClone"
-			if cell.primitive.kind != "" {
+			if cell.arrayElement.kind != "" {
+				clone = "tsCloneDense"
+			} else if cell.primitive.kind != "" {
 				clone = "tsCloneTyped"
 			}
 			b.emit(cell.name + "=" + clone + "(" + cell.name + ")")

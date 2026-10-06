@@ -123,6 +123,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindIdentifier:
 		if cell := b.e.binding(node); cell != nil && b.e.strictNulls && (cell.primitive.kind == "" || cell.primitive.nulls != 0) && (!cell.maybeUndefined || b.definitelyInitialized(cell, node)) {
 			if p := b.e.primitive(node); p.kind != "" && p.nulls == 0 {
+				if cell.primitive.kind == p.kind {
+					return b.typedTemp(cell.name+".read()", p.goType())
+				}
 				return b.typedTemp(fmt.Sprintf("tsNative[%s](tsBoundary(%s.get(),%q,0,false))", p.goType(), cell.name, p.kind), p.goType())
 			}
 		}
@@ -145,7 +148,12 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindSatisfiesExpression:
 		return b.expression(node.AsSatisfiesExpression().Expression)
 	case ast.KindNonNullExpression:
-		return b.expression(node.AsNonNullExpression().Expression)
+		value := b.expression(node.AsNonNullExpression().Expression)
+		if typ := b.tempType(value); strings.HasPrefix(typ, "tsOptional[") {
+			native := strings.TrimSuffix(strings.TrimPrefix(typ, "tsOptional["), "]")
+			return b.typedTemp("tsDensePresent["+native+"]("+value+")", native)
+		}
+		return value
 	case ast.KindGoExpression:
 		callNode := node.AsGoExpression().Expression
 		if callNode.Kind != ast.KindCallExpression {
@@ -195,6 +203,60 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return b.temp("tsNewArrayBuffer(" + strings.Join(args, ",") + ")")
 		}
 		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "Array" && b.e.binding(n.Expression) == nil {
+			if p := b.e.arrayElementPrimitive(node); p.kind != "" && p.nulls != 0 {
+				nodes := []*ast.Node{}
+				if n.Arguments != nil {
+					nodes = n.Arguments.Nodes
+				}
+				args := []string{strconv.Quote(p.kind), fmt.Sprint(p.nulls), fmt.Sprint(b.e.coerce)}
+				if len(nodes) == 1 && b.e.primitive(nodes[0]).numeric() {
+					zero := p.goType() + "(0)"
+					if p.kind == "string" {
+						zero = `tsStringUTF8("")`
+					} else if p.kind == "boolean" {
+						zero = "false"
+					}
+					args = append(args, b.denseIndex(nodes[0]), zero)
+					return b.typedTemp("tsNullableNewSized["+p.goType()+"]("+strings.Join(args, ",")+")", "*tsArray")
+				}
+				if len(nodes) == 1 && nodes[0].Kind != ast.KindSpreadElement && b.e.primitive(nodes[0]).kind == "" && b.e.primitive(nodes[0]).nulls == 0 {
+					arg := b.expression(nodes[0])
+					args = append(args, arg)
+					return b.typedTemp("tsNullableNewArray["+p.goType()+"]("+strings.Join(args, ",")+")", "*tsArray")
+				}
+				args = append(args, b.denseArguments(nodes, p)...)
+				return b.typedTemp("tsNullableFromValues["+p.goType()+"]("+strings.Join(args, ",")+")", "*tsArray")
+			}
+
+			if p := b.e.arrayElementPrimitive(node); p.kind != "" && p.nulls == 0 {
+				nodes := []*ast.Node{}
+				if n.Arguments != nil {
+					nodes = n.Arguments.Nodes
+				}
+				args := []string{strconv.Quote(p.kind), strconv.FormatBool(b.e.coerce)}
+				if len(nodes) == 1 && b.e.primitive(nodes[0]).numeric() {
+					zero := p.goType() + "(0)"
+					if p.kind == "string" {
+						zero = `tsStringUTF8("")`
+					} else if p.kind == "boolean" {
+						zero = "false"
+					}
+					args = append(args, b.denseIndex(nodes[0]), zero)
+					return b.typedTemp("tsDenseNewSized["+p.goType()+"]("+strings.Join(args, ",")+")", "*tsArray")
+				}
+				if len(nodes) == 1 && nodes[0].Kind != ast.KindSpreadElement && b.e.primitive(nodes[0]).kind == "" {
+					zero := p.goType() + "(0)"
+					if p.kind == "string" {
+						zero = `tsStringUTF8("")`
+					} else if p.kind == "boolean" {
+						zero = "false"
+					}
+					args = append(args, b.expression(nodes[0]), zero)
+					return b.typedTemp("tsDenseNewDynamic["+p.goType()+"]("+strings.Join(args, ",")+")", "*tsArray")
+				}
+				args = append(args, b.denseArguments(nodes, p)...)
+				return b.typedTemp("tsDenseFromValues["+p.goType()+"]("+strings.Join(args, ",")+")", "*tsArray")
+			}
 			args := []string{}
 			if n.Arguments != nil {
 				for _, arg := range n.Arguments.Nodes {
@@ -272,6 +334,14 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp("loop.constructPromise(" + executor + ")")
 	case ast.KindCallExpression:
 		call := node.AsCallExpression()
+		if call.Expression.Kind == ast.KindPropertyAccessExpression && len(call.Arguments.Nodes) == 0 {
+			property := call.Expression.AsPropertyAccessExpression()
+			target := b.primitiveConversionTarget(node)
+			if target != "" && (target != "string" || property.Name().Text() == "string" || b.e.primitive(property.Expression).kind != "") {
+				value := b.expression(property.Expression)
+				return b.explicitConversion(value, primitive{kind: target})
+			}
+		}
 		if call.Expression.Kind == ast.KindImportKeyword {
 			target := b.e.targets[node]
 			if target == "" {
@@ -325,9 +395,13 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				b.e.fail(node, "imported readFile currently requires an explicit utf8 encoding")
 			}
 		}
+		if value, ok := b.denseArrayCall(call); ok {
+			return value
+		}
 		if call.Expression.Kind == ast.KindPropertyAccessExpression && !hasSpread {
 			property := call.Expression.AsPropertyAccessExpression()
 			name := property.Name().Text()
+
 			var target string
 			if property.Expression.Kind == ast.KindSuperKeyword && b.declaring != nil && b.declaring.parent != nil {
 				method := b.declaring.parent.methods[name]
@@ -398,15 +472,30 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				return b.temp("tsFunc(func(args ...tsValue) tsValue {return loop.resolved(tsArg(args,0),true)})")
 			}
 		}
+		if p := b.e.arrayElementPrimitive(n.Expression); name == "length" && p.kind != "" {
+			storage := b.denseStorage(n.Expression, p)
+			return b.typedTemp("float64(len("+storage+".values))", "float64")
+		}
 		receiver := b.expression(n.Expression)
+		if p := b.e.arrayElementPrimitive(n.Expression); name == "length" && p.kind != "" {
+			return b.typedTemp("tsGrowableArrayLength["+p.goType()+"]("+receiver+","+strconv.Quote(p.kind)+")", "float64")
+		}
 		if value, ok := b.classProperty(n.Expression, receiver, name); ok {
 			return b.temp(value)
 		}
 		return b.temp("tsGet(" + receiver + "," + strconv.Quote(name) + ")")
 	case ast.KindElementAccessExpression:
 		n := node.AsElementAccessExpression()
+		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.e.primitive(n.ArgumentExpression).numeric() {
+			storage := b.denseStorage(n.Expression, p)
+			index := b.expression(n.ArgumentExpression)
+			return b.typedTemp(b.denseRead(storage, index, p), p.elementGoType())
+		}
 		receiver := b.expression(n.Expression)
 		index := b.expression(n.ArgumentExpression)
+		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && p.nulls == 0 && (primitive{kind: b.tempType(index)}).numeric() {
+			return b.typedTemp("tsDenseRead["+p.goType()+"](tsDenseStorage["+p.goType()+"]("+receiver+","+strconv.Quote(p.kind)+"),float64("+index+"))", p.goType())
+		}
 		return b.temp(b.nativeArrayRead(n.Expression, receiver, index))
 	case ast.KindArrayLiteralExpression:
 		return b.arrayLiteral(node.AsArrayLiteralExpression().Elements.Nodes)
@@ -416,6 +505,26 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		n := node.AsConditionalExpression()
 		condition := b.expression(n.Condition)
 		if b.direct {
+			if p := b.e.primitive(node); p.kind != "" {
+				zero := p.elementGoType() + "{}"
+				if p.nulls == 0 {
+					zero = p.goType() + "(0)"
+					if p.kind == "boolean" {
+						zero = "false"
+					} else if p.kind == "string" {
+						zero = `tsStringUTF8("")`
+					}
+				}
+				result := b.typedTemp(zero, p.elementGoType())
+				b.emit("if " + b.nativeCondition(condition, b.e.primitive(n.Condition)) + " {")
+				yes := b.denseElement(n.WhenTrue, p)
+				b.emit(result + "=" + yes)
+				b.emit("} else {")
+				no := b.denseElement(n.WhenFalse, p)
+				b.emit(result + "=" + no)
+				b.emit("}")
+				return result
+			}
 			result := b.temp("tsU")
 			b.emit("if tsTruthy(" + condition + ") {")
 			value := b.expression(n.WhenTrue)
@@ -523,8 +632,27 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 	}
 	if node.Kind == ast.KindElementAccessExpression {
 		n := node.AsElementAccessExpression()
+		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.e.primitive(n.ArgumentExpression).numeric() {
+			storage := b.denseStorage(n.Expression, p)
+			key := b.expression(n.ArgumentExpression)
+			return b.denseRead(storage, key, p), func(value string) string {
+				if b.tempType(value) != p.elementGoType() {
+					value = b.comparisonBoundary(value, p)
+				}
+				return b.denseWrite(storage, key, value, p)
+			}
+		}
 		receiver := b.expression(n.Expression)
 		key := b.expression(n.ArgumentExpression)
+		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && p.nulls == 0 && (primitive{kind: b.tempType(key)}).numeric() {
+			storage := b.typedTemp("tsDenseStorage["+p.goType()+"]("+receiver+","+strconv.Quote(p.kind)+")", "*tsGrowableStorage["+p.goType()+"]")
+			return b.denseRead(storage, key, p), func(value string) string {
+				if b.tempType(value) != p.elementGoType() {
+					value = b.comparisonBoundary(value, p)
+				}
+				return b.denseWrite(storage, key, value, p)
+			}
+		}
 		return b.nativeArrayRead(n.Expression, receiver, key), func(value string) string { return b.nativeArrayWrite(n.Expression, receiver, key, value) }
 	}
 	b.e.fail(node, "unsupported assignment target")
@@ -532,6 +660,31 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 }
 func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool) string {
 	read, write := b.lvalue(node)
+	if p := b.e.primitive(node); p.numeric() && p.nulls == 0 {
+		old := ""
+		if node.Kind == ast.KindIdentifier && b.e.binding(node) != nil {
+			old = b.typedTemp(strings.TrimSuffix(read, ".get()")+".read()", p.goType())
+		} else if node.Kind == ast.KindElementAccessExpression && b.e.arrayElementPrimitive(node.AsElementAccessExpression().Expression).kind != "" && b.e.primitive(node.AsElementAccessExpression().ArgumentExpression).numeric() {
+			old = b.typedTemp(read, p.goType())
+		} else {
+			old = b.comparisonBoundary(b.temp(read), p)
+		}
+		op := "+"
+		if operator == ast.KindMinusMinusToken {
+			op = "-"
+		}
+		next := b.typedTemp(old+op+p.goType()+"(1)", p.goType())
+		value := ""
+		if node.Kind != ast.KindIdentifier && (node.Kind != ast.KindElementAccessExpression || !b.e.primitive(node.AsElementAccessExpression().ArgumentExpression).numeric() || b.e.arrayElementPrimitive(node.AsElementAccessExpression().Expression).kind == "") {
+			value = b.comparisonBoundary(b.temp(write(next)), p)
+		} else {
+			value = b.typedTemp(write(next), p.goType())
+		}
+		if postfix {
+			return old
+		}
+		return value
+	}
 	old := b.temp(read)
 	op := "+"
 	if operator == ast.KindMinusMinusToken {
@@ -562,8 +715,10 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 			if n.Left.Kind == ast.KindIdentifier {
 				cell = b.e.binding(n.Left)
 			}
-			if cell != nil && cell.primitive.goType() == "float64" && cell.primitive.nulls == 0 {
-				old = b.typedTemp(strings.TrimSuffix(read, ".get()")+".read()", "float64")
+			if cell != nil && cell.primitive.numeric() && cell.primitive.nulls == 0 {
+				old = b.typedTemp(strings.TrimSuffix(read, ".get()")+".read()", cell.primitive.goType())
+			} else if n.Left.Kind == ast.KindElementAccessExpression && b.e.arrayElementPrimitive(n.Left.AsElementAccessExpression().Expression).nulls == 0 && b.e.arrayElementPrimitive(n.Left.AsElementAccessExpression().Expression).kind != "" {
+				old = b.typedTemp(read, b.e.arrayElementPrimitive(n.Left.AsElementAccessExpression().Expression).goType())
 			} else {
 				old = b.temp(read)
 			}
@@ -575,12 +730,21 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		}
 		if cell := assignment; cell != nil && cell.primitive.numeric() && cell.primitive.nulls == 0 {
 			value = b.numericExpression(n.Right, cell.primitive)
+		} else if n.Left.Kind == ast.KindElementAccessExpression {
+			p := b.e.arrayElementPrimitive(n.Left.AsElementAccessExpression().Expression)
+			if p.numeric() && p.nulls == 0 {
+				value = b.numericExpression(n.Right, p)
+			} else {
+				value = b.expression(n.Right)
+			}
 		} else {
 			value = b.expression(n.Right)
 		}
 		if old != "" {
 			op := compoundOperator(operator)
-			if op == "**" && b.tempType(old) == "float64" && b.tempType(value) == "float64" {
+			if (op == "+" || op == "-" || op == "*") && b.tempType(old) == b.tempType(value) && (primitive{kind: b.tempType(old)}).numeric() {
+				value = b.typedTemp(old+op+value, b.tempType(old))
+			} else if op == "**" && b.tempType(old) == "float64" && b.tempType(value) == "float64" {
 				value = b.typedTemp("tsPow("+old+","+value+")", "float64")
 			} else if isBitwiseOperator(op) && b.tempType(old) == "float64" && b.tempType(value) == "float64" {
 				value = b.typedTemp("tsNumberBitwise("+strconv.Quote(op)+","+old+","+value+")", "float64")
@@ -593,6 +757,12 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 				return b.typedTemp(write(value), cell.primitive.goType())
 			}
 		}
+		if n.Left.Kind == ast.KindElementAccessExpression {
+			p := b.e.arrayElementPrimitive(n.Left.AsElementAccessExpression().Expression)
+			if p.kind != "" && b.e.primitive(n.Left.AsElementAccessExpression().ArgumentExpression).numeric() {
+				return b.typedTemp(write(value), p.elementGoType())
+			}
+		}
 		return b.temp(write(value))
 	}
 	left := ""
@@ -603,6 +773,45 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 	}
 	if operator == ast.KindCommaToken {
 		return b.expression(n.Right)
+	}
+	if operator == ast.KindQuestionQuestionToken && strings.HasPrefix(b.tempType(left), "tsOptional[") {
+		if p := b.e.primitive(node); p.kind != "" {
+			zero := p.elementGoType() + "{}"
+			if p.nulls == 0 {
+				zero = p.goType() + "(0)"
+				if p.kind == "string" {
+					zero = `tsStringUTF8("")`
+				} else if p.kind == "boolean" {
+					zero = "false"
+				}
+			}
+			result := b.typedTemp(zero, p.elementGoType())
+			source := strings.TrimSuffix(strings.TrimPrefix(b.tempType(left), "tsOptional["), "]")
+			if b.direct {
+				b.emit("if " + left + ".tag==0 {")
+				raw := b.typedTemp(left+".value", source)
+				value := b.comparisonBoundary(raw, p)
+				b.emit(result + "=" + value)
+				b.emit("} else {")
+				value = b.denseElement(n.Right, p)
+				b.emit(result + "=" + value)
+				b.emit("}")
+			} else {
+				present, missing, end := b.block(), b.block(), b.block()
+				b.emit(fmt.Sprintf("if %s.tag==0{m.pc=%d}else{m.pc=%d};return", left, present, missing))
+				b.current = present
+				raw := b.typedTemp(left+".value", source)
+				value := b.comparisonBoundary(raw, p)
+				b.emit(result + "=" + value)
+				b.jump(end)
+				b.current = missing
+				value = b.denseElement(n.Right, p)
+				b.emit(result + "=" + value)
+				b.jump(end)
+				b.current = end
+			}
+			return result
+		}
 	}
 	if operator == ast.KindAmpersandAmpersandToken || operator == ast.KindBarBarToken || operator == ast.KindQuestionQuestionToken {
 		result := b.temp(left)
@@ -644,15 +853,62 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		b.e.fail(node, "unsupported binary operator "+operator.String())
 		return "tsU"
 	}
+	if op == "==" || op == "!=" || op == "===" || op == "!==" {
+		value, operand := left, n.Right
+		if !isNullishComparisonOperand(operand) {
+			value, operand = right, n.Left
+		}
+		if isNullishComparisonOperand(operand) && strings.HasPrefix(b.tempType(value), "tsOptional[") {
+			condition := value + ".tag!=0"
+			if op == "===" || op == "!==" {
+				tag := 1
+				if operand.Kind == ast.KindIdentifier {
+					tag = 2
+				}
+				condition = fmt.Sprintf("%s.tag==%d", value, tag)
+			}
+			if op == "!=" || op == "!==" {
+				condition = "!(" + condition + ")"
+			}
+			return b.typedTemp(condition, "bool")
+		}
+	}
 	// Operands have already been saved in left-to-right order. A dynamic value
 	// compared with a typed primitive uses the same policy as typed assignments.
 	switch op {
 	case "==", "!=", "===", "!==", "<", "<=", ">", ">=":
 		leftPlan, rightPlan := b.e.primitive(n.Left), b.e.primitive(n.Right)
 		if leftPlan.kind != "" && rightPlan.kind == "" && !isNullishComparisonOperand(n.Right) {
-			right = b.comparisonBoundary(right, leftPlan)
+			if leftPlan.numeric() {
+				right = b.temp(fmt.Sprintf("tsComparisonOperand(%s,%q,%d,%t)", right, leftPlan.kind, leftPlan.nulls, b.e.coerce))
+			} else {
+				right = b.comparisonBoundary(right, leftPlan)
+			}
 		} else if rightPlan.kind != "" && leftPlan.kind == "" && !isNullishComparisonOperand(n.Left) {
-			left = b.comparisonBoundary(left, rightPlan)
+			if rightPlan.numeric() {
+				left = b.temp(fmt.Sprintf("tsComparisonOperand(%s,%q,%d,%t)", left, rightPlan.kind, rightPlan.nulls, b.e.coerce))
+			} else {
+				left = b.comparisonBoundary(left, rightPlan)
+			}
+		}
+	}
+	if (op == "==" || op == "!=" || op == "===" || op == "!==" || op == "<" || op == "<=" || op == ">" || op == ">=") && (primitive{kind: b.tempType(left)}).numeric() && (primitive{kind: b.tempType(right)}).numeric() && b.tempType(left) != b.tempType(right) {
+		leftType, rightType := b.tempType(left), b.tempType(right)
+		if core.NativeNumericLosslessConversion(leftType, rightType) {
+			right = b.comparisonBoundary(right, primitive{kind: leftType})
+		} else if core.NativeNumericLosslessConversion(rightType, leftType) {
+			left = b.comparisonBoundary(left, primitive{kind: rightType})
+		}
+		if b.tempType(left) != b.tempType(right) {
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, left, right, b.e.coerce))
+		}
+	}
+	if (op == "==" || op == "!=") && b.tempType(left) == b.tempType(right) && (primitive{kind: b.tempType(left)}).numeric() {
+		return b.typedTemp(left+op+right, "bool")
+	}
+	if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" {
+		if b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue" || ((primitive{kind: b.tempType(left)}).numeric() && b.tempType(right) == "*tsString") || ((primitive{kind: b.tempType(right)}).numeric() && b.tempType(left) == "*tsString") {
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, left, right, b.e.coerce))
 		}
 	}
 	if op == "**" && b.tempType(left) == "float64" && b.tempType(right) == "float64" {
@@ -753,6 +1009,43 @@ func isNullishComparisonOperand(node *ast.Node) bool {
 	return false
 }
 func (b *machineBuilder) comparisonBoundary(value string, p primitive) string {
+	typ := b.tempType(value)
+	if strings.HasPrefix(typ, "tsOptional[") && typ != p.elementGoType() {
+		source := strings.TrimSuffix(strings.TrimPrefix(typ, "tsOptional["), "]")
+		if p.nulls == 0 {
+			present := b.typedTemp("tsDensePresent("+value+")", source)
+			if converted, ok := b.nativeConversion(present, p, b.e.coerce); ok {
+				return converted
+			}
+		} else {
+			result := b.typedTemp(p.elementGoType()+"{tag:"+value+".tag}", p.elementGoType())
+			b.emit("if " + value + ".tag==0 {")
+			raw := b.typedTemp(value+".value", source)
+			base := p
+			base.nulls = 0
+			converted := b.comparisonBoundary(raw, base)
+			b.emit(result + ".value=" + converted)
+			b.emit("}")
+			return b.typedTemp(fmt.Sprintf("tsNullableCheck(%s,%d)", result, p.nulls), p.elementGoType())
+		}
+	}
+
+	if p.nulls != 0 {
+		if b.tempType(value) == p.elementGoType() {
+			return b.typedTemp(fmt.Sprintf("tsNullableCheck(%s,%d)", value, p.nulls), p.elementGoType())
+		}
+		base := p
+		base.nulls = 0
+		if converted, ok := b.nativeConversion(value, base, b.e.coerce); ok {
+			return b.typedTemp("tsOptional["+p.goType()+"]{value:"+converted+"}", p.elementGoType())
+		}
+	}
+
+	if p.nulls == 0 {
+		if result, ok := b.nativeConversion(value, p, b.e.coerce); ok {
+			return result
+		}
+	}
 	checked := fmt.Sprintf("tsBoundary(%s,%q,%d,%t)", value, p.kind, p.nulls, b.e.coerce)
 	if p.nulls != 0 {
 		return b.typedTemp("tsOptionalFrom["+p.goType()+"]("+checked+")", "tsOptional["+p.goType()+"]")
@@ -827,6 +1120,11 @@ func (b *machineBuilder) callArgument(call *ast.CallExpression, index int) strin
 	}
 	if call.Expression.Kind == ast.KindPropertyAccessExpression {
 		property := call.Expression.AsPropertyAccessExpression()
+		name := property.Name().Text()
+		p := b.e.arrayElementPrimitive(property.Expression)
+		if p.numeric() && p.nulls == 0 && (name == "push" || name == "unshift" || name == "splice" && index >= 2 || name == "fill" && index == 0) {
+			return b.numericExpression(call.Arguments.Nodes[index], p)
+		}
 		if c := b.classOf(property.Expression); c != nil {
 			declaration = c.methods[property.Name().Text()]
 		}

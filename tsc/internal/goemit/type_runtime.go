@@ -30,15 +30,7 @@ func(e *tsRuntimeError)String()string{return e.name+": "+e.message}
 func tsTypeFailure(kind string){panic(tsThrown{&tsRuntimeError{"TypeError","This value only accepts a "+kind+". Set coerceAny to true to enable automatic conversion."}})}
 func tsRestArgs(args []tsValue,index int)*tsArray {if index>=len(args){return &tsArray{}};return &tsArray{values:append([]tsValue{},args[index:]...)}}
 func tsTypeOf(value tsValue)*tsString {name:="object";switch value.kind{case tsUndefinedKind:name="undefined";case tsStringKind:name="string";case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:name="number";case tsBooleanKind:name="boolean";case tsFunctionKind,tsClassKind:name="function"};return tsStringUTF8(name)}
-func tsBoundary(value tsValue,kind string,nulls uint8,coerce bool) tsValue {
- if tsNumericType(kind) {if value.kind==tsNullKind && nulls&1!=0{return tsNull};if value.kind==tsUndefinedKind && nulls&2!=0{return tsU};return tsNumericBoundary(value,kind,coerce)}
- if value.kind==tsNullKind {if nulls&1!=0 {return tsNull};if coerce {switch kind {case "number":return float64(0);case "string":return tsStringUTF8("null");case "boolean":return false}};tsTypeFailure(kind)}
- if value.kind==tsUndefinedKind{if nulls&2!=0{return tsU};if coerce {switch kind {case "number":return math.NaN();case "string":return tsStringUTF8("undefined");case "boolean":return false}};tsTypeFailure(kind)}
- switch kind {case "number":if value.kind==tsNumberKind{return value};if coerce{return tsNumber(value)}
- case "string":if value.kind==tsStringKind{return value};if coerce{return tsStringValue(value)}
- case "boolean":if value.kind==tsBooleanKind{return value};if coerce{return tsTruthy(value)}}
- tsTypeFailure(kind);return tsU
-}
+func tsBoundary(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsNullKind&&nulls&1!=0{return value};if value.kind==tsUndefinedKind&&nulls&2!=0{return value};return tsConvertValue(value,kind,coerce)}
 func tsIsSigned(value tsValue)bool {switch value.kind {case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return true};return false}
 func tsIsUnsigned(value tsValue)bool {switch value.kind {case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return true};return false}
 func tsIsNumeric(value tsValue)bool{return value.kind==tsNumberKind||value.kind==tsFloat32Kind||tsIsSigned(value)||tsIsUnsigned(value)}
@@ -55,9 +47,9 @@ func tsNumericEqual(a,b tsValue)bool {
 }
 func tsNumericRangeFailure(kind string){panic(tsThrown{tsErrorValue(&tsRuntimeError{"RangeError","Value cannot be represented as "+kind})})}
 func tsNumericBoundary(value tsValue,kind string,coerce bool)tsValue {
- if !tsIsNumeric(value){if !coerce{tsTypeFailure(kind)};value=tsNumberValue(tsNumber(value))}
+ if !coerce&&tsValueTypeName(value)!=kind&&!tsLosslessNumericConversion(kind,tsValueTypeName(value)){tsConversionTypeFailure(kind,tsValueTypeName(value))};if !tsIsNumeric(value){return tsConvertValue(value,kind,coerce)}
  if kind=="number"||kind=="float64" {return tsNumberValue(tsNumber(value))}
- if kind=="float32"{f:=tsNumber(value);r:=float32(f);if !math.IsInf(f,0)&&math.IsInf(float64(r),0){tsNumericRangeFailure(kind)};return tsFloat32Value(r)}
+ if kind=="float32"{f:=tsNumber(value);r:=float32(f);if !math.IsInf(f,0)&&!math.IsNaN(f)&&(f>math.MaxFloat32||f< -math.MaxFloat32){tsNumericRangeFailure(kind)};return tsFloat32Value(r)}
  bits:=uint(64);signed:=true
  switch kind {case "int","uint":bits=uint(strconv.IntSize);case "int8","uint8":bits=8;case "int16","uint16":bits=16;case "int32","uint32":bits=32}
  if strings.HasPrefix(kind,"uint"){signed=false}
@@ -83,11 +75,13 @@ type tsNativeInteger interface{int|int8|int16|int32|int64|uint|uint8|uint16|uint
 func tsIntegerBinary[T tsNativeInteger](op string,left,right tsValue)tsValue {a,b:=tsNative[T](left),tsNative[T](right);switch op{case "+":return tsPrimitiveValue(a+b);case "-":return tsPrimitiveValue(a-b);case "*":return tsPrimitiveValue(a*b);case "/":return tsPrimitiveValue(a/b);case "%":return tsPrimitiveValue(a%b);case "&":return tsPrimitiveValue(a&b);case "|":return tsPrimitiveValue(a|b);case "^":return tsPrimitiveValue(a^b);case "**":if b<0{return tsNumberValue(tsPow(tsNumber(left),tsNumber(right)))};result:=T(1);for n:=uint64(b);n!=0;n>>=1{if n&1!=0{result*=a};a*=a};return tsPrimitiveValue(result)
  case "<<",">>",">>>":if b<0{tsNumericRangeFailure("nonnegative shift count")};shift:=uint64(b);if op=="<<"{return tsPrimitiveValue(a<<shift)};if op==">>"{return tsPrimitiveValue(a>>shift)};bits:=uint(unsafe.Sizeof(a)*8);raw:=math.Float64bits(left.number);if bits<64{raw&=uint64(1)<<bits-1};return tsPrimitiveValue(T(raw>>shift))};panic("Invalid integer operator")}
 func tsNumericCompare(a,b tsValue)(int,bool){
- if (!tsIsSigned(a)&&!tsIsUnsigned(a)&&math.IsNaN(a.number))||(!tsIsSigned(b)&&!tsIsUnsigned(b)&&math.IsNaN(b.number)){return 0,false}
- if !tsIsSigned(a)&&!tsIsUnsigned(a)&&math.IsInf(a.number,0){if !tsIsSigned(b)&&!tsIsUnsigned(b)&&a.number==b.number{return 0,true};if a.number<0{return -1,true};return 1,true}
- if !tsIsSigned(b)&&!tsIsUnsigned(b)&&math.IsInf(b.number,0){if b.number<0{return 1,true};return -1,true}
- toRat:=func(value tsValue)*big.Rat{r:=new(big.Rat);if tsIsSigned(value){return r.SetInt64(int64(math.Float64bits(value.number)))};if tsIsUnsigned(value){return r.SetUint64(math.Float64bits(value.number))};return r.SetFloat64(value.number)}
- return toRat(a).Cmp(toRat(b)),true
+ floatingA:=!tsIsSigned(a)&&!tsIsUnsigned(a);floatingB:=!tsIsSigned(b)&&!tsIsUnsigned(b)
+ if floatingA&&math.IsNaN(a.number)||floatingB&&math.IsNaN(b.number){return 0,false}
+ if floatingA&&floatingB{if a.number<b.number{return -1,true};if a.number>b.number{return 1,true};return 0,true}
+ if floatingA{result,ok:=tsNumericCompare(b,a);return -result,ok}
+ if floatingB{f:=b.number;if tsIsSigned(a){i:=int64(math.Float64bits(a.number));if f< -9223372036854775808{return 1,true};if f>=9223372036854775808{return -1,true};j:=int64(f);if i<j{return -1,true};if i>j{return 1,true};if f>float64(j){return -1,true};if f<float64(j){return 1,true};return 0,true};if f<0{return 1,true};if f>=18446744073709551616{return -1,true};i,j:=math.Float64bits(a.number),uint64(f);if i<j{return -1,true};if i>j{return 1,true};if f>float64(j){return -1,true};return 0,true}
+ if tsIsSigned(a)&&tsIsSigned(b){i,j:=int64(math.Float64bits(a.number)),int64(math.Float64bits(b.number));if i<j{return -1,true};if i>j{return 1,true};return 0,true}
+ if tsIsSigned(a)&&int64(math.Float64bits(a.number))<0{return -1,true};if tsIsSigned(b)&&int64(math.Float64bits(b.number))<0{return 1,true};i,j:=math.Float64bits(a.number),math.Float64bits(b.number);if i<j{return -1,true};if i>j{return 1,true};return 0,true
 }
 func tsIntegerBits(kind tsKind,bits uint64)tsValue{switch kind{case tsIntKind:return tsIntValue(int(bits));case tsInt8Kind:return tsInt8Value(int8(bits));case tsInt16Kind:return tsInt16Value(int16(bits));case tsInt32Kind:return tsInt32Value(int32(bits));case tsInt64Kind:return tsInt64Value(int64(bits));case tsUintKind:return tsUintValue(uint(bits));case tsUint8Kind:return tsUint8Value(uint8(bits));case tsUint16Kind:return tsUint16Value(uint16(bits));case tsUint32Kind:return tsUint32Value(uint32(bits));case tsUint64Kind:return tsUint64Value(uint64(bits));};panic("Invalid integer kind")}
 `

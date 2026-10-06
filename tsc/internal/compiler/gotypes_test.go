@@ -42,7 +42,7 @@ func TestGoTypedValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, got)
 	}
-	want := "12 2 5\n14\nundefined NaN number\n5\nok string\nnull object\nundefined undefined\nThis value only accepts a string. Set coerceAny to true to enable automatic conversion.\nnumber rejected\n"
+	want := "12 2 5\n14\nundefined NaN number\n5\nok string\nnull object\nundefined undefined\nCannot implicitly convert number to string with coerceAny disabled; use .string()\nnumber rejected\n"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
@@ -217,12 +217,19 @@ func TestGoMixedComparisonPolicy(t *testing.T) {
 func TestGoNativeNumericConversions(t *testing.T) {
 	source := `let big:int64=9223372036854775807;let unsigned:uint64=18446744073709551615;let small:int32=7;let f:float32=1.25;let dynamic:any=big;console.log(big,unsigned,small,f,dynamic,typeof big);try{small=big;}catch(e){console.log(e.name);}try{small=1.5 as any;}catch(e){console.log(e.name);}small=12 as any;console.log(small);let exact:int64=9007199254740993;exact++;let tiny:int32=1;let inferred=exact+tiny;console.log(exact,inferred);`
 	for _, coerce := range []core.Tristate{core.TSTrue, core.TSFalse} {
-		text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue, CoerceAny: coerce})
+		program := source
+		rangeError := "RangeError"
+		if coerce == core.TSFalse {
+			// Widening remains implicit; narrowing requires an explicit method.
+			program = strings.ReplaceAll(program, "small=12 as any", "small=(12 as any).int32()")
+			rangeError = "TypeError"
+		}
+		text := emitGoOptions(t, program, core.CompilerOptions{Strict: core.TSTrue, CoerceAny: coerce})
 		got, err := runGoProgram(t, text, true)
 		if err != nil {
 			t.Fatalf("%v\n%s", err, got)
 		}
-		if want := "9223372036854775807 18446744073709551615 7 1.25 9223372036854775807 number\nRangeError\nRangeError\n12\n9007199254740994 9007199254740995\n"; got != want {
+		if want := "9223372036854775807 18446744073709551615 7 1.25 9223372036854775807 number\n" + rangeError + "\n" + rangeError + "\n12\n9007199254740994 9007199254740995\n"; got != want {
 			t.Fatalf("got %q, want %q", got, want)
 		}
 	}

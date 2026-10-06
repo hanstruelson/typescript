@@ -152,8 +152,10 @@ func valueBase(kind string) string {
 	return kind
 }
 func valueElement(kind string) string {
-	if strings.HasPrefix(kind, "[]") {
-		return kind[2:]
+	if strings.HasPrefix(kind, "[") {
+		if at := strings.IndexByte(kind, ']'); at >= 0 {
+			return kind[at+1:]
+		}
 	}
 	if strings.HasPrefix(kind, "map[") {
 		if at := strings.IndexByte(kind, ']'); at >= 0 {
@@ -341,7 +343,7 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 		if kind == "nil" {
 			return &ast.CompositeLit{Type: ast.NewIdent("tsBindingCell")}
 		}
-		if kind == "*tsCell" || valueBase(kind) == "tsTypedCell" {
+		if kind == "*tsCell" || (valueBase(kind) == "tsTypedCell" || valueBase(kind) == "tsDenseArrayCell") {
 			return &ast.CallExpr{Fun: &ast.SelectorExpr{X: expr, Sel: ast.NewIdent("bindingRef")}}
 		}
 	}
@@ -378,7 +380,9 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 		return valueWrapper("tsInstanceValue", &ast.SelectorExpr{X: expr, Sel: ast.NewIdent("properties")})
 	}
 	if p.err == nil {
-		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue", valueType(expr), kind)
+		var detail bytes.Buffer
+		_ = format.Node(&detail, token.NewFileSet(), expr)
+		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue", detail.String(), kind)
 	}
 	return expr
 }

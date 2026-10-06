@@ -50,12 +50,18 @@ func (b *machineBuilder) nativeArrayShape(node *ast.Node, depth int) (string, st
 	return "", ""
 }
 func (b *machineBuilder) nativeArrayRead(node *ast.Node, receiver, key string) string {
+	if p := b.e.arrayElementPrimitive(node); p.kind != "" && p.nulls == 0 {
+		return "tsGrowableArrayRead[" + p.goType() + "](" + receiver + "," + key + "," + strconv.Quote(p.kind) + ")"
+	}
 	if name, shape := b.nativeArrayShape(node, 0); shape != "" {
 		return "tsNativeArrayRead[" + shape + "](" + receiver + "," + key + "," + strconv.Quote(name) + ")"
 	}
 	return "tsGet(" + receiver + "," + key + ")"
 }
 func (b *machineBuilder) nativeArrayWrite(node *ast.Node, receiver, key, value string) string {
+	if p := b.e.arrayElementPrimitive(node); p.kind != "" && p.nulls == 0 {
+		return "tsGrowableArrayWrite[" + p.goType() + "](" + receiver + "," + key + "," + value + "," + strconv.Quote(p.kind) + ")"
+	}
 	if name, shape := b.nativeArrayShape(node, 0); shape != "" {
 		return "tsNativeArrayWrite[" + shape + "](" + receiver + "," + key + "," + value + "," + strconv.Quote(name) + ")"
 	}

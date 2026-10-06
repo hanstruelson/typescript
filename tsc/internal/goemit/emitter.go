@@ -22,6 +22,7 @@ type binding struct {
 	declaration, owner *ast.Node
 	lexical, constant  bool
 	primitive          primitive
+	arrayElement       primitive
 	maybeUndefined     bool
 }
 type emitter struct {
@@ -39,6 +40,7 @@ type emitter struct {
 	strictNulls         bool
 	legacyDecorators    bool
 	nativeFunctions     map[*ast.Node]*nativeFunction
+	stableCallbacks     map[*ast.Node]*ast.Node
 	genericFunctions    map[*ast.Node]*genericFunction
 	specializationCalls []*ast.Node
 }
@@ -65,7 +67,7 @@ func (e *emitter) declare(node, owner *ast.Node, lexical, constant bool) {
 		return
 	}
 	if node.Name() == nil && node.Kind == ast.KindFunctionDeclaration && ast.HasSyntacticModifier(node, ast.ModifierFlagsDefault) {
-		e.bindings[node] = &binding{e.unique("Binding"), node, owner, true, false, primitive{}, false}
+		e.bindings[node] = &binding{e.unique("Binding"), node, owner, true, false, primitive{}, primitive{}, false}
 		return
 	}
 	if node.Name() != nil && ast.IsBindingPattern(node.Name()) {
@@ -94,7 +96,10 @@ func (e *emitter) declare(node, owner *ast.Node, lexical, constant bool) {
 		p = e.primitive(node)
 
 	}
-	e.bindings[node] = &binding{e.unique("Binding"), node, owner, lexical, constant, p, node.Kind == ast.KindVariableDeclaration && !lexical && p.kind != ""}
+	e.bindings[node] = &binding{e.unique("Binding"), node, owner, lexical, constant, p, primitive{}, node.Kind == ast.KindVariableDeclaration && !lexical && p.kind != ""}
+	if !ast.IsFunctionLike(node) {
+		e.bindings[node].arrayElement = e.arrayElementPrimitive(node)
+	}
 }
 func (e *emitter) collect(node, owner *ast.Node) {
 	switch node.Kind {
@@ -246,7 +251,7 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 	if len(e.diags) != 0 {
 		return "", e.diags
 	}
-	text, err := formatValueSource([]byte("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + e.classText.String() + "\nfunc main() {\nloop := tsNewLoop()\nloop.invoke(func(){ _ = tsCall(" + body + ") })\nif err := loop.run(); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n}\n"))
+	text, err := formatValueSource([]byte("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + e.classText.String() + "\nfunc main() {\nloop := tsNewLoop()\nloop.invoke(func(){ _ = tsCall(" + body + ") })\nif err := loop.run(); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n}\n"))
 	if err != nil {
 		e.fail(file.AsNode(), "could not format output: "+err.Error())
 		return "", e.diags
@@ -275,6 +280,10 @@ type machineBuilder struct {
 	concrete, declaring *classInfo
 	direct              bool
 	nativeReturn        string
+	nativeResult        primitive
+	nativeOutput        string
+	nativeArrayResult   primitive
+	nativeReturnCount   int
 	constructor         bool
 	receiver            string
 }

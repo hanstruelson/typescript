@@ -25,7 +25,7 @@ func TestGoCollections(t *testing.T) {
 	}
 }
 func TestGoArrayMethods(t *testing.T) {
-	source := `const a:any[]=[1,,3,undefined,NaN];console.log(a.includes(undefined),a.indexOf(undefined),a.includes(NaN),a.indexOf(NaN));console.log(a.map((x,i)=>x===undefined?i:x*2).join("|"),a.filter(x=>x!==undefined).join("|"));console.log(a.slice(1,4).length,0 in a.slice(1,4));console.log(a.reduce((sum,x)=>sum+(x||0),0),a.some(x=>x===3),a.every(x=>x!==2),a.findIndex(x=>x===undefined));console.log([...a.keys()].join(","),[...a.values()].join(","));const b=[1,2,3];console.log(b.pop(),b.shift(),b.unshift(7,8),b.join(","));console.log(b.splice(1,1,9,10).join(","),b.join(","));console.log(b.reverse().join(","),b.fill(4,1,-1).join(","));console.log([10,2,1].sort().join(","),[10,2,1].sort((a,b)=>a-b).join(","));console.log([1,,3].concat([,5],7).join("|"));let count=0;[1,,3].forEach(x=>count+=x);console.log(count,[1,2,3].reduceRight((a,b)=>a-b),[1,2,3].at(-1));`
+	source := `const a:any[]=[1,,3,undefined,NaN];console.log(a.includes(undefined),a.indexOf(undefined),a.includes(NaN),a.indexOf(NaN));console.log(a.map((x,i)=>x===undefined?i:x*2).join("|"),a.filter(x=>x!==undefined).join("|"));console.log(a.slice(1,4).length,0 in a.slice(1,4));console.log(a.reduce((sum,x)=>sum+(x||0),0),a.some(x=>x===3),a.every(x=>x!==2),a.findIndex(x=>x===undefined));console.log([...a.keys()].join(","),[...a.values()].join(","));const b=[1,2,3];console.log(b.pop(),b.shift(),b.unshift(7,8),b.join(","));console.log(b.splice(1,1,9,10).join(","),b.join(","));console.log(b.reverse().join(","),b.fill(4,1,-1).join(","));console.log([10,2,1].sort().join(","),[10,2,1].sort((a,b)=>a-b).join(","));const sparse:any[]=[1,,3];const tail:any[]=[,5];console.log(sparse.concat(tail,7).join("|"));let count=0;sparse.forEach(x=>count+=x);console.log(count,[1,2,3].reduceRight((a,b)=>a-b),[1,2,3].at(-1));`
 	want := javascriptOutput(t, source)
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	got, err := runGoProgram(t, text, true)
@@ -43,7 +43,7 @@ func TestGoTypedArrays(t *testing.T) {
 	}
 }
 func TestGoArrayConstructors(t *testing.T) {
-	source := `const a=new Array<number>(3);console.log(a.length,Object.keys(a).length,0 in a);const b=new Array(1,2,3);console.log(Array.isArray(b),Array.isArray(new Float64Array(2)),Array.of(4,5).join(","));console.log(Array.from(new Set([3,1,3]),(x,i)=>x+i).join(","));const M=Map;const m=new M([[1,2]]);console.log(m.get(1),m instanceof Map,Map===Map,m instanceof Set);const F=Float32Array;const f=new F([2,4]);console.log(f instanceof Float32Array,f instanceof Float64Array,Float32Array.BYTES_PER_ELEMENT,Float32Array.name,Object.keys(f).join(","),Object.hasOwn(f,"length"));const u=new Uint8Array(1);u["-0"]=7;u["1.5"]=9;console.log(u[0],u["-0"],u["1.5"],Object.keys(u).join(","));`
+	source := `const a=new Array<any>(3);console.log(a.length,Object.keys(a).length,0 in a);const b=new Array(1,2,3);console.log(Array.isArray(b),Array.isArray(new Float64Array(2)),Array.of(4,5).join(","));console.log(Array.from(new Set([3,1,3]),(x,i)=>x+i).join(","));const M=Map;const m=new M([[1,2]]);console.log(m.get(1),m instanceof Map,Map===Map,m instanceof Set);const F=Float32Array;const f=new F([2,4]);console.log(f instanceof Float32Array,f instanceof Float64Array,Float32Array.BYTES_PER_ELEMENT,Float32Array.name,Object.keys(f).join(","),Object.hasOwn(f,"length"));const u=new Uint8Array(1);u["-0"]=7;u["1.5"]=9;console.log(u[0],u["-0"],u["1.5"],Object.keys(u).join(","));`
 	want := javascriptOutput(t, source)
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	got, err := runGoProgram(t, text, true)
@@ -70,7 +70,7 @@ func TestGoSetAlgebra(t *testing.T) {
 	}
 }
 func TestGoArrayCopyMethods(t *testing.T) {
-	source := `const a=[1,,3,4];a.copyWithin(1,0,3);console.log(a.join("|"),1 in a,2 in a,a.toReversed().join("|"),2 in a.toReversed());const x=new Float64Array([1,2,3,4]);x.copyWithin(1,0,3);console.log(x.join(","),x.toReversed().join(","),x.toSorted().join(","),x.join(","));console.log(Uint8Array.of(256,-1).join(","),Float64Array.from(new Set([2,3]),x=>x*2).join(","),ArrayBuffer.isView(x),ArrayBuffer.isView(x.buffer));`
+	source := `const a:any[]=[1,,3,4];a.copyWithin(1,0,3);console.log(a.join("|"),1 in a,2 in a,a.toReversed().join("|"),2 in a.toReversed());const x=new Float64Array([1,2,3,4]);x.copyWithin(1,0,3);console.log(x.join(","),x.toReversed().join(","),x.toSorted().join(","),x.join(","));console.log(Uint8Array.of(256,-1).join(","),Float64Array.from(new Set([2,3]),x=>x*2).join(","),ArrayBuffer.isView(x),ArrayBuffer.isView(x.buffer));`
 	want := javascriptOutput(t, source)
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	got, err := runGoProgram(t, text, true)
@@ -93,7 +93,7 @@ func TestGoTypedArrayNativeAccess(t *testing.T) {
 	}
 }
 func TestGoArrayFlattenAndReplace(t *testing.T) {
-	source := `const a:any[]=[1,,[2,,[3]],4];console.log(a.flat().join("|"),a.flat(Infinity).join("|"),a.flat(0).length);console.log([1,,3].flatMap(x=>[x,x*2]).join(","));const b=[1,,3];console.log(b.with(-1,7).join("|"),1 in b.with(-1,7),b.toSpliced(1,1,8,9).join("|"),b.join("|"));const x=new Uint8Array([1,2]);console.log(x.with(1,257).join(","),x.join(","));try{b.with(9,0);}catch(e){console.log(e.name);}try{[].reduce((a,b)=>a+b);}catch(e){console.log(e.name);}try{new Uint32Array(new ArrayBuffer(3));}catch(e){console.log(e.name);}`
+	source := `const a:any[]=[1,,[2,,[3]],4];console.log(a.flat().join("|"),a.flat(Infinity).join("|"),a.flat(0).length);const sparse:any[]=[1,,3];console.log(sparse.flatMap(x=>[x,x*2]).join(","));const b:any[]=[1,,3];console.log(b.with(-1,7).join("|"),1 in b.with(-1,7),b.toSpliced(1,1,8,9).join("|"),b.join("|"));const x=new Uint8Array([1,2]);console.log(x.with(1,257).join(","),x.join(","));try{b.with(9,0);}catch(e){console.log(e.name);}try{[].reduce((a,b)=>a+b);}catch(e){console.log(e.name);}try{new Uint32Array(new ArrayBuffer(3));}catch(e){console.log(e.name);}`
 	want := javascriptOutput(t, source)
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	got, err := runGoProgram(t, text, true)

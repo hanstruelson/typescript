@@ -205,17 +205,60 @@ func (b *machineBuilder) bindingDefault(element *ast.Node) string {
 }
 
 func (b *machineBuilder) arrayLiteral(nodes []*ast.Node) string {
-	array := b.typedTemp("&tsArray{}", "*tsArray")
+	p := primitive{}
+	if len(nodes) > 0 && nodes[0].Parent != nil {
+		p = b.e.arrayElementPrimitive(nodes[0].Parent)
+	}
+	constructor := "&tsArray{}"
+	if p.kind != "" {
+		constructor = fmt.Sprintf("tsNewGrowableArray(%q,%d,%t)", p.kind, p.nulls, b.e.coerce)
+	}
+	array := b.typedTemp(constructor, "*tsArray")
 	for _, node := range nodes {
 		switch node.Kind {
 		case ast.KindOmittedExpression:
 			b.emit("tsArrayHole(" + array + ")")
 		case ast.KindSpreadElement:
-			value := b.expression(node.AsSpreadElement().Expression)
-			b.emit("tsArraySpread(" + array + "," + value + ")")
+
+			if p.kind != "" && p.nulls != 0 {
+				items := b.typedTemp("[]"+p.elementGoType()+"{}", "[]"+p.elementGoType())
+				b.denseSpread(items, node.AsSpreadElement().Expression, p)
+				b.emit("tsNullablePush[" + p.goType() + "](tsDenseStorage[" + p.goType() + "](" + array + "," + strconv.Quote(p.kind) + "," + strconv.Itoa(int(p.nulls)) + ")," + items + "...)")
+				continue
+			}
+			if p.kind != "" && p.nulls == 0 {
+				storage := b.typedTemp("tsDenseStorage["+p.goType()+"]("+array+","+strconv.Quote(p.kind)+")", "*tsGrowableStorage["+p.goType()+"]")
+				b.denseSpread(storage+".values", node.AsSpreadElement().Expression, p)
+			} else {
+				value := b.expression(node.AsSpreadElement().Expression)
+				b.emit("tsArraySpread(" + array + "," + value + ")")
+			}
+
 		default:
-			value := b.expression(node)
-			b.emit(array + ".values=append(" + array + ".values," + value + ")")
+
+			if p.kind != "" && p.nulls != 0 {
+				value := b.denseElement(node, p)
+				b.emit("tsNullablePush[" + p.goType() + "](tsDenseStorage[" + p.goType() + "](" + array + "," + strconv.Quote(p.kind) + "," + strconv.Itoa(int(p.nulls)) + ")," + value + ")")
+				continue
+			}
+			value := ""
+			if p.numeric() && p.nulls == 0 {
+				value = b.numericExpression(node, p)
+			} else {
+				value = b.expression(node)
+			}
+			if p.kind != "" {
+				if b.tempType(value) != p.elementGoType() {
+					value = b.comparisonBoundary(value, p)
+				}
+				helper := "tsDensePush"
+				if p.nulls != 0 {
+					helper = "tsNullablePush"
+				}
+				b.emit(helper + "[" + p.goType() + "](tsDenseStorage[" + p.goType() + "](" + array + "," + strconv.Quote(p.kind) + "," + strconv.Itoa(int(p.nulls)) + ")," + value + ")")
+			} else {
+				b.emit(array + ".appendItems(" + value + ")")
+			}
 		}
 	}
 	return array
