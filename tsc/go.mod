@@ -5,7 +5,7 @@ go 1.27
 require (
 	github.com/Microsoft/go-winio v0.6.2
 	github.com/google/go-cmp v0.7.0
-	github.com/klauspost/compress v1.20.0
+	github.com/klauspost/compress v1.20.1
 	github.com/mackerelio/go-osstat v0.2.8
 	github.com/peter-evans/patience v0.3.0
 	github.com/zeebo/xxh3 v1.1.0
@@ -17,10 +17,6 @@ require (
 )
 
 require (
-	github.com/dlclark/regexp2/v2 v2.8.1 // indirect
-	github.com/dop251/goja v0.0.0-20261004200024-481fdb442bb4 // indirect
-	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
-	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/matryer/moq v0.7.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
