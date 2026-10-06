@@ -1,0 +1,9 @@
+{
+    "compilerOptions": {
+        "target": "go",
+        "outDir": "out",
+        "strict": true,
+        "noEmitOnError": true
+    },
+    "files": ["main.ts"]
+}

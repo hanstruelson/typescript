@@ -1,0 +1,61 @@
+goos: linux
+goarch: amd64
+pkg: github.com/microsoft/TypeScript/tsc/internal/goemit
+cpu: INTEL(R) XEON(R) PLATINUM 8573C
+BenchmarkValueObjectRead/Any         	72492352	         3.096 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Any         	73282017	         3.111 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Any         	87304315	         3.407 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Any         	80672078	         3.067 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Any         	78385141	         3.033 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Inline24    	84917215	         3.024 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Inline24    	87042933	         3.022 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Inline24    	87029991	         3.014 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Inline24    	82170843	         3.000 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Inline24    	79622218	         2.968 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Header16    	78595909	         3.119 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Header16    	86745409	         3.183 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Header16    	72092529	         3.204 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Header16    	87962061	         3.314 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueObjectRead/Header16    	88241360	         3.350 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/TypeCheck       	87471972	         3.147 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/TypeCheck       	98139769	         2.526 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/TypeCheck       	83986389	         2.817 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/TypeCheck       	100000000	         3.459 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/TypeCheck       	100000000	         2.925 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericRead     	79981407	         2.983 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericRead     	86023694	         3.565 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericRead     	81748629	         3.736 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericRead     	76799212	         3.702 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericRead     	63110079	         3.399 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericUpdate   	80503791	         3.227 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericUpdate   	87785907	         3.194 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericUpdate   	82042003	         2.979 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericUpdate   	80038124	         3.269 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/NumericUpdate   	82792197	         2.954 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/MixedDispatch   	85300455	         3.094 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/MixedDispatch   	80935192	         2.960 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/MixedDispatch   	83624946	         3.086 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/MixedDispatch   	80917170	         2.977 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/MixedDispatch   	85767859	         3.027 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/Call            	94651779	         2.444 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/Call            	100000000	         2.437 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/Call            	99270896	         2.460 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/Call            	97257264	         2.484 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/Call            	100000000	         2.415 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/ObjectRead      	84951571	         3.297 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/ObjectRead      	74190878	         3.228 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/ObjectRead      	87463142	         3.120 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/ObjectRead      	77161362	         2.985 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/ObjectRead      	85945324	         2.999 ns/op	       0 B/op	       0 allocs/op
+BenchmarkValueSafe32/BuildNumbers    	   32284	      7212 ns/op	   32768 B/op	       1 allocs/op
+BenchmarkValueSafe32/BuildNumbers    	   37851	      6914 ns/op	   32768 B/op	       1 allocs/op
+BenchmarkValueSafe32/BuildNumbers    	   32494	      7071 ns/op	   32768 B/op	       1 allocs/op
+BenchmarkValueSafe32/BuildNumbers    	   37364	      6787 ns/op	   32768 B/op	       1 allocs/op
+BenchmarkValueSafe32/BuildNumbers    	   35118	      6887 ns/op	   32768 B/op	       1 allocs/op
+BenchmarkValueSafe32/BuildObjects    	   31492	      6785 ns/op	   11520 B/op	     257 allocs/op
+BenchmarkValueSafe32/BuildObjects    	   39963	      5289 ns/op	   11520 B/op	     257 allocs/op
+BenchmarkValueSafe32/BuildObjects    	   52975	      5175 ns/op	   11520 B/op	     257 allocs/op
+BenchmarkValueSafe32/BuildObjects    	   45474	      5089 ns/op	   11520 B/op	     257 allocs/op
+BenchmarkValueSafe32/BuildObjects    	   47224	      5697 ns/op	   11520 B/op	     257 allocs/op
+PASS
+ok  	github.com/microsoft/TypeScript/tsc/internal/goemit	14.132s

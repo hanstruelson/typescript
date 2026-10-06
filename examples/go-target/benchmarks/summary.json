@@ -1,0 +1,306 @@
+{
+  "TypeCheck": {
+    "Any": {
+      "median_ns": 2.039,
+      "min_ns": 1.766,
+      "max_ns": 2.966,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 1.467,
+      "min_ns": 1.459,
+      "max_ns": 1.723,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 1.66,
+      "min_ns": 1.518,
+      "max_ns": 1.67,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 2.383,
+      "min_ns": 2.342,
+      "max_ns": 3.044,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    }
+  },
+  "NumericRead": {
+    "Native": {
+      "median_ns": 3.113,
+      "min_ns": 3.006,
+      "max_ns": 3.276,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Any": {
+      "median_ns": 3.109,
+      "min_ns": 3.035,
+      "max_ns": 3.351,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 5.756,
+      "min_ns": 3.064,
+      "max_ns": 6.114,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 6.046,
+      "min_ns": 5.678,
+      "max_ns": 6.286,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 5.145,
+      "min_ns": 4.244,
+      "max_ns": 6.478,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    }
+  },
+  "NumericUpdate": {
+    "Native": {
+      "median_ns": 3.334,
+      "min_ns": 2.972,
+      "max_ns": 3.848,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Any": {
+      "median_ns": 24.18,
+      "min_ns": 17.96,
+      "max_ns": 32.66,
+      "bytes_per_op": 8,
+      "allocations_per_op": 1,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 6.796,
+      "min_ns": 4.778,
+      "max_ns": 11.27,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 3.767,
+      "min_ns": 3.294,
+      "max_ns": 6.687,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 3.943,
+      "min_ns": 3.14,
+      "max_ns": 5.264,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    }
+  },
+  "MixedDispatch": {
+    "Any": {
+      "median_ns": 3.766,
+      "min_ns": 3.24,
+      "max_ns": 4.334,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 3.263,
+      "min_ns": 3.044,
+      "max_ns": 3.324,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 3.295,
+      "min_ns": 2.958,
+      "max_ns": 3.902,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 3.089,
+      "min_ns": 2.945,
+      "max_ns": 3.126,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    }
+  },
+  "Call": {
+    "Native": {
+      "median_ns": 3.032,
+      "min_ns": 1.85,
+      "max_ns": 4.202,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Any": {
+      "median_ns": 16.99,
+      "min_ns": 15.66,
+      "max_ns": 18.8,
+      "bytes_per_op": 8,
+      "allocations_per_op": 1,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 2.302,
+      "min_ns": 2.129,
+      "max_ns": 2.349,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 2.302,
+      "min_ns": 1.918,
+      "max_ns": 2.348,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 2.586,
+      "min_ns": 2.483,
+      "max_ns": 3.654,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    }
+  },
+  "ObjectRead": {
+    "Any": {
+      "median_ns": 3.352,
+      "min_ns": 3.103,
+      "max_ns": 5.81,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 3.404,
+      "min_ns": 3.18,
+      "max_ns": 6.597,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 3.972,
+      "min_ns": 3.015,
+      "max_ns": 6.285,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 3.129,
+      "min_ns": 2.938,
+      "max_ns": 3.322,
+      "bytes_per_op": 0,
+      "allocations_per_op": 0,
+      "samples": 5
+    }
+  },
+  "BuildNumbers": {
+    "Native": {
+      "median_ns": 2408.0,
+      "min_ns": 2306.0,
+      "max_ns": 2713.0,
+      "bytes_per_op": 8192,
+      "allocations_per_op": 1,
+      "samples": 5
+    },
+    "Any": {
+      "median_ns": 23783.0,
+      "min_ns": 23006.0,
+      "max_ns": 38064.0,
+      "bytes_per_op": 26624,
+      "allocations_per_op": 1025,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 7019.0,
+      "min_ns": 6799.0,
+      "max_ns": 7356.0,
+      "bytes_per_op": 27264,
+      "allocations_per_op": 1,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 4795.0,
+      "min_ns": 4247.0,
+      "max_ns": 6387.0,
+      "bytes_per_op": 18432,
+      "allocations_per_op": 1,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 9697.0,
+      "min_ns": 8668.0,
+      "max_ns": 12433.0,
+      "bytes_per_op": 32768,
+      "allocations_per_op": 1,
+      "samples": 5
+    }
+  },
+  "BuildObjects": {
+    "Any": {
+      "median_ns": 5309.0,
+      "min_ns": 4608.0,
+      "max_ns": 10785.0,
+      "bytes_per_op": 6912,
+      "allocations_per_op": 257,
+      "samples": 5
+    },
+    "Inline24": {
+      "median_ns": 5324.0,
+      "min_ns": 4914.0,
+      "max_ns": 6923.0,
+      "bytes_per_op": 8576,
+      "allocations_per_op": 257,
+      "samples": 5
+    },
+    "Header16": {
+      "median_ns": 9113.0,
+      "min_ns": 8077.0,
+      "max_ns": 10183.0,
+      "bytes_per_op": 11008,
+      "allocations_per_op": 257,
+      "samples": 5
+    },
+    "Safe32": {
+      "median_ns": 5897.0,
+      "min_ns": 5707.0,
+      "max_ns": 6334.0,
+      "bytes_per_op": 11520,
+      "allocations_per_op": 257,
+      "samples": 5
+    }
+  }
+}

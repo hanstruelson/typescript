@@ -1,0 +1,210 @@
+package goemit
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/microsoft/TypeScript/tsc/internal/ast"
+)
+
+type primitive struct {
+	kind  string
+	nulls uint8
+}
+
+func syntaxPrimitive(node *ast.Node) primitive {
+	if node == nil {
+		return primitive{}
+	}
+	switch node.Kind {
+	case ast.KindNumberKeyword:
+		return primitive{kind: "number"}
+	case ast.KindStringKeyword:
+		return primitive{kind: "string"}
+	case ast.KindBooleanKeyword:
+		return primitive{kind: "boolean"}
+	case ast.KindNullKeyword:
+		return primitive{nulls: 1}
+	case ast.KindUndefinedKeyword:
+		return primitive{nulls: 2}
+	case ast.KindTypeReference:
+		if n := node.AsTypeReferenceNode().TypeName; n.Kind == ast.KindIdentifier && n.Text() == "undefined" {
+			return primitive{nulls: 2}
+		}
+	case ast.KindLiteralType:
+		return syntaxPrimitive(node.AsLiteralTypeNode().Literal)
+	case ast.KindUnionType:
+		result := primitive{}
+		for _, part := range node.AsUnionTypeNode().Types.Nodes {
+			p := syntaxPrimitive(part)
+			if p.kind == "" && p.nulls == 0 {
+				return primitive{}
+			}
+			if p.kind != "" {
+				if result.kind != "" && result.kind != p.kind {
+					return primitive{}
+				}
+				result.kind = p.kind
+			}
+			result.nulls |= p.nulls
+		}
+		return result
+	}
+	return primitive{}
+}
+func (e *emitter) primitive(node *ast.Node) primitive {
+	if node == nil {
+		return primitive{}
+	}
+	if node.Kind == ast.KindVariableDeclaration {
+		if init := node.AsVariableDeclaration().Initializer; init != nil && init.Kind == ast.KindCallExpression {
+			callee := init.AsCallExpression().Expression
+			if callee.Kind == ast.KindIdentifier && callee.Text() == "setTimeout" {
+				decl := e.reference(callee)
+				if decl == nil || (decl.Kind == ast.KindFunctionDeclaration && decl.Body() == nil) {
+					return primitive{}
+				}
+			}
+		}
+	}
+	if p := e.annotationPrimitive(node.Type()); p.kind != "" {
+		if node.Kind == ast.KindParameter && node.PostfixToken() != nil {
+			p.nulls |= 2
+		}
+		return p
+	}
+	if resolver, ok := e.resolver.(interface {
+		GetEmitPrimitiveType(*ast.Node) (string, uint8)
+	}); ok {
+		kind, mask := resolver.GetEmitPrimitiveType(node)
+		return primitive{kind, mask}
+	}
+	return primitive{}
+}
+func (p primitive) goType() string {
+	switch p.kind {
+	case "number":
+		return "float64"
+	case "string":
+		return "*tsString"
+	case "boolean":
+		return "bool"
+	}
+	return "tsValue"
+}
+func (cell *binding) pointerType() string {
+	if cell.primitive.kind != "" {
+		return "*tsTypedCell[" + cell.primitive.goType() + "]"
+	}
+	return "*tsCell"
+}
+func (b *machineBuilder) bindingFactory(cell *binding, initialized bool) string {
+	if cell.primitive.kind == "" {
+		return fmt.Sprintf("tsBinding(%t,%t)", initialized, cell.constant)
+	}
+	return fmt.Sprintf("tsTypedBinding[%s](%t,%t,%q,%d,%t)", cell.primitive.goType(), initialized, cell.constant, cell.primitive.kind, cell.primitive.nulls, b.e.coerce)
+}
+func (b *machineBuilder) typedTemp(value, kind string) string {
+	name := b.temp(value)
+	if b.tempTypes == nil {
+		b.tempTypes = map[string]string{}
+	}
+	b.tempTypes[name] = kind
+	return name
+}
+func (b *machineBuilder) tempType(name string) string {
+	if kind := b.tempTypes[name]; kind != "" {
+		return kind
+	}
+	return "tsValue"
+}
+func (b *machineBuilder) validateParameter(param *ast.Node) {
+	if cell := b.e.bindings[param]; cell != nil && cell.primitive.kind != "" {
+		b.emit(cell.name + ".require()")
+	}
+}
+func (b *machineBuilder) returnValue(value string) string {
+	p := b.e.annotationPrimitive(b.owner.Type())
+	if p.kind == "" || b.constructor {
+		return value
+	}
+	return fmt.Sprintf("tsBoundary(%s,%s,%d,%t)", value, strconv.Quote(p.kind), p.nulls, b.e.coerce)
+}
+func (e *emitter) annotationPrimitive(node *ast.Node) primitive {
+	return e.annotationSeen(node, map[*ast.Node]bool{})
+}
+func (e *emitter) annotationSeen(node *ast.Node, seen map[*ast.Node]bool) primitive {
+	if node == nil || seen[node] {
+		return primitive{}
+	}
+	seen[node] = true
+	defer delete(seen, node)
+	if node.Kind == ast.KindTypeReference {
+		n := node.AsTypeReferenceNode().TypeName
+		if n.Kind == ast.KindIdentifier {
+			if symbol := e.file.AsNode().Locals()[n.Text()]; symbol != nil {
+				for _, decl := range symbol.Declarations {
+					if decl.Kind == ast.KindTypeAliasDeclaration {
+						return e.annotationSeen(decl.AsTypeAliasDeclaration().Type, seen)
+					}
+				}
+			}
+		}
+	}
+	if node.Kind == ast.KindParenthesizedType {
+		return e.annotationSeen(node.AsParenthesizedTypeNode().Type, seen)
+	}
+	if node.Kind == ast.KindUnionType {
+		result := primitive{}
+		for _, part := range node.AsUnionTypeNode().Types.Nodes {
+			p := e.annotationSeen(part, seen)
+			if p.kind == "" && p.nulls == 0 {
+				return primitive{}
+			}
+			if p.kind != "" {
+				if result.kind != "" && result.kind != p.kind {
+					return primitive{}
+				}
+				result.kind = p.kind
+			}
+			result.nulls |= p.nulls
+		}
+		return result
+	}
+	return syntaxPrimitive(node)
+}
+
+// Reads of captured or not-yet-initialized var bindings retain undefined.
+func (b *machineBuilder) definitelyInitialized(cell *binding, node *ast.Node) bool {
+	if !cell.maybeUndefined {
+		return true
+	}
+	if cell.owner != b.owner || cell.declaration.Kind != ast.KindVariableDeclaration {
+		return false
+	}
+	decl := cell.declaration.AsVariableDeclaration()
+	if decl.Initializer == nil || node.Loc.Pos() < cell.declaration.Loc.End() {
+		return false
+	}
+	parent := cell.declaration.Parent
+	if parent == nil {
+		return false
+	}
+	parent = parent.Parent
+	if parent == nil || parent.Kind != ast.KindVariableStatement {
+		return false
+	}
+	container := parent.Parent
+	return container == b.owner || (b.owner.Body() != nil && container == b.owner.Body())
+}
+
+// Parameter bindings remain uninitialized until their position in the parameter
+// list is evaluated, including names nested inside destructuring patterns.
+func (cell *binding) isParameter() bool {
+	for node := cell.declaration; node != nil && node != cell.owner; node = node.Parent {
+		if node.Kind == ast.KindParameter {
+			return true
+		}
+	}
+	return false
+}
