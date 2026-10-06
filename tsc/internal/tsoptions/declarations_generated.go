@@ -246,6 +246,12 @@ var commonOptionsWithBuild = []*CommandLineOption{
 
 var optionsForCompiler = []*CommandLineOption{
 	{
+		Name:                    "coerceAny",
+		Kind:                    CommandLineOptionTypeBoolean,
+		Category:                diagnostics.Emit,
+		DefaultValueDescription: true,
+	},
+	{
 		Name:                     "all",
 		Kind:                     CommandLineOptionTypeBoolean,
 		ShowInSimplifiedHelpView: true,
@@ -568,9 +574,6 @@ var optionsForCompiler = []*CommandLineOption{
 		Category:                diagnostics.Type_Checking,
 		Description:             diagnostics.Enable_error_reporting_for_fallthrough_cases_in_switch_statements,
 		DefaultValueDescription: false,
-	},
-	{
-		Name: "coerceAny", Kind: CommandLineOptionTypeBoolean, Category: diagnostics.Emit, DefaultValueDescription: false,
 	},
 	{
 		Name:                    "noUncheckedIndexedAccess",

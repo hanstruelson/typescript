@@ -180,6 +180,19 @@
             "ReadonlyKeyword",
             "RequireKeyword",
             "NumberKeyword",
+            "Float32Keyword",
+            "Float64Keyword",
+            "IntKeyword",
+            "Int8Keyword",
+            "Int16Keyword",
+            "Int32Keyword",
+            "Int64Keyword",
+            "UintKeyword",
+            "Uint8Keyword",
+            "Uint16Keyword",
+            "Uint32Keyword",
+            "Uint64Keyword",
+
             "ObjectKeyword",
             "SatisfiesKeyword",
             "SetKeyword",
@@ -196,6 +209,7 @@
             "OverrideKeyword",
             "OfKeyword",
             "DeferKeyword",
+            "GoKeyword",
             {
                 "name": "SourceKeyword",
                 "comment": "LastKeyword and LastToken and LastContextualKeyword"
@@ -279,6 +293,7 @@
             "TypeOfExpression",
             "VoidExpression",
             "AwaitExpression",
+            "GoExpression",
             "PrefixUnaryExpression",
             "PostfixUnaryExpression",
             "BinaryExpression",
@@ -641,6 +656,19 @@
                 "IntrinsicKeyword",
                 "NeverKeyword",
                 "NumberKeyword",
+                "Float32Keyword",
+                "Float64Keyword",
+                "IntKeyword",
+                "Int8Keyword",
+                "Int16Keyword",
+                "Int32Keyword",
+                "Int64Keyword",
+                "UintKeyword",
+                "Uint8Keyword",
+                "Uint16Keyword",
+                "Uint32Keyword",
+                "Uint64Keyword",
+
                 "ObjectKeyword",
                 "StringKeyword",
                 "SymbolKeyword",
@@ -3447,6 +3475,17 @@
                 ]
             },
             "AwaitExpression": {
+                "extends": [
+                    "UnaryExpressionBase"
+                ],
+                "members": [
+                    {
+                        "name": "Expression",
+                        "type": "Expression"
+                    }
+                ]
+            },
+            "GoExpression": {
                 "extends": [
                     "UnaryExpressionBase"
                 ],

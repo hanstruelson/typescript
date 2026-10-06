@@ -47,6 +47,7 @@ import type {
     FunctionExpression,
     FunctionTypeNode,
     GetAccessorDeclaration,
+    GoExpression,
     HeritageClause,
     IfStatement,
     ImportAttribute,
@@ -223,6 +224,7 @@ import {
     updateFunctionExpression,
     updateFunctionTypeNode,
     updateGetAccessorDeclaration,
+    updateGoExpression,
     updateHeritageClause,
     updateIfStatement,
     updateImportAttribute,
@@ -988,6 +990,10 @@ const visitEachChildTable: Record<number, VisitEachChildFunction> = {
     [SyntaxKind.AwaitExpression]: (node: AwaitExpression, visitor: Visitor): AwaitExpression => {
         const _expression = visitNode(node.expression, visitor, isExpression);
         return updateAwaitExpression(node, _expression);
+    },
+    [SyntaxKind.GoExpression]: (node: GoExpression, visitor: Visitor): GoExpression => {
+        const _expression = visitNode(node.expression, visitor, isExpression);
+        return updateGoExpression(node, _expression);
     },
     [SyntaxKind.TypeAssertionExpression]: (node: TypeAssertion, visitor: Visitor): TypeAssertion => {
         const _type = visitNode(node.type, visitor, isTypeNode);

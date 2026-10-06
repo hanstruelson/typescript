@@ -19,7 +19,8 @@ type ModuleInput struct {
 
 func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*ast.Diagnostic) {
 	e := &emitter{file: input.File, resolver: input.Resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), targets: input.Targets}
-	e.coerce = options.CoerceAny.IsTrue()
+	e.coerce = !options.CoerceAny.IsFalse()
+	e.strictNulls = options.GetStrictOptionValue(options.StrictNullChecks)
 	if options.SourceMap.IsTrue() || options.InlineSourceMap.IsTrue() {
 		e.fail(input.File.AsNode(), "source maps are not supported")
 	}
@@ -31,6 +32,7 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 	}
 	e.collect(input.File.AsNode(), input.File.AsNode())
 	e.planNativeFunctions()
+	e.planGenericFunctions()
 	e.prepareClasses()
 	if len(e.diags) != 0 {
 		return "", e.diags

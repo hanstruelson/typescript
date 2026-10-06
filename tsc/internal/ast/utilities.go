@@ -419,7 +419,7 @@ func isUnaryExpressionKind(kind Kind) bool {
 		KindDeleteExpression,
 		KindTypeOfExpression,
 		KindVoidExpression,
-		KindAwaitExpression,
+		KindAwaitExpression, KindGoExpression,
 		KindTypeAssertionExpression:
 		return true
 	}
@@ -727,7 +727,7 @@ func IsTypeNodeKind(kind Kind) bool {
 	switch kind {
 	case KindAnyKeyword,
 		KindUnknownKeyword,
-		KindNumberKeyword,
+		KindNumberKeyword, KindFloat32Keyword, KindFloat64Keyword, KindIntKeyword, KindInt8Keyword, KindInt16Keyword, KindInt32Keyword, KindInt64Keyword, KindUintKeyword, KindUint8Keyword, KindUint16Keyword, KindUint32Keyword, KindUint64Keyword,
 		KindBigIntKeyword,
 		KindObjectKeyword,
 		KindBooleanKeyword,
@@ -2003,7 +2003,7 @@ func IsExpressionNode(node *Node) bool {
 		KindClassExpression, KindArrowFunction, KindVoidExpression, KindDeleteExpression, KindTypeOfExpression,
 		KindPrefixUnaryExpression, KindPostfixUnaryExpression, KindBinaryExpression, KindConditionalExpression,
 		KindSpreadElement, KindTemplateExpression, KindOmittedExpression, KindJsxElement, KindJsxSelfClosingElement,
-		KindJsxFragment, KindYieldExpression, KindAwaitExpression:
+		KindJsxFragment, KindYieldExpression, KindAwaitExpression, KindGoExpression:
 		return true
 	case KindMetaProperty:
 		// `import.<phase>` in `import.<phase>(...)` is not an expression
@@ -2064,7 +2064,7 @@ func IsPartOfTypeNode(node *Node) bool {
 		return true
 	}
 	switch node.Kind {
-	case KindAnyKeyword, KindUnknownKeyword, KindNumberKeyword, KindBigIntKeyword, KindStringKeyword,
+	case KindAnyKeyword, KindUnknownKeyword, KindNumberKeyword, KindFloat32Keyword, KindFloat64Keyword, KindIntKeyword, KindInt8Keyword, KindInt16Keyword, KindInt32Keyword, KindInt64Keyword, KindUintKeyword, KindUint8Keyword, KindUint16Keyword, KindUint32Keyword, KindUint64Keyword, KindBigIntKeyword, KindStringKeyword,
 		KindBooleanKeyword, KindSymbolKeyword, KindObjectKeyword, KindUndefinedKeyword, KindNullKeyword,
 		KindNeverKeyword:
 		return true

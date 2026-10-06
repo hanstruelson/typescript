@@ -1211,6 +1211,17 @@
                     "default": false,
                     "markdownDescription": "Enforces using indexed accessors for keys declared using an indexed type.\n\nSee the [TSConfig reference](https://www.typescriptlang.org/tsconfig/#noPropertyAccessFromIndexSignature)."
                 },
+                "coerceAny": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": true
+                },
                 "noUncheckedIndexedAccess": {
                     "anyOf": [
                         {
@@ -1653,6 +1664,7 @@
                                         "es2025",
                                         "es2026",
                                         "esnext",
+                                        "go",
                                         "es3"
                                     ],
                                     "enumDescriptions": [
@@ -1671,11 +1683,12 @@
                                         "",
                                         "",
                                         "",
+                                        "",
                                         "Deprecated."
                                     ]
                                 },
                                 {
-                                    "pattern": "^([Ee][Ss]5|[Ee][Ss]6|[Ee][Ss]2015|[Ee][Ss]2016|[Ee][Ss]2017|[Ee][Ss]2018|[Ee][Ss]2019|[Ee][Ss]2020|[Ee][Ss]2021|[Ee][Ss]2022|[Ee][Ss]2023|[Ee][Ss]2024|[Ee][Ss]2025|[Ee][Ss]2026|[Ee][Ss][Nn][Ee][Xx][Tt]|[Ee][Ss]3)$"
+                                    "pattern": "^([Ee][Ss]5|[Ee][Ss]6|[Ee][Ss]2015|[Ee][Ss]2016|[Ee][Ss]2017|[Ee][Ss]2018|[Ee][Ss]2019|[Ee][Ss]2020|[Ee][Ss]2021|[Ee][Ss]2022|[Ee][Ss]2023|[Ee][Ss]2024|[Ee][Ss]2025|[Ee][Ss]2026|[Ee][Ss][Nn][Ee][Xx][Tt]|[Gg][Oo]|[Ee][Ss]3)$"
                                 }
                             ]
                         },

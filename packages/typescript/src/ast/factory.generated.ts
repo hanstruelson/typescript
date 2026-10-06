@@ -70,6 +70,7 @@ import type {
     FunctionExpression,
     FunctionTypeNode,
     GetAccessorDeclaration,
+    GoExpression,
     HeritageClause,
     HeritageClauseElement,
     Identifier,
@@ -965,6 +966,8 @@ function cloneNodeData(node: Node): any {
             return { expression: n.expression };
         case SyntaxKind.AwaitExpression:
             return { expression: n.expression };
+        case SyntaxKind.GoExpression:
+            return { expression: n.expression };
         case SyntaxKind.TypeAssertionExpression:
             return { type: n.type, expression: n.expression };
         case SyntaxKind.UnionType:
@@ -1447,6 +1450,7 @@ const forEachChildTable: Record<number, ForEachChildFunction> = {
     [SyntaxKind.TypeOfExpression]: (data, cbNode, cbNodes) => visitNode(cbNode, data.expression),
     [SyntaxKind.VoidExpression]: (data, cbNode, cbNodes) => visitNode(cbNode, data.expression),
     [SyntaxKind.AwaitExpression]: (data, cbNode, cbNodes) => visitNode(cbNode, data.expression),
+    [SyntaxKind.GoExpression]: (data, cbNode, cbNodes) => visitNode(cbNode, data.expression),
     [SyntaxKind.TypeAssertionExpression]: (data, cbNode, cbNodes) =>
         visitNode(cbNode, data.type) ||
         visitNode(cbNode, data.expression),
@@ -2906,6 +2910,12 @@ const yieldEachChildTable: Record<number, YieldEachChildFunction> = {
         }
     },
     [SyntaxKind.AwaitExpression]: function* (data) {
+        if (data.expression) {
+            const res = yield data.expression;
+            if (res) return res;
+        }
+    },
+    [SyntaxKind.GoExpression]: function* (data) {
         if (data.expression) {
             const res = yield data.expression;
             if (res) return res;
@@ -4678,6 +4688,12 @@ export function createAwaitExpression(expression: Expression): AwaitExpression {
     }) as unknown as AwaitExpression;
 }
 
+export function createGoExpression(expression: Expression): GoExpression {
+    return new NodeObject(SyntaxKind.GoExpression, {
+        expression,
+    }) as unknown as GoExpression;
+}
+
 export function createTypeAssertion(type: TypeNode, expression: Expression): TypeAssertion {
     return new NodeObject(SyntaxKind.TypeAssertionExpression, {
         type,
@@ -5716,6 +5732,10 @@ export function updateVoidExpression(node: VoidExpression, expression: Expressio
 
 export function updateAwaitExpression(node: AwaitExpression, expression: Expression): AwaitExpression {
     return node.expression !== expression ? createAwaitExpression(expression) : node;
+}
+
+export function updateGoExpression(node: GoExpression, expression: Expression): GoExpression {
+    return node.expression !== expression ? createGoExpression(expression) : node;
 }
 
 export function updateTypeAssertion(node: TypeAssertion, type: TypeNode, expression: Expression): TypeAssertion {

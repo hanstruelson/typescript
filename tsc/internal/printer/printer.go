@@ -2305,7 +2305,7 @@ func (p *Printer) emitTypeNode(node *ast.TypeNode, precedence ast.TypePrecedence
 	// Keyword Types
 	case ast.KindAnyKeyword,
 		ast.KindUnknownKeyword,
-		ast.KindNumberKeyword,
+		ast.KindNumberKeyword, ast.KindFloat32Keyword, ast.KindFloat64Keyword, ast.KindIntKeyword, ast.KindInt8Keyword, ast.KindInt16Keyword, ast.KindInt32Keyword, ast.KindInt64Keyword, ast.KindUintKeyword, ast.KindUint8Keyword, ast.KindUint16Keyword, ast.KindUint32Keyword, ast.KindUint64Keyword,
 		ast.KindBigIntKeyword,
 		ast.KindObjectKeyword,
 		ast.KindBooleanKeyword,
@@ -3279,6 +3279,12 @@ func (p *Printer) emitExpression(node *ast.Expression, precedence ast.OperatorPr
 		p.emitTypeOfExpression(node.AsTypeOfExpression())
 	case ast.KindVoidExpression:
 		p.emitVoidExpression(node.AsVoidExpression())
+	case ast.KindGoExpression:
+		state := p.enterNode(node)
+		p.emitToken(ast.KindGoKeyword, node.Pos(), WriteKindKeyword, node)
+		p.writeSpace()
+		p.emitExpression(node.Expression(), ast.OperatorPrecedenceUnary)
+		p.exitNode(node, state)
 	case ast.KindAwaitExpression:
 		p.emitAwaitExpression(node.AsAwaitExpression())
 	case ast.KindPrefixUnaryExpression:

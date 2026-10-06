@@ -15,7 +15,7 @@ func (b *machineBuilder) propertyKey(node *ast.Node) string {
 	return b.typedTemp(stringLiteral(node.Text()), "*tsString")
 }
 func (b *machineBuilder) objectLiteral(node *ast.Node) string {
-	object := b.temp("tsNewObject()")
+	object := b.typedTemp("tsNewObject()", "*tsObject")
 	for _, property := range node.AsObjectLiteralExpression().Properties.Nodes {
 		switch property.Kind {
 		case ast.KindPropertyAssignment:
@@ -28,7 +28,7 @@ func (b *machineBuilder) objectLiteral(node *ast.Node) string {
 			b.emit("tsSet(" + object + "," + key + "," + value + ")")
 		case ast.KindSpreadAssignment:
 			value := b.expression(property.AsSpreadAssignment().Expression)
-			b.emit("tsObjectSpread(" + object + ".(*tsObject)," + value + ")")
+			b.emit("tsObjectSpread(" + object + "," + value + ")")
 		default:
 			b.e.fail(property, "object methods and accessors require receiver lowering")
 		}
@@ -55,20 +55,20 @@ func (b *machineBuilder) bindPattern(pattern *ast.Node, value string, initialize
 	excluded := []string{}
 	iterator := ""
 	if pattern.Kind == ast.KindArrayBindingPattern {
-		iterator = b.typedTemp("tsIterate("+value+")", "any")
+		iterator = b.typedTemp("tsIterate("+value+")", "*tsIterator")
 	}
 	for _, element := range pattern.AsBindingPattern().Elements.Nodes {
 		if element.Kind == ast.KindOmittedExpression || element.Name() == nil || element.Name().Kind == ast.KindOmittedExpression {
-			b.emit(iterator + ".(*tsIterator).next()")
+			b.emit(iterator + ".next()")
 			continue
 		}
 		n := element.AsBindingElement()
 		item := ""
 		if pattern.Kind == ast.KindArrayBindingPattern {
 			if n.DotDotDotToken != nil {
-				item = b.temp("tsIteratorRest(" + iterator + ".(*tsIterator))")
+				item = b.temp("tsIteratorRest(" + iterator + ")")
 			} else {
-				item = b.temp("tsIteratorValue(" + iterator + ".(*tsIterator))")
+				item = b.temp("tsIteratorValue(" + iterator + ")")
 			}
 		} else {
 			if n.DotDotDotToken != nil {
@@ -86,14 +86,14 @@ func (b *machineBuilder) bindPattern(pattern *ast.Node, value string, initialize
 		if n.Initializer != nil {
 			if b.direct {
 				b.emit("if tsIsUndefined(" + item + ") {")
-				defaultValue := b.expression(n.Initializer)
+				defaultValue := b.bindingDefault(element)
 				b.emit(item + "=" + defaultValue)
 				b.emit("}")
 			} else {
 				yes, end := b.block(), b.block()
 				b.emit(fmt.Sprintf("if tsIsUndefined(%s){m.pc=%d}else{m.pc=%d};return", item, yes, end))
 				b.current = yes
-				defaultValue := b.expression(n.Initializer)
+				defaultValue := b.bindingDefault(element)
 				b.emit(item + "=" + defaultValue)
 				b.jump(end)
 				b.current = end
@@ -149,28 +149,28 @@ func (b *machineBuilder) taggedTemplate(node *ast.Node) string {
 	return b.temp("tsCall(" + strings.Join(args, ",") + ")")
 }
 func (b *machineBuilder) spreadArguments(nodes []*ast.Node) string {
-	array := b.temp("&tsArray{}")
+	array := b.typedTemp("&tsArray{}", "*tsArray")
 	for _, node := range nodes {
 		if node.Kind == ast.KindSpreadElement {
 			value := b.expression(node.AsSpreadElement().Expression)
-			b.emit("tsArraySpread(" + array + ".(*tsArray)," + value + ")")
+			b.emit("tsArraySpread(" + array + "," + value + ")")
 		} else {
 			value := b.expression(node)
-			b.emit(array + ".(*tsArray).values=append(" + array + ".(*tsArray).values," + value + ")")
+			b.emit(array + ".values=append(" + array + ".values," + value + ")")
 		}
 	}
-	return array + ".(*tsArray).values"
+	return array + ".values"
 }
 func (b *machineBuilder) forInStatement(node *ast.Node, label string) {
 	n := node.AsForInOrOfStatement()
 	value := b.expression(n.Expression)
 	keys := b.temp("tsForInKeys(" + value + ")")
-	iterator := b.typedTemp("tsIterate("+keys+")", "any")
+	iterator := b.typedTemp("tsIterate("+keys+")", "*tsIterator")
 	test, body, end := b.block(), b.block(), b.block()
 	b.jump(test)
 	b.loops = append(b.loops, loopTarget{end, test, b.depth, label})
 	b.current = test
-	b.emit(fmt.Sprintf("if %s.(*tsIterator).next(){m.pc=%d}else{m.pc=%d};return", iterator, body, end))
+	b.emit(fmt.Sprintf("if %s.next(){m.pc=%d}else{m.pc=%d};return", iterator, body, end))
 	b.current = body
 	if n.Initializer.Kind == ast.KindVariableDeclarationList {
 		decl := n.Initializer.AsVariableDeclarationList().Declarations.Nodes[0]
@@ -179,13 +179,13 @@ func (b *machineBuilder) forInStatement(node *ast.Node, label string) {
 			b.e.fail(decl, "for-in requires an identifier binding")
 		} else if cell.lexical {
 			b.allocate(cell)
-			b.emit(cell.name + ".init(" + iterator + ".(*tsIterator).value)")
+			b.emit(cell.name + ".init(" + iterator + ".value)")
 		} else {
-			b.emit(cell.name + ".set(" + iterator + ".(*tsIterator).value)")
+			b.emit(cell.name + ".set(" + iterator + ".value)")
 		}
 	} else {
 		_, write := b.lvalue(n.Initializer)
-		b.emit(write(iterator + ".(*tsIterator).value"))
+		b.emit(write(iterator + ".value"))
 	}
 	b.statement(n.Statement)
 	b.jump(test)
@@ -194,4 +194,29 @@ func (b *machineBuilder) forInStatement(node *ast.Node, label string) {
 }
 func (b *machineBuilder) objectBuiltin(name string) string {
 	return "tsFunc(func(args ...tsValue)tsValue{return tsObjectBuiltin(" + strconv.Quote(name) + ",args)})"
+}
+
+func (b *machineBuilder) bindingDefault(element *ast.Node) string {
+	initializer := element.AsBindingElement().Initializer
+	if cell := b.e.bindings[element]; cell != nil && cell.primitive.numeric() && cell.primitive.nulls == 0 {
+		return b.numericExpression(initializer, cell.primitive)
+	}
+	return b.expression(initializer)
+}
+
+func (b *machineBuilder) arrayLiteral(nodes []*ast.Node) string {
+	array := b.typedTemp("&tsArray{}", "*tsArray")
+	for _, node := range nodes {
+		switch node.Kind {
+		case ast.KindOmittedExpression:
+			b.emit("tsArrayHole(" + array + ")")
+		case ast.KindSpreadElement:
+			value := b.expression(node.AsSpreadElement().Expression)
+			b.emit("tsArraySpread(" + array + "," + value + ")")
+		default:
+			value := b.expression(node)
+			b.emit(array + ".values=append(" + array + ".values," + value + ")")
+		}
+	}
+	return array
 }

@@ -48,29 +48,36 @@ func (p *Program) emitGoBundle(ctx context.Context, options EmitOptions, files [
 		byName[names[index]] = file
 	}
 	for _, file := range files {
-		for _, node := range file.Statements.Nodes {
+		var visit func(*ast.Node)
+		visit = func(node *ast.Node) {
 			var specifier *ast.Node
 			switch node.Kind {
 			case ast.KindImportDeclaration:
 				specifier = node.AsImportDeclaration().ModuleSpecifier
 			case ast.KindExportDeclaration:
 				specifier = node.AsExportDeclaration().ModuleSpecifier
+			case ast.KindCallExpression:
+				call := node.AsCallExpression()
+				if call.Expression.Kind == ast.KindImportKeyword && len(call.Arguments.Nodes) == 1 && call.Arguments.Nodes[0].Kind == ast.KindStringLiteral {
+					specifier = call.Arguments.Nodes[0]
+				}
 			}
-			if specifier == nil {
-				continue
+			if specifier != nil {
+				resolved := p.GetResolvedModuleFromModuleSpecifier(file, specifier)
+				if resolved != nil && resolved.IsResolved() {
+					target := p.GetSourceFileForResolvedModule(resolved)
+					if target != nil && byName[target.FileName().AsString()] != nil {
+						name := target.FileName().AsString()
+						targets[node] = name
+						imported[name] = true
+					}
+				}
 			}
-			resolved := p.GetResolvedModuleFromModuleSpecifier(file, specifier)
-			if resolved == nil || !resolved.IsResolved() {
-				continue
-			}
-			target := p.GetSourceFileForResolvedModule(resolved)
-			if target != nil && byName[target.FileName().AsString()] != nil {
-				name := target.FileName().AsString()
-				targets[node] = name
-				imported[name] = true
-			}
+			node.ForEachChild(func(child *ast.Node) bool { visit(child); return false })
 		}
+		visit(file.AsNode())
 	}
+
 	var candidates []*ast.SourceFile
 	for _, name := range p.opts.Config.FileNames() {
 		if file := byName[name.AsString()]; file != nil {

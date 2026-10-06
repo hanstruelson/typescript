@@ -70,7 +70,6 @@ export interface CompilerOptions {
     moduleDetection?: ModuleDetectionKind | undefined;
     newLine?: NewLineKind | undefined;
     noEmit?: boolean | undefined;
-    coerceAny?: boolean | undefined;
     noCheck?: boolean | undefined;
     noErrorTruncation?: boolean | undefined;
     noFallthroughCasesInSwitch?: boolean | undefined;
@@ -80,6 +79,7 @@ export interface CompilerOptions {
     noEmitHelpers?: boolean | undefined;
     noLib?: boolean | undefined;
     noPropertyAccessFromIndexSignature?: boolean | undefined;
+    coerceAny?: boolean | undefined;
     noUncheckedIndexedAccess?: boolean | undefined;
     noEmitOnError?: boolean | undefined;
     noUnusedLocals?: boolean | undefined;

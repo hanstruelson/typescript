@@ -719,6 +719,7 @@ type Checker struct {
 	nullWideningType                            *Type
 	stringType                                  *Type
 	numberType                                  *Type
+	nativeNumericTypes                          map[ast.Kind]*Type
 	bigintType                                  *Type
 	regularFalseType                            *Type
 	falseType                                   *Type
@@ -1000,6 +1001,7 @@ func NewChecker(program Program, tracer *Tracer) (*Checker, *sync.Mutex) {
 	c.nullWideningType = c.createWideningType(c.nullType)
 	c.stringType = c.newIntrinsicType(TypeFlagsString, "string")
 	c.numberType = c.newIntrinsicType(TypeFlagsNumber, "number")
+	c.nativeNumericTypes = map[ast.Kind]*Type{ast.KindFloat32Keyword: c.newIntrinsicType(TypeFlagsNumber, "float32"), ast.KindFloat64Keyword: c.newIntrinsicType(TypeFlagsNumber, "float64"), ast.KindIntKeyword: c.newIntrinsicType(TypeFlagsNumber, "int"), ast.KindInt8Keyword: c.newIntrinsicType(TypeFlagsNumber, "int8"), ast.KindInt16Keyword: c.newIntrinsicType(TypeFlagsNumber, "int16"), ast.KindInt32Keyword: c.newIntrinsicType(TypeFlagsNumber, "int32"), ast.KindInt64Keyword: c.newIntrinsicType(TypeFlagsNumber, "int64"), ast.KindUintKeyword: c.newIntrinsicType(TypeFlagsNumber, "uint"), ast.KindUint8Keyword: c.newIntrinsicType(TypeFlagsNumber, "uint8"), ast.KindUint16Keyword: c.newIntrinsicType(TypeFlagsNumber, "uint16"), ast.KindUint32Keyword: c.newIntrinsicType(TypeFlagsNumber, "uint32"), ast.KindUint64Keyword: c.newIntrinsicType(TypeFlagsNumber, "uint64")}
 	c.bigintType = c.newIntrinsicType(TypeFlagsBigInt, "bigint")
 	c.regularFalseType = c.newLiteralType(TypeFlagsBooleanLiteral, false, nil)
 	c.falseType = c.newLiteralType(TypeFlagsBooleanLiteral, false, c.regularFalseType)
@@ -7976,6 +7978,8 @@ func (c *Checker) checkExpressionWorker(node *ast.Node, checkMode CheckMode) *Ty
 		return c.checkDeleteExpression(node)
 	case ast.KindVoidExpression:
 		return c.checkVoidExpression(node)
+	case ast.KindGoExpression:
+		return c.createPromiseType(c.getAwaitedType(c.checkExpression(node.Expression())))
 	case ast.KindAwaitExpression:
 		return c.checkAwaitExpression(node)
 	case ast.KindPrefixUnaryExpression:
@@ -11090,6 +11094,9 @@ func (c *Checker) checkPrefixUnaryExpression(node *ast.Node) *Type {
 			if c.maybeTypeOfKindConsideringBaseConstraint(operandType, TypeFlagsBigIntLike) {
 				c.error(expr.Operand, diagnostics.Operator_0_cannot_be_applied_to_type_1, scanner.TokenToString(expr.Operator), c.TypeToString(c.getBaseTypeOfLiteralType(operandType)))
 			}
+			if c.nativeNumericName(operandType) != "" {
+				return operandType
+			}
 			return c.numberType
 		}
 		return c.getUnaryResultType(operandType)
@@ -11130,6 +11137,9 @@ func (c *Checker) checkPostfixUnaryExpression(node *ast.Node) *Type {
 }
 
 func (c *Checker) getUnaryResultType(operandType *Type) *Type {
+	if c.nativeNumericName(operandType) != "" {
+		return operandType
+	}
 	if c.maybeTypeOfKind(operandType, TypeFlagsBigIntLike) {
 		if c.isTypeAssignableToKind(operandType, TypeFlagsAnyOrUnknown) || c.maybeTypeOfKind(operandType, TypeFlagsNumberLike) {
 			return c.numberOrBigIntType
@@ -12594,7 +12604,7 @@ func (c *Checker) checkBinaryLikeExpression(left *ast.Node, operatorToken *ast.N
 		var resultType *Type
 		// If both are any or unknown, allow operation; assume it will resolve to number
 		if c.isTypeAssignableToKind(leftType, TypeFlagsAnyOrUnknown) && c.isTypeAssignableToKind(rightType, TypeFlagsAnyOrUnknown) || !c.maybeTypeOfKind(leftType, TypeFlagsBigIntLike) && !c.maybeTypeOfKind(rightType, TypeFlagsBigIntLike) {
-			resultType = c.numberType
+			resultType = c.nativeNumericResult(leftType, rightType)
 		} else if c.bothAreBigIntLike(leftType, rightType) {
 			switch operator {
 			case ast.KindGreaterThanGreaterThanGreaterThanToken, ast.KindGreaterThanGreaterThanGreaterThanEqualsToken:
@@ -12635,7 +12645,7 @@ func (c *Checker) checkBinaryLikeExpression(left *ast.Node, operatorToken *ast.N
 		if c.isTypeAssignableToKindEx(leftType, TypeFlagsNumberLike, true /*strict*/) && c.isTypeAssignableToKindEx(rightType, TypeFlagsNumberLike, true /*strict*/) {
 			// Operands of an enum type are treated as having the primitive type Number.
 			// If both operands are of the Number primitive type, the result is of the Number primitive type.
-			resultType = c.numberType
+			resultType = c.nativeNumericResult(leftType, rightType)
 		} else if c.isTypeAssignableToKindEx(leftType, TypeFlagsBigIntLike, true /*strict*/) && c.isTypeAssignableToKindEx(rightType, TypeFlagsBigIntLike, true /*strict*/) {
 			// If both operands are of the BigInt primitive type, the result is of the BigInt primitive type.
 			resultType = c.bigintType
@@ -21200,7 +21210,7 @@ func isThislessVariableLikeDeclaration(node *ast.Node) bool {
 // free of this references.
 func isThislessType(node *ast.Node) bool {
 	switch node.Kind {
-	case ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindStringKeyword, ast.KindNumberKeyword, ast.KindBigIntKeyword, ast.KindBooleanKeyword,
+	case ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindStringKeyword, ast.KindNumberKeyword, ast.KindFloat32Keyword, ast.KindFloat64Keyword, ast.KindIntKeyword, ast.KindInt8Keyword, ast.KindInt16Keyword, ast.KindInt32Keyword, ast.KindInt64Keyword, ast.KindUintKeyword, ast.KindUint8Keyword, ast.KindUint16Keyword, ast.KindUint32Keyword, ast.KindUint64Keyword, ast.KindBigIntKeyword, ast.KindBooleanKeyword,
 		ast.KindSymbolKeyword, ast.KindObjectKeyword, ast.KindVoidKeyword, ast.KindUndefinedKeyword, ast.KindNeverKeyword, ast.KindLiteralType:
 		return true
 	case ast.KindArrayType:
@@ -23286,6 +23296,8 @@ func (c *Checker) getTypeFromTypeNodeWorker(node *ast.Node) *Type {
 		return c.unknownType
 	case ast.KindStringKeyword:
 		return c.stringType
+	case ast.KindFloat32Keyword, ast.KindFloat64Keyword, ast.KindIntKeyword, ast.KindInt8Keyword, ast.KindInt16Keyword, ast.KindInt32Keyword, ast.KindInt64Keyword, ast.KindUintKeyword, ast.KindUint8Keyword, ast.KindUint16Keyword, ast.KindUint32Keyword, ast.KindUint64Keyword:
+		return c.nativeNumericTypes[node.Kind]
 	case ast.KindNumberKeyword:
 		return c.numberType
 	case ast.KindBigIntKeyword:
@@ -32697,4 +32709,43 @@ func (c *Checker) GetEmitResolver() *EmitResolver {
 
 func (c *Checker) GetAliasedSymbol(symbol *ast.Symbol) *ast.Symbol {
 	return c.resolveAlias(symbol)
+}
+
+func (c *Checker) nativeNumericName(t *Type) string {
+	if t != nil && t != c.numberType && t.flags == TypeFlagsNumber {
+		for _, native := range c.nativeNumericTypes {
+			if t == native {
+				return t.AsIntrinsicType().IntrinsicName()
+			}
+		}
+	}
+	return ""
+}
+func (c *Checker) nativeNumericResult(a, b *Type) *Type {
+	left, right := c.nativeNumericName(a), c.nativeNumericName(b)
+	if left == "" && right == "" {
+		return c.numberType
+	}
+	if left == "" && a.flags&TypeFlagsNumberLiteral != 0 {
+		return b
+	}
+	if right == "" && b.flags&TypeFlagsNumberLiteral != 0 {
+		return a
+	}
+	if left == "" {
+		left = "number"
+	}
+	if right == "" {
+		right = "number"
+	}
+	name := core.NativeNumericPromotion(left, right)
+	if name == "float64" && (left == "number" || right == "number") {
+		return c.numberType
+	}
+	for _, native := range c.nativeNumericTypes {
+		if native.AsIntrinsicType().IntrinsicName() == name {
+			return native
+		}
+	}
+	return c.numberType
 }

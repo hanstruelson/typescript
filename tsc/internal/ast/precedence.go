@@ -264,7 +264,7 @@ func GetOperatorPrecedence(nodeKind Kind, operatorKind Kind, flags OperatorPrece
 		KindTypeOfExpression,
 		KindVoidExpression,
 		KindDeleteExpression,
-		KindAwaitExpression:
+		KindAwaitExpression, KindGoExpression:
 		return OperatorPrecedenceUnary
 
 	case KindPostfixUnaryExpression:

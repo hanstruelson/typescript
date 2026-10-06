@@ -3403,6 +3403,11 @@ func (b *NodeBuilderImpl) typeToTypeNode(t *Type) *ast.TypeNode {
 		return b.f.NewKeywordTypeNode(ast.KindStringKeyword)
 	}
 	if t.flags&TypeFlagsNumber != 0 {
+		for kind, native := range b.ch.nativeNumericTypes {
+			if t == native {
+				return b.f.NewKeywordTypeNode(kind)
+			}
+		}
 		b.ctx.approximateLength += 6
 		return b.f.NewKeywordTypeNode(ast.KindNumberKeyword)
 	}

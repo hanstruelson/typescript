@@ -8,6 +8,8 @@ type tsImportRef struct { module *tsModule; name string }
 type tsNamespace struct { module *tsModule }
 type tsModuleRequest struct { missing map[string]struct{}; full bool; complete func(tsResult) }
 type tsModule struct {
+ initializeOnce sync.Once
+ exportMu sync.RWMutex
  name string
  loop *tsLoop
  initialize func(*tsModule)
@@ -18,14 +20,22 @@ type tsModule struct {
  failure tsValue
 }
 func tsNewModule(loop *tsLoop,name string) *tsModule {module:= &tsModule{name:name,loop:loop,exports:make(map[string]*tsExport)};loop.modules=append(loop.modules,module);return module}
+// Initializers always run on the registry's owner loop. Requests from workers
+// wait through task completion, while sharing the same module and export cells.
+func(module *tsModule)load(loop *tsLoop)*tsPromise {
+ if loop==module.loop {p:=loop.promise();module.request(nil,true,func(r tsResult){if !r.rejected{r.value=tsNamespaceValue(tsNamespace{module})};p.settle(r)});return p}
+ done:=make(chan tsResult,1)
+ module.loop.post(func(){module.request(nil,true,func(r tsResult){if !r.rejected{r.value=tsNamespaceValue(tsNamespace{module})};done<-r})})
+ return loop.start(func()tsResult{return <-done})
+}
 func (module *tsModule) read(name string) tsValue {return module.readSeen(name,make(map[tsImportRef]bool))}
 func (module *tsModule) readSeen(name string,seen map[tsImportRef]bool) tsValue {
  key:=tsImportRef{module,name};if seen[key] {panic("Circular export alias: "+module.name+":"+name)};seen[key]=true
- entry:=module.exports[name]
+ module.exportMu.RLock();entry:=module.exports[name];module.exportMu.RUnlock()
  if entry==nil || !entry.ready {panic("Export is not ready: "+module.name+":"+name)}
  value:=entry.value
- if entry.binding!=nil {if !entry.binding.initializedState() {panic("Export binding is uninitialized")};value=entry.binding.raw()}
- if ref,ok:=value.(tsImportRef);ok {return ref.module.readSeen(ref.name,seen)}
+ if entry.binding.raw!=nil {if !entry.binding.initializedState() {panic("Export binding is uninitialized")};value=entry.binding.raw()}
+ if value.kind==tsImportKind {ref:=(*tsImportRef)(value.ref);return ref.module.readSeen(ref.name,seen)}
  return value
 }
 func (module *tsModule) cached(names []string,full bool)(tsResult,bool){
@@ -51,12 +61,12 @@ func (module *tsModule) schedule(){
  module.loop.ready=append(module.loop.ready,func(){
   module.queued=false
   if module.finished || module.failed || len(module.requests)==0 {return}
-  if module.machine==nil {module.initialize(module)}
+  module.initializeOnce.Do(func(){module.initialize(module)})
   if !module.machine.blocked {module.machine.suspended=false;module.machine.resume()}
  })
 }
 func (module *tsModule) publish(name string,value tsValue,binding tsBindingCell){
- module.exports[name]= &tsExport{ready:true,value:value,binding:binding}
+ module.exportMu.Lock();module.exports[name]= &tsExport{ready:true,value:value,binding:binding};module.exportMu.Unlock()
  remaining:=module.requests[:0]
  for _,request:=range module.requests {
   delete(request.missing,name)

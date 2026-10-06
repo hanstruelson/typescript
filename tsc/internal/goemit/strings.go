@@ -31,7 +31,7 @@ type tsString struct {units []uint16}
 func tsStringUnits(units []uint16) *tsString {return &tsString{units:units}}
 func tsStringUTF8(text string) *tsString {return tsStringUnits(utf16.Encode([]rune(text)))}
 func(s *tsString) String() string {return string(utf16.Decode(s.units))}
-func tsStringValue(value tsValue) *tsString {switch v:=value.(type){case *tsString:return v;case string:return tsStringUTF8(v);case float64:return tsStringUTF8(tsEngine().ToValue(v).String());case *tsArray:parts:=[]*tsString{};for i,item:=range v.values {if i>0 {parts=append(parts,tsStringUTF8(","))};if !tsNullish(item){parts=append(parts,tsStringValue(item))}};return tsStringConcat(parts...);case *tsObject:if method,ok:=v.values["toString"].(*tsFunction);ok{return tsStringValue(tsCall(method))};return tsStringUTF8("[object Object]");case tsDynamicObject:return tsStringUTF8("[object Object]");case *tsECMAObject:return tsStringUTF8(v.object.String());default:return tsStringUTF8(tsText(value))}}
+func tsStringValue(value tsValue)*tsString{switch value.kind{case tsStringKind:return (*tsString)(value.ref);case tsNumberKind:return tsStringUTF8(tsEngine().ToValue(value.number).String());case tsArrayKind:v:=(*tsArray)(value.ref);parts:=[]*tsString{};for i,item:=range v.values{if i>0{parts=append(parts,tsStringUTF8(","))};if !tsNullish(item){parts=append(parts,tsStringValue(item))}};return tsStringConcat(parts...);case tsObjectKind:v:=(*tsObject)(value.ref);if method:=v.values["toString"];method.kind==tsFunctionKind{return tsStringValue(tsCall(method))};return tsStringUTF8("[object Object]");case tsInstanceKind:return tsStringUTF8("[object Object]");case tsECMAKind:return tsStringUTF8((*tsECMAObject)(value.ref).object.String());default:return tsStringUTF8(tsText(value))}}
 func tsStringEqual(a,b *tsString) bool {if len(a.units)!=len(b.units){return false};for i,c:=range a.units {if c!=b.units[i]{return false}};return true}
 func tsStringCompare(a,b *tsString) int {for i,c:=range a.units {if i>=len(b.units){return 1};if c<b.units[i]{return -1};if c>b.units[i]{return 1}};if len(a.units)<len(b.units){return -1};return 0}
 func tsStringConcat(values ...*tsString) *tsString {size:=0;for _,s:=range values {size+=len(s.units)};result:=make([]uint16,0,size);for _,s:=range values {result=append(result,s.units...)};return tsStringUnits(result)}
@@ -43,7 +43,7 @@ func(s *tsString) slice(start,end int) *tsString {return tsStringUnits(s.units[s
 func tsStringIndex(s,search *tsString,start int) int {for i:=start;i+len(search.units)<=len(s.units);i++ {match:=true;for j,c:=range search.units {if s.units[i+j]!=c {match=false;break}};if match{return i}};return -1}
 func tsStringWhitespace(c uint16) bool {switch c {case 0x9,0xa,0xb,0xc,0xd,0x20,0xa0,0x1680,0x2028,0x2029,0x202f,0x205f,0x3000,0xfeff:return true};return c>=0x2000&&c<=0x200a}
 func tsStringWellFormed(s *tsString,replace bool) tsValue {var result []uint16;if replace {result=append([]uint16{},s.units...)};for i:=0;i<len(s.units);i++ {c:=s.units[i];if c>=0xd800&&c<=0xdbff {if i+1<len(s.units)&&s.units[i+1]>=0xdc00&&s.units[i+1]<=0xdfff {i++;continue};if !replace{return false};result[i]=0xfffd}else if c>=0xdc00&&c<=0xdfff {if !replace{return false};result[i]=0xfffd}};if replace{return tsStringUnits(result)};return true}
-func tsRejectRegExp(value tsValue) {if _,ok:=value.(*tsRegExp);ok {panic("String search argument must not be a RegExp")}}
+func tsRejectRegExp(value tsValue){if value.kind==tsRegExpKind{panic("String search argument must not be a RegExp")}}
 func tsStringGet(s *tsString,key tsValue) tsValue {
  name:=tsText(key);if name=="length" {return float64(len(s.units))}
  if index,err:=strconv.Atoi(name);err==nil && strconv.Itoa(index)==name {if index<0||index>=len(s.units){return tsU};return s.slice(index,index+1)}
@@ -75,7 +75,7 @@ func tsStringMethod(s *tsString,name string,args []tsValue) tsValue {
  case "trim","trimStart","trimEnd","trimLeft","trimRight":start,end:=0,length;if name!="trimEnd"&&name!="trimRight" {for start<end&&tsStringWhitespace(s.units[start]){start++}};if name!="trimStart"&&name!="trimLeft" {for end>start&&tsStringWhitespace(s.units[end-1]){end--}};return s.slice(start,end)
  case "isWellFormed":return tsStringWellFormed(s,false)
  case "toWellFormed":return tsStringWellFormed(s,true)
- case "split":if _,regex:=a.(*tsRegExp);regex{return tsRegexString(s,name,args)};limit:=uint32(0xffffffff);if !tsIsUndefined(b){limit=tsUint32(b)};out:= &tsArray{};if limit==0{return out};if tsIsUndefined(a){out.values=[]tsValue{s};return out};separator:=tsStringValue(a);if len(separator.units)==0 {for i:=0;i<length&&uint32(len(out.values))<limit;i++ {out.values=append(out.values,s.slice(i,i+1))};return out};start:=0;for uint32(len(out.values))<limit {index:=tsStringIndex(s,separator,start);if index<0 {out.values=append(out.values,s.slice(start,length));break};out.values=append(out.values,s.slice(start,index));start=index+len(separator.units)};return out
+ case "split":if a.kind==tsRegExpKind{return tsRegexString(s,name,args)};limit:=uint32(0xffffffff);if !tsIsUndefined(b){limit=tsUint32(b)};out:= &tsArray{};if limit==0{return out};if tsIsUndefined(a){out.values=[]tsValue{s};return out};separator:=tsStringValue(a);if len(separator.units)==0 {for i:=0;i<length&&uint32(len(out.values))<limit;i++ {out.values=append(out.values,s.slice(i,i+1))};return out};start:=0;for uint32(len(out.values))<limit {index:=tsStringIndex(s,separator,start);if index<0 {out.values=append(out.values,s.slice(start,length));break};out.values=append(out.values,s.slice(start,index));start=index+len(separator.units)};return out
  case "localeCompare","normalize","toLowerCase","toUpperCase","toLocaleLowerCase","toLocaleUpperCase":return tsUnicodeString(s,name,args)
  case "match","matchAll","replace","replaceAll","search":return tsRegexString(s,name,args)
  }
@@ -91,7 +91,7 @@ func tsStringTransform(s *tsString, transform func(string)string)*tsString {
  flush(len(s.units));return tsStringUnits(out)
 }
 func tsStringLocale(value tsValue)language.Tag {
- if tsIsUndefined(value){return language.Und};if array,ok:=value.(*tsArray);ok {if len(array.values)==0{return language.Und};value=array.values[0]}
+ if tsIsUndefined(value){return language.Und};if value.kind==tsArrayKind {array:=(*tsArray)(value.ref);if len(array.values)==0{return language.Und};value=array.values[0]}
  tag,err:=language.Parse(tsStringValue(value).String());if err!=nil {panic(tsThrown{&tsRuntimeError{name:"RangeError",message:"Invalid language tag"}})};return tag
 }
 func tsUnicodeString(s *tsString,name string,args []tsValue)tsValue {

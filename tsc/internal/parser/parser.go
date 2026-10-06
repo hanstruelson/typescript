@@ -2824,7 +2824,7 @@ func (p *Parser) nextIsStartOfType() bool {
 
 func (p *Parser) parseNonArrayType() *ast.Node {
 	switch p.token {
-	case ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindStringKeyword, ast.KindNumberKeyword, ast.KindBigIntKeyword,
+	case ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindStringKeyword, ast.KindNumberKeyword, ast.KindFloat32Keyword, ast.KindFloat64Keyword, ast.KindIntKeyword, ast.KindInt8Keyword, ast.KindInt16Keyword, ast.KindInt32Keyword, ast.KindInt64Keyword, ast.KindUintKeyword, ast.KindUint8Keyword, ast.KindUint16Keyword, ast.KindUint32Keyword, ast.KindUint64Keyword, ast.KindBigIntKeyword,
 		ast.KindSymbolKeyword, ast.KindBooleanKeyword, ast.KindUndefinedKeyword, ast.KindNeverKeyword, ast.KindObjectKeyword:
 		state := p.mark()
 		keywordTypeNode := p.parseKeywordTypeNode()
@@ -4784,7 +4784,7 @@ func (p *Parser) parseUnaryExpressionOrHigher() *ast.Expression {
 
 func (p *Parser) isUpdateExpression() bool {
 	switch p.token {
-	case ast.KindPlusToken, ast.KindMinusToken, ast.KindTildeToken, ast.KindExclamationToken, ast.KindDeleteKeyword, ast.KindTypeOfKeyword, ast.KindVoidKeyword, ast.KindAwaitKeyword:
+	case ast.KindPlusToken, ast.KindMinusToken, ast.KindTildeToken, ast.KindExclamationToken, ast.KindDeleteKeyword, ast.KindTypeOfKeyword, ast.KindVoidKeyword, ast.KindAwaitKeyword, ast.KindGoKeyword:
 		return false
 	case ast.KindLessThanToken:
 		return p.languageVariant == core.LanguageVariantJSX
@@ -5157,6 +5157,13 @@ func (p *Parser) parseSimpleUnaryExpression() *ast.Expression {
 		// //  UnaryExpression (modified):
 		// //      < type > UnaryExpression
 		return p.parseTypeAssertion()
+	case ast.KindGoKeyword:
+		if p.lookAhead((*Parser).nextTokenIsIdentifierOrKeywordOrLiteralOnSameLine) {
+			pos := p.nodePos()
+			p.nextToken()
+			return p.finishNode(p.factory.NewGoExpression(p.parseSimpleUnaryExpression()), pos)
+		}
+		return p.parseUpdateExpression()
 	case ast.KindAwaitKeyword:
 		if p.isAwaitExpression() {
 			return p.parseAwaitExpression()
@@ -6269,7 +6276,7 @@ func (p *Parser) isStartOfLeftHandSideExpression() bool {
 
 func (p *Parser) isStartOfType(inStartOfParameter bool) bool {
 	switch p.token {
-	case ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindStringKeyword, ast.KindNumberKeyword, ast.KindBigIntKeyword,
+	case ast.KindAnyKeyword, ast.KindUnknownKeyword, ast.KindStringKeyword, ast.KindNumberKeyword, ast.KindFloat32Keyword, ast.KindFloat64Keyword, ast.KindIntKeyword, ast.KindInt8Keyword, ast.KindInt16Keyword, ast.KindInt32Keyword, ast.KindInt64Keyword, ast.KindUintKeyword, ast.KindUint8Keyword, ast.KindUint16Keyword, ast.KindUint32Keyword, ast.KindUint64Keyword, ast.KindBigIntKeyword,
 		ast.KindBooleanKeyword, ast.KindReadonlyKeyword, ast.KindSymbolKeyword, ast.KindUniqueKeyword, ast.KindVoidKeyword,
 		ast.KindUndefinedKeyword, ast.KindNullKeyword, ast.KindThisKeyword, ast.KindTypeOfKeyword, ast.KindNeverKeyword,
 		ast.KindOpenBraceToken, ast.KindOpenBracketToken, ast.KindLessThanToken, ast.KindBarToken, ast.KindAmpersandToken,

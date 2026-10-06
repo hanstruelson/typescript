@@ -6,13 +6,17 @@ comparisons against JavaScript and structural checks of the generated Go.
 
 ## Performance and representations
 
-The current production representation is Go's `any`. On 64-bit Go, an interface
-occupies two words (16 bytes): type information and data. This already handles
-references with garbage-collector visibility. It is not a nine-byte tagged union. The [representation benchmarks](benchmarks/README.md)
-compare it with custom containers. The recommended starting point for a custom
-implementation is an inline tag/native numeric payload plus checked Go-managed
-reference storage (32 bytes on amd64). Migration is paused for this experiment;
-the production ABI has not changed.
+The production dynamic representation is now `tsValue`, a 24-byte container on
+64-bit Go: a `uint64` tag, a `float64` payload, and a GC-visible `unsafe.Pointer`.
+Native numbers retain JavaScript Number semantics, including fractions, NaN,
+infinities, and negative zero. Primitive boundaries, null checks, truthiness,
+and strict equality inspect tags directly. The generated-source adaptation pass
+uses explicit constructors and rejects interface assertions or unknown conversions
+on JavaScript values. Object, class, regex, and module helpers dispatch directly
+on tags. Concrete class casts verify layout identity; parent-typed receivers use
+callback views. Module live bindings use callback records. Remaining interfaces
+serve Goja and Go host APIs or static generic-type selection.
+The [representation benchmarks](benchmarks/README.md) compare the storage choices.
 Nullable primitive values have a native payload and a null/undefined/value tag;
 Go alignment means their actual size depends on the payload. Typed primitive
 bindings have additional initialization and const tracking.
@@ -46,8 +50,10 @@ not prerequisites for this backend.
 ## One typed-boundary policy
 
 Today typed parameters, assignments, initializers, and returns have runtime
-checks or conversions. Comparisons still follow the implemented JavaScript
-operator helpers; mixed-any comparison checks described below are planned.
+checks or conversions. Mixed dynamic/typed strict equality and ordering comparisons now share the
+boundary policy. Native number, boolean, and UTF-16 string comparisons use
+direct operations; nullable primitives preserve their presence tags. Loose
+equality operators and complete object ToPrimitive semantics remain work.
 
 Build one conversion/check planner used by every lowering site: declarations,
 assignments, parameter defaults, function calls, return values, fields, bracket
@@ -56,7 +62,7 @@ operands once, left to right, then check or convert saved values. Primitive-to-
 primitive operations with proven representations bypass dynamic checks.
 
 For a mixed `any`/typed primitive comparison, apply the requested policy to the
-`any` operand: default checks its runtime type; `coerceAny` converts it. This
+`any` operand: default converts it; `coerceAny: false` checks its runtime type. This
 includes `==`, `!=`, `===`, `!==`, and ordering comparisons. Nullable destinations
 retain their allowed tags. Comparing against null/undefined sentinels needs its
 own tag rule rather than an arbitrary primitive conversion. Dynamic arithmetic
@@ -86,7 +92,7 @@ with the option hint. Check native output separately from behavioral correctness
 | Static blocks | Execute generated block bodies interleaved with field initializers in source order. Each block gets its own locals and can reuse structured or machine lowering. | Multiple blocks, scoped bindings, loops, exceptions, inheritance, and initialization side effects. |
 | Accessors and descriptors | Add property descriptors with optional getter/setter, writable/enumerable/configurable attributes. Known accessors become direct Go calls; dynamic access uses descriptors. `super` chooses the lexical owner's descriptor but passes the current receiver. | Getter/setter overrides, getter-only writes, side effects, descriptors, receiver identity, and multi-level super. |
 | ECMAScript private fields/methods | Resolve private names by declaration identity, emit distinct slots for every declaring class, and track brands separately from ordinary keys. Private accesses bypass hashing. Keep static private brands attached to their declaring singleton. | Parent and child `#x` names, brand errors on wrong receivers, private methods, and static private inheritance. |
-| Parameter properties | Create field slots from constructor parameter declarations and initialize them at TypeScript's defined point after base construction. Reuse parameter boundary checks. | Defaults, field initializer order, derived constructors, nullable and dynamic parameters. |
+| Parameter properties | Implemented with native slots, synthetic field declarations, direct validated writes, and assignments after base construction. | JavaScript comparisons cover defaults, field initializer order, derived constructors, nullable and dynamic parameters; exact int64 tests verify native storage. |
 | Computed members | Evaluate computed keys once during class definition, in source order; store keys in class metadata. Use direct slots when a key is statically fixed and dynamic descriptors otherwise. | Computed side effects, symbol keys, duplicate keys, and initializer ordering. |
 | Cross-file inheritance | Build a bundle-wide class graph using resolved declaration identities before preparing layouts. Generate all specializations in a coordinated pass; keep module execution order separate from layout planning. | Imported/re-exported bases, duplicate names, three-file inheritance, and module cycles. |
 | Class expressions/dynamic bases | Evaluate a base constructor once. Use static specialization for known bases and a dynamic class/prototype representation for runtime-selected bases. Preserve named class-expression scope. | Anonymous and named expressions, factories, conditional bases, and lexical name isolation. |
@@ -116,8 +122,42 @@ instances of the same evaluated class share its singleton.
 | Namespaces/enums/import-equals | Reuse established TypeScript erasure/lowering concepts. Emit persistent namespace objects, correct numeric enum reverse mappings, and resolved import aliases. | Declaration merging, enum initialization order, const enums, ambient erasure. |
 | BigInt | Add an immutable BigInt wrapper over math/big, with operators, conversions, and separate dynamic tags. Never silently convert BigInt arithmetic to float64. | Precision, signed division/remainder, mixing with Number, equality, serialization errors. |
 | Decorators | Reuse TypeScript's decorator lowering and implement the helper contract, including initializer lists and metadata. | Evaluation/application order, field/method replacement, static/instance initializers. |
-| JSX | Apply the configured JSX transform before Go emission and implement imports/calls for the selected runtime. Keep preserve-mode JSX unsupported until an output contract exists. | Classic vs automatic factories, spread props, fragments, evaluation order. |
+| JSX | Excluded from project scope by user request. | No JSX runtime or transform planned. |
 | Source maps | Track generated spans against original AST positions. Emit mapping data for diagnostics/debug tooling; optionally use Go line directives where useful without corrupting generated-file tooling. | Multi-file bundles, lowered awaits, synthetic helpers, source locations. |
+
+## Latest verified syntax tranche
+
+Union and discriminated-union narrowing, flat intersection object identity,
+generic functions/classes/aliases with constraints and defaults, mapped and
+conditional types, indexed access, `keyof`, and `satisfies` are covered by generated
+Go execution tests. Generic call-site types now drive a custom
+specializer for eligible named synchronous functions. It emits concrete Go
+signatures, direct primitive expressions where possible, and substituted typed
+cells for more complex bodies. Binding pointers preserve mutable captures.
+Dependent bodies cache by semantic type identity; simple templates share native
+representations. TypeScript `any` always maps to `tsValue`.
+
+Generic class layouts, generic arrows/local functions, async specialization,
+first-class function specialization, and control flow beyond the synchronous
+body emitter remain optimization work. Structural fields retain the current
+flat property store. Bound recursive expansion to 64 implementations per function
+and 16 nested specializations, retaining the ordinary ABI beyond those limits.
+No Go type parameters are emitted for these TypeScript function specializations.
+
+Optional property/index/call chains, including awaited arguments and grouping
+boundaries, named recursive function expressions, logical assignments, all
+arithmetic compound assignments, exponentiation, bitwise operations/shifts, loose
+equality, and `in` are implemented. Numeric/string enums support reverse mapping,
+member references, const-enum references, and merged enum declarations. Advanced
+object coercion, prototype behavior, optional delete, namespace merging, and
+import-equals remain separate work from these additions.
+
+Constructor and method rest/destructured parameters now share the ordinary
+function parameter emitter. Defaults execute before the current binding
+initializes, preserving self/later-parameter temporal dead zones. Native numeric
+default literals and constructor/super arguments use checked width conversions
+before float64 rounding. `new C(...args)` and `super(...args)` use the established
+spread plumbing, retaining reference identity.
 
 ## Modules and npm
 
@@ -187,3 +227,17 @@ unsupported, or verified complete for the tested contract. Test each semantic
 addition against JavaScript, use race checks for worker/event-loop interaction,
 and benchmark only the relevant hot paths. Avoid repeatedly running unrelated
 large suites. Full coverage is a measurable roadmap, not a completed promise.
+
+## Native numeric types and user workers
+
+Implemented native scalar annotations (`float32`, `float64`, signed and unsigned
+Go integer widths), exact integer tags, checked conversions independent of
+`coerceAny`, and compile-time constant range diagnostics. Calls carry the current
+loop explicitly, including native function and class method dispatch.
+
+`go worker(args)` returns a Promise through the existing task completion path.
+Each worker owns its loop and ECMAScript runtime. Reference values and captures
+remain shared; there is no deep-copy isolation. Promise handoff uses internal
+synchronization. Bundled literal dynamic imports initialize once on the registry
+owner loop, and workers wait through task completion. Shared mutable application
+state remains the user's responsibility. Channels and user mutex APIs are deferred.

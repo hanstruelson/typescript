@@ -25,18 +25,21 @@ type binding struct {
 	maybeUndefined     bool
 }
 type emitter struct {
-	file            *ast.SourceFile
-	resolver        ReferenceResolver
-	bindings        map[*ast.Node]*binding
-	imports         map[*ast.Node]string
-	diags           []*ast.Diagnostic
-	next            int
-	targets         map[*ast.Node]string
-	classes         map[*ast.Node]*classInfo
-	classOrder      []*classInfo
-	classText       strings.Builder
-	coerce          bool
-	nativeFunctions map[*ast.Node]*nativeFunction
+	file                *ast.SourceFile
+	resolver            ReferenceResolver
+	bindings            map[*ast.Node]*binding
+	imports             map[*ast.Node]string
+	diags               []*ast.Diagnostic
+	next                int
+	targets             map[*ast.Node]string
+	classes             map[*ast.Node]*classInfo
+	classOrder          []*classInfo
+	classText           strings.Builder
+	coerce              bool
+	strictNulls         bool
+	nativeFunctions     map[*ast.Node]*nativeFunction
+	genericFunctions    map[*ast.Node]*genericFunction
+	specializationCalls []*ast.Node
 }
 
 func (e *emitter) fail(node *ast.Node, message string) {
@@ -79,7 +82,7 @@ func (e *emitter) declare(node, owner *ast.Node, lexical, constant bool) {
 		e.fail(node, "unsupported binding form "+node.Kind.String()+fmt.Sprintf(" at %d", node.Loc.Pos()))
 		return
 	}
-	if symbol := node.Symbol(); symbol != nil && symbol.ValueDeclaration != nil && (!lexical || node.Kind == ast.KindFunctionDeclaration) {
+	if symbol := node.Symbol(); symbol != nil && symbol.ValueDeclaration != nil && (!lexical || node.Kind == ast.KindFunctionDeclaration || node.Kind == ast.KindEnumDeclaration) {
 		if b := e.bindings[symbol.ValueDeclaration]; b != nil {
 			e.bindings[node] = b
 			return
@@ -94,6 +97,14 @@ func (e *emitter) declare(node, owner *ast.Node, lexical, constant bool) {
 }
 func (e *emitter) collect(node, owner *ast.Node) {
 	switch node.Kind {
+	case ast.KindEnumDeclaration:
+		e.declare(node, owner, true, true)
+		for _, member := range node.AsEnumDeclaration().Members.Nodes {
+			if init := member.AsEnumMember().Initializer; init != nil {
+				e.collect(init, owner)
+			}
+		}
+		return
 	case ast.KindClassDeclaration:
 		e.declare(node, owner, true, true)
 		if e.classes == nil {
@@ -165,7 +176,7 @@ func (e *emitter) collect(node, owner *ast.Node) {
 			e.fail(node, "generator functions are not supported")
 		}
 		if node.Kind == ast.KindFunctionExpression && node.Name() != nil {
-			e.fail(node, "named function expressions are not supported")
+			e.declare(node, owner, true, true)
 		}
 		for _, param := range node.Parameters() {
 			e.declare(param, node, false, false)
@@ -200,7 +211,8 @@ func (e *emitter) collect(node, owner *ast.Node) {
 // is diagnosed before tsValue output is written.
 func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver ReferenceResolver) (string, []*ast.Diagnostic) {
 	e := &emitter{file: file, resolver: resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string)}
-	e.coerce = options.CoerceAny.IsTrue()
+	e.coerce = !options.CoerceAny.IsFalse()
+	e.strictNulls = options.GetStrictOptionValue(options.StrictNullChecks)
 	if options.SourceMap.IsTrue() || options.InlineSourceMap.IsTrue() {
 		e.fail(file.AsNode(), "source maps are not supported")
 	}
@@ -212,6 +224,7 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 	}
 	e.collect(file.AsNode(), file.AsNode())
 	e.planNativeFunctions()
+	e.planGenericFunctions()
 	e.prepareClasses()
 	if len(e.diags) != 0 {
 		return "", e.diags
@@ -339,7 +352,7 @@ func (b *machineBuilder) enter(nodes []*ast.Node) {
 				}
 			}
 		}
-		if node.Kind == ast.KindClassDeclaration {
+		if node.Kind == ast.KindClassDeclaration || node.Kind == ast.KindEnumDeclaration {
 			b.allocate(b.e.bindings[node])
 		}
 		if node.Kind == ast.KindFunctionDeclaration && node.Body() != nil {
@@ -356,6 +369,10 @@ func (b *machineBuilder) enter(nodes []*ast.Node) {
 	}
 }
 func (b *machineBuilder) function(node *ast.Node) string {
+	if node.Kind == ast.KindFunctionExpression && node.Name() != nil {
+		cell := b.e.bindings[node]
+		b.emit(cell.name + "=tsBinding(false,true)")
+	}
 	if fn := b.e.nativeFunctions[node]; fn != nil {
 		return b.nativeFunction(node, fn)
 	}
@@ -366,44 +383,7 @@ func (b *machineBuilder) function(node *ast.Node) string {
 		child.receiver = b.receiver
 	}
 	for index, param := range node.Parameters() {
-		p := param.AsParameterDeclaration()
-		if param.Name().Kind != ast.KindIdentifier && !ast.IsBindingPattern(param.Name()) {
-			b.e.fail(param, "rest and destructuring parameters are not supported")
-			continue
-		}
-		if ast.IsBindingPattern(param.Name()) {
-			value := child.temp(fmt.Sprintf("tsArg(args,%d)", index))
-			if p.Initializer != nil {
-				yes, end := child.block(), child.block()
-				child.emit(fmt.Sprintf("if tsIsUndefined(%s){m.pc=%d}else{m.pc=%d};return", value, yes, end))
-				child.current = yes
-				fallback := child.expression(p.Initializer)
-				child.emit(value + "=" + fallback)
-				child.jump(end)
-				child.current = end
-			}
-			child.bindPattern(param.Name(), value, true)
-			continue
-		}
-		cell := b.e.bindings[param]
-		if cell == nil {
-			continue
-		}
-		if p.DotDotDotToken != nil {
-			child.emit(fmt.Sprintf("%s.init(tsRestArgs(args,%d))", cell.name, index))
-		} else {
-			child.emit(fmt.Sprintf("%s.init(tsArg(args,%d))", cell.name, index))
-		}
-		if p.Initializer != nil {
-			initialize, end := child.block(), child.block()
-			child.emit(fmt.Sprintf("if tsIsUndefined(%s.get()) {m.pc=%d} else {m.pc=%d}; return", cell.name, initialize, end))
-			child.current = initialize
-			value := child.expression(p.Initializer)
-			child.emit(cell.name + ".init(" + value + ")")
-			child.jump(end)
-			child.current = end
-		}
-		child.validateParameter(param)
+		child.initializeParameter(param, index)
 	}
 	if node.Body().Kind == ast.KindBlock {
 		child.statements(node.Body().AsBlock().Statements.Nodes)
@@ -412,7 +392,13 @@ func (b *machineBuilder) function(node *ast.Node) string {
 		value := child.expression(node.Body())
 		child.abrupt("return", value, 0, 0)
 	}
-	return child.finish()
+	function := child.finish()
+	if node.Kind == ast.KindFunctionExpression && node.Name() != nil {
+		result := b.temp(function)
+		b.emit(b.e.bindings[node].name + ".init(" + result + ")")
+		return result
+	}
+	return function
 }
 func (b *machineBuilder) finish() string {
 	var out strings.Builder

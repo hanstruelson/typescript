@@ -16,6 +16,7 @@ var compilerVaryBy = collections.NewSetFromItems(
 	"alwaysstrict",
 	"assumechangesonlyaffectdirectdependencies",
 	"checkjs",
+	"coerceany",
 	"composite",
 	"declaration",
 	"declarationmap",

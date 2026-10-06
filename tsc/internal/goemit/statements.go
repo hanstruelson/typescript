@@ -21,7 +21,11 @@ func (b *machineBuilder) declarations(list *ast.Node) {
 		d := decl.AsVariableDeclaration()
 		value := "tsU"
 		if d.Initializer != nil {
-			value = b.expression(d.Initializer)
+			if cell.primitive.numeric() && cell.primitive.nulls == 0 {
+				value = b.numericExpression(d.Initializer, cell.primitive)
+			} else {
+				value = b.expression(d.Initializer)
+			}
 		}
 		native := cell.primitive.kind != "" && b.tempType(value) == cell.primitive.goType()
 		init, set := "init", "set"
@@ -48,6 +52,8 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 	}
 	switch node.Kind {
 	case ast.KindEmptyStatement, ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration:
+	case ast.KindEnumDeclaration:
+		b.enumDeclaration(node)
 	case ast.KindClassDeclaration:
 		b.classDeclaration(node)
 	case ast.KindFunctionDeclaration:
@@ -254,23 +260,23 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 		b.allocate(cell)
 	}
 	iterable := b.expression(n.Expression)
-	iterator := b.typedTemp("tsIterate("+iterable+")", "any")
+	iterator := b.typedTemp("tsIterate("+iterable+")", "*tsIterator")
 	test, body, end := b.block(), b.block(), b.block()
 	b.jump(test)
 	b.loops = append(b.loops, loopTarget{end, test, b.depth, label})
 	b.current = test
-	b.emit(fmt.Sprintf("if %s.(*tsIterator).next() {m.pc=%d} else {m.pc=%d}; return", iterator, body, end))
+	b.emit(fmt.Sprintf("if %s.next() {m.pc=%d} else {m.pc=%d}; return", iterator, body, end))
 	b.current = body
 	if pattern {
 		if lexical {
 			b.declarePatternCells(decl.Name())
 		}
-		b.bindPattern(decl.Name(), iterator+".(*tsIterator).value", lexical)
+		b.bindPattern(decl.Name(), iterator+".value", lexical)
 	} else if cell.lexical {
 		b.allocate(cell)
-		b.emit(cell.name + ".init(" + iterator + ".(*tsIterator).value)")
+		b.emit(cell.name + ".init(" + iterator + ".value)")
 	} else {
-		b.emit(cell.name + ".set(" + iterator + ".(*tsIterator).value)")
+		b.emit(cell.name + ".set(" + iterator + ".value)")
 	}
 	b.statement(n.Statement)
 	b.jump(test)

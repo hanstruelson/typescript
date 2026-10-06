@@ -19,6 +19,31 @@ func syntaxPrimitive(node *ast.Node) primitive {
 	switch node.Kind {
 	case ast.KindNumberKeyword:
 		return primitive{kind: "number"}
+	case ast.KindFloat32Keyword:
+		return primitive{kind: "float32"}
+	case ast.KindFloat64Keyword:
+		return primitive{kind: "float64"}
+	case ast.KindIntKeyword:
+		return primitive{kind: "int"}
+	case ast.KindInt8Keyword:
+		return primitive{kind: "int8"}
+	case ast.KindInt16Keyword:
+		return primitive{kind: "int16"}
+	case ast.KindInt32Keyword:
+		return primitive{kind: "int32"}
+	case ast.KindInt64Keyword:
+		return primitive{kind: "int64"}
+	case ast.KindUintKeyword:
+		return primitive{kind: "uint"}
+	case ast.KindUint8Keyword:
+		return primitive{kind: "uint8"}
+	case ast.KindUint16Keyword:
+		return primitive{kind: "uint16"}
+	case ast.KindUint32Keyword:
+		return primitive{kind: "uint32"}
+	case ast.KindUint64Keyword:
+		return primitive{kind: "uint64"}
+
 	case ast.KindStringKeyword:
 		return primitive{kind: "string"}
 	case ast.KindBooleanKeyword:
@@ -56,8 +81,21 @@ func (e *emitter) primitive(node *ast.Node) primitive {
 	if node == nil {
 		return primitive{}
 	}
-	if node.Kind == ast.KindVariableDeclaration {
-		if init := node.AsVariableDeclaration().Initializer; init != nil && init.Kind == ast.KindCallExpression {
+	if len(e.specializationCalls) > 0 {
+		if resolver, ok := e.resolver.(interface {
+			GetEmitSpecializedPrimitiveType(*ast.Node, []*ast.Node) (string, uint8)
+		}); ok {
+			kind, mask := resolver.GetEmitSpecializedPrimitiveType(node, e.specializationCalls)
+			return primitive{kind, mask}
+		}
+	}
+
+	declaration := node
+	if node.Kind == ast.KindIdentifier {
+		declaration = e.reference(node)
+	}
+	if declaration != nil && declaration.Kind == ast.KindVariableDeclaration {
+		if init := declaration.AsVariableDeclaration().Initializer; init != nil && init.Kind == ast.KindCallExpression {
 			callee := init.AsCallExpression().Expression
 			if callee.Kind == ast.KindIdentifier && callee.Text() == "setTimeout" {
 				decl := e.reference(callee)
@@ -68,7 +106,7 @@ func (e *emitter) primitive(node *ast.Node) primitive {
 		}
 	}
 	if p := e.annotationPrimitive(node.Type()); p.kind != "" {
-		if node.Kind == ast.KindParameter && node.PostfixToken() != nil {
+		if node.Kind == ast.KindParameter && node.QuestionToken() != nil {
 			p.nulls |= 2
 		}
 		return p
@@ -89,6 +127,8 @@ func (p primitive) goType() string {
 		return "*tsString"
 	case "boolean":
 		return "bool"
+	case "float32", "float64", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return p.kind
 	}
 	return "tsValue"
 }
@@ -124,13 +164,38 @@ func (b *machineBuilder) validateParameter(param *ast.Node) {
 	}
 }
 func (b *machineBuilder) returnValue(value string) string {
-	p := b.e.annotationPrimitive(b.owner.Type())
+	p := b.e.returnPrimitive(b.owner)
 	if p.kind == "" || b.constructor {
 		return value
 	}
 	return fmt.Sprintf("tsBoundary(%s,%s,%d,%t)", value, strconv.Quote(p.kind), p.nulls, b.e.coerce)
 }
 func (e *emitter) annotationPrimitive(node *ast.Node) primitive {
+	if node == nil {
+		return primitive{}
+	}
+	if len(e.specializationCalls) > 0 {
+		if resolver, ok := e.resolver.(interface {
+			GetEmitSpecializedPrimitiveType(*ast.Node, []*ast.Node) (string, uint8)
+		}); ok {
+			kind, mask := resolver.GetEmitSpecializedPrimitiveType(node, e.specializationCalls)
+			return primitive{kind, mask}
+		}
+	}
+
+	// Preserve explicitly written nullable primitives even without strict null checks.
+	if p := syntaxPrimitive(node); p.kind != "" {
+		return p
+	}
+	// The checker instantiates generic aliases and resolves lexical type names.
+	// A type parameter is deliberately dynamic, even when an outer alias shares
+	// its spelling. Textual expansion cannot safely make that decision.
+	if resolver, ok := e.resolver.(interface {
+		GetEmitPrimitiveType(*ast.Node) (string, uint8)
+	}); ok {
+		kind, mask := resolver.GetEmitPrimitiveType(node)
+		return primitive{kind, mask}
+	}
 	return e.annotationSeen(node, map[*ast.Node]bool{})
 }
 func (e *emitter) annotationSeen(node *ast.Node, seen map[*ast.Node]bool) primitive {
@@ -207,4 +272,23 @@ func (cell *binding) isParameter() bool {
 		}
 	}
 	return false
+}
+
+func (p primitive) numeric() bool {
+	switch p.kind {
+	case "number", "float32", "float64", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return true
+	}
+	return false
+}
+
+func (e *emitter) returnPrimitive(owner *ast.Node) primitive {
+	node := owner.Type()
+	if node != nil && node.Kind == ast.KindTypeReference {
+		ref := node.AsTypeReferenceNode()
+		if ref.TypeName.Kind == ast.KindIdentifier && ref.TypeName.Text() == "Promise" && ref.TypeArguments != nil && len(ref.TypeArguments.Nodes) == 1 {
+			return e.annotationPrimitive(ref.TypeArguments.Nodes[0])
+		}
+	}
+	return e.annotationPrimitive(node)
 }

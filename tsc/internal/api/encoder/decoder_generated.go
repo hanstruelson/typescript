@@ -211,6 +211,7 @@ func (d *astDecoder) createChildrenNode(kind ast.Kind, data uint32, childIndices
 		ast.KindOverrideKeyword,
 		ast.KindOfKeyword,
 		ast.KindDeferKeyword,
+		ast.KindGoKeyword,
 		ast.KindSourceKeyword:
 		return d.factory.NewToken(kind), nil
 	case ast.KindQualifiedName:
@@ -713,6 +714,8 @@ func (d *astDecoder) createChildrenNode(kind ast.Kind, data uint32, childIndices
 		return d.factory.NewVoidExpression(d.singleChild(childIndices)), nil
 	case ast.KindAwaitExpression:
 		return d.factory.NewAwaitExpression(d.singleChild(childIndices)), nil
+	case ast.KindGoExpression:
+		return d.factory.NewGoExpression(d.singleChild(childIndices)), nil
 	case ast.KindTypeAssertionExpression:
 		it := newChildIter(childIndices)
 		typeNode := d.nodeAt(it.nextIf(mask, 0))
@@ -724,6 +727,18 @@ func (d *astDecoder) createChildrenNode(kind ast.Kind, data uint32, childIndices
 		ast.KindIntrinsicKeyword,
 		ast.KindNeverKeyword,
 		ast.KindNumberKeyword,
+		ast.KindFloat32Keyword,
+		ast.KindFloat64Keyword,
+		ast.KindIntKeyword,
+		ast.KindInt8Keyword,
+		ast.KindInt16Keyword,
+		ast.KindInt32Keyword,
+		ast.KindInt64Keyword,
+		ast.KindUintKeyword,
+		ast.KindUint8Keyword,
+		ast.KindUint16Keyword,
+		ast.KindUint32Keyword,
+		ast.KindUint64Keyword,
 		ast.KindObjectKeyword,
 		ast.KindStringKeyword,
 		ast.KindSymbolKeyword,

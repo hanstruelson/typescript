@@ -100,6 +100,21 @@ func (e *emitter) prepareClass(c *classInfo) {
 		case ast.KindConstructor:
 			if member.Body() != nil {
 				c.constructor = member
+				for _, param := range member.Parameters() {
+					if ast.GetCombinedModifierFlags(param)&ast.ModifierFlagsParameterPropertyModifier == 0 {
+						continue
+					}
+					if param.Name() == nil || param.Name().Kind != ast.KindIdentifier {
+						e.fail(param, "parameter properties require identifier names")
+						continue
+					}
+					name := param.Name().Text()
+					if c.fields[name] == nil {
+						c.fieldOrder = append(c.fieldOrder, name)
+					}
+					c.fields[name] = param
+				}
+
 			}
 		case ast.KindPropertyDeclaration:
 			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral) {
@@ -225,10 +240,10 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 		return
 	}
 	var make strings.Builder
-	make.WriteString("func() *tsClass {class:=&tsClass{};")
+	fmt.Fprintf(&make, "func() *tsClass {class:=&tsClass{layout:&tsLayout_%s};", c.name)
 	if c.parent != nil {
 		if parent := b.e.bindings[c.parent.node]; parent != nil {
-			make.WriteString("class.parent=" + parent.name + ".get().(*tsClass);")
+			make.WriteString("class.parent=tsClassPointer(" + parent.name + ".get());")
 		}
 	}
 	fmt.Fprintf(&make, "class.construct=func(args ...tsValue) tsValue {self:=&%s{loop:loop, properties:tsNewProperties()};self.properties.class=class", c.name)
@@ -239,12 +254,12 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 	fmt.Fprintf(&make, ";self.%s(args...);if !self.properties.initialized {panic(\"Derived constructor did not call super\")};return self};return class}()", ctorName(c))
 	b.emit(cell.name + ".init(" + make.String() + ")")
 	st := c.statics
-	singleton := b.typedTemp("&"+st.name+"{loop:loop,properties:tsNewProperties()}", "any")
-	target := singleton + ".(*" + st.name + ")"
-	b.emit(cell.name + ".get().(*tsClass).static=" + target)
-	b.emit(target + ".properties.class=" + cell.name + ".get().(*tsClass)")
+	singleton := b.typedTemp("&"+st.name+"{loop:loop,properties:tsNewProperties()}", "*"+st.name)
+	target := singleton
+	b.emit("tsClassPointer(" + cell.name + ".get()).static=tsInstanceValue(" + target + ".properties)")
+	b.emit(target + ".properties.class=tsClassPointer(" + cell.name + ".get())")
 	if st.parent != nil {
-		b.emit(target + ".parent=" + cell.name + ".get().(*tsClass).parent.static.(*" + st.parent.name + ")")
+		b.emit(target + ".parent=tsAs_" + st.parent.name + "(tsClassPointer(" + cell.name + ".get()).parent.static)")
 		b.emit(target + ".properties.prototype=" + target + ".parent.properties")
 	}
 	for _, capture := range st.environment {
@@ -302,21 +317,28 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 		fmt.Fprintf(&out, "%s %s;has%s bool\n", id, typ, id)
 	}
 	out.WriteString("}\n")
-	fmt.Fprintf(&out, "func(self *%s) tsProperties() *tsProperties {return self.properties}\n", c.name)
-	// A parent-typed reference can hold tsValue flattened descendant through Go's
-	// structural interfaces. Accessors bridge Go interfaces' lack of fields.
-	fmt.Fprintf(&out, "type %sView interface {tsDynamicObject\n", c.name)
+	// Concrete layouts are checked before casting; parent-typed references use
+	// views of callbacks, so descendants need no Go interface boxing.
+	fmt.Fprintf(&out, "var tsLayout_%s=tsClassLayout{name:%q}\n", c.name, c.name)
+	fmt.Fprintf(&out, "func tsAs_%s(value tsValue)*%s{p:=tsInstanceProperties(value);if p.layout!=&tsLayout_%s{panic(\"Invalid concrete class layout\")};return (*%s)(p.self)}\n", c.name, c.name, c.name, c.name)
+	fmt.Fprintf(&out, "type %sView struct {\n", c.name)
 	for _, name := range c.fieldOrder {
 		id := memberName(name)
-		fmt.Fprintf(&out, "Get%s() tsValue;Set%s(tsValue) tsValue\n", id, id)
+		fmt.Fprintf(&out, "Get%s func()tsValue;Set%s func(tsValue)tsValue\n", id, id)
 	}
 	for _, name := range c.methodOrder {
-		fmt.Fprintf(&out, "Call%s(...tsValue) tsValue\n", memberName(name))
+		fmt.Fprintf(&out, "Call%s func(...tsValue)tsValue\n", memberName(name))
 	}
 	out.WriteString("}\n")
-	for at := c.parent; at != nil; at = at.parent {
-		fmt.Fprintf(&out, "var _ %sView = (*%s)(nil)\n", at.name, c.name)
+	fmt.Fprintf(&out, "func tsView_%s(value tsValue)%sView{p:=tsInstanceProperties(value);for class:=p.class;class!=nil;class=class.parent{if class.layout==&tsLayout_%s{return %sView{", c.name, c.name, c.name, c.name)
+	for _, name := range c.fieldOrder {
+		id := memberName(name)
+		fmt.Fprintf(&out, "Get%s:p.declared[%q].get,Set%s:p.declared[%q].set,", id, name, id, name)
 	}
+	for _, name := range c.methodOrder {
+		fmt.Fprintf(&out, "Call%s:(*tsFunction)(p.methods[%q].ref).call,", memberName(name), name)
+	}
+	out.WriteString("}}};panic(\"Invalid class view\")}\n")
 	for _, name := range c.fieldOrder {
 		id := memberName(name)
 		shape := b.e.primitive(c.fields[name])
@@ -331,7 +353,7 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 			storage = "tsOptional[" + storage + "]"
 			checked = "tsOptionalFrom[" + shape.goType() + "](" + checked + ")"
 		} else if shape.kind != "" {
-			checked += ".(" + storage + ")"
+			checked = "tsNative[" + storage + "](" + checked + ")"
 		}
 		fallback := ""
 		if c.static && c.parent != nil && c.parent.fields[name] != nil {
@@ -341,7 +363,7 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 		fmt.Fprintf(&out, "func(self *%s) Set%s(value tsValue) tsValue {self.%s=%s;self.has%s=true;self.properties.define(%q);return self.Get%s()}\n", c.name, id, id, checked, id, name, id)
 
 	}
-	fmt.Fprintf(&out, "func(self *%s) initProperties() {self.properties.self=self;\n", c.name)
+	fmt.Fprintf(&out, "func(self *%s) initProperties() {self.properties.self=unsafe.Pointer(self);self.properties.layout=&tsLayout_%s;\n", c.name, c.name)
 	for _, name := range c.fieldOrder {
 		id := memberName(name)
 		fmt.Fprintf(&out, "self.properties.declared[%q]=tsProperty{get:func()tsValue{return self.Get%s()},set:func(value tsValue)tsValue{return self.Set%s(value)}}\n", name, id, id)
@@ -395,35 +417,10 @@ func (b *machineBuilder) classBody(concrete, declaring *classInfo, node *ast.Nod
 	}
 	if node != nil && node.Kind != ast.KindClassStaticBlockDeclaration {
 		for index, param := range node.Parameters() {
-			if ast.GetCombinedModifierFlags(param)&ast.ModifierFlagsParameterPropertyModifier != 0 {
-				b.e.fail(param, "parameter properties are not supported; declare the numeric field explicitly")
-			}
-			if param.AsParameterDeclaration().DotDotDotToken != nil {
-				b.e.fail(param, "rest constructor/method parameters are not supported")
-				continue
-			}
-			cell := b.e.bindings[param]
-			if cell == nil {
-				continue
-			}
-			child.emit(fmt.Sprintf("%s.init(tsArg(args,%d))", cell.name, index))
-			if init := param.AsParameterDeclaration().Initializer; init != nil {
-				if child.direct {
-					child.emit("if tsIsUndefined(" + cell.name + ".get()) {")
-					value := child.expression(init)
-					child.emit(cell.name + ".init(" + value + ")")
-					child.emit("}")
-				} else {
-					yes, end := child.block(), child.block()
-					child.emit(fmt.Sprintf("if tsIsUndefined(%s.get()){m.pc=%d}else{m.pc=%d};return", cell.name, yes, end))
-					child.current = yes
-					value := child.expression(init)
-					child.emit(cell.name + ".init(" + value + ")")
-					child.jump(end)
-					child.current = end
-				}
-			}
-			child.validateParameter(param)
+			child.initializeParameter(param, index)
+		}
+		if constructor && (declaring.parent == nil || declaring.static) {
+			child.initializeParameterProperties()
 		}
 	}
 	if constructor && node == nil && declaring.parent != nil && !declaring.static {
@@ -462,6 +459,14 @@ func (b *machineBuilder) classBody(concrete, declaring *classInfo, node *ast.Nod
 	return prefix.String()
 }
 func (b *machineBuilder) initializeFields() {
+	if !b.declaring.static && b.declaring.constructor != nil {
+		for _, param := range b.declaring.constructor.Parameters() {
+			if ast.GetCombinedModifierFlags(param)&ast.ModifierFlagsParameterPropertyModifier != 0 {
+				b.initializeEmptyField(param)
+			}
+		}
+	}
+
 	for index, member := range b.declaring.node.AsClassDeclaration().Members.Nodes {
 		if b.declaring.static && member.Kind == ast.KindClassStaticBlockDeclaration {
 			b.emit(fmt.Sprintf("self.staticBlock_%s_%d()", b.declaring.name, index))
@@ -476,28 +481,22 @@ func (b *machineBuilder) initializeFields() {
 		}
 		id := memberName(member.Name().Text())
 		if p.Initializer == nil {
-			shape := b.e.primitive(member)
-			zero := "nil"
-			switch shape.kind {
-			case "number":
-				zero = "0"
-			case "boolean":
-				zero = "false"
-			}
-			if shape.nulls != 0 && shape.kind != "" {
-				zero = "tsOptional[" + shape.goType() + "]{tag:2}"
-			}
-			b.emit(fmt.Sprintf("self.properties.define(%q)", member.Name().Text()))
-			b.emit("self.has" + id + "=false;self." + id + "=" + zero)
+			b.initializeEmptyField(member)
 		} else {
-			value := b.expression(p.Initializer)
+			value := ""
+			shape := b.e.primitive(member)
+			if shape.numeric() && shape.nulls == 0 {
+				value = b.numericExpression(p.Initializer, shape)
+			} else {
+				value = b.expression(p.Initializer)
+			}
 			b.emit("self.Set" + id + "(" + value + ")")
 		}
 	}
 }
 
 // classOf uses declaration identity and explicit annotations. Unknown receivers
-// retain dynamic bracket access; known class dot access never uses a string key.
+// retain dynamic bracket access; concrete class dot access bypasses lookup.
 func (b *machineBuilder) classOf(node *ast.Node) *classInfo {
 	if node == nil {
 		return nil
@@ -592,13 +591,13 @@ func (b *machineBuilder) classProperty(node *ast.Node, receiver, name string) (s
 }
 
 // A concrete allocation needs neither a property hash nor interface dispatch.
-// Explicit parent annotations retain structural interface dispatch.
+// Explicit parent annotations dispatch through concrete callback views.
 func (b *machineBuilder) classTarget(node *ast.Node, receiver string, c *classInfo) string {
 	if node.Kind == ast.KindThisKeyword {
 		return b.receiver
 	}
 	if c.static {
-		return receiver + ".(*tsClass).static.(*" + c.name + ")"
+		return "tsAs_" + c.name + "(tsClassPointer(" + receiver + ").static)"
 	}
 	concrete := node.Kind == ast.KindNewExpression
 	if node.Kind == ast.KindIdentifier {
@@ -608,9 +607,9 @@ func (b *machineBuilder) classTarget(node *ast.Node, receiver string, c *classIn
 		}
 	}
 	if concrete {
-		return receiver + ".(*" + c.name + ")"
+		return "tsAs_" + c.name + "(" + receiver + ")"
 	}
-	return receiver + ".(" + c.name + "View)"
+	return "tsView_" + c.name + "(" + receiver + ")"
 }
 
 func numericFieldInitializer(node *ast.Node) bool {
@@ -622,4 +621,48 @@ func numericFieldInitializer(node *ast.Node) bool {
 		return (n.Operator == ast.KindMinusToken || n.Operator == ast.KindPlusToken) && numericFieldInitializer(n.Operand)
 	}
 	return false
+}
+
+func (b *machineBuilder) initializeEmptyField(member *ast.Node) {
+	id := memberName(member.Name().Text())
+	shape := b.e.primitive(member)
+	zero := "tsU"
+	switch {
+	case shape.numeric():
+		zero = "0"
+	case shape.kind == "boolean":
+		zero = "false"
+	case shape.kind == "string":
+		zero = "nil"
+	}
+	if shape.nulls != 0 && shape.kind != "" {
+		zero = "tsOptional[" + shape.goType() + "]{tag:2}"
+	}
+	b.emit(fmt.Sprintf("self.properties.define(%q)", member.Name().Text()))
+	b.emit("self.has" + id + "=false;self." + id + "=" + zero)
+}
+func (b *machineBuilder) initializeParameterProperties() {
+	if !b.constructor || b.owner == nil || b.owner.Kind != ast.KindConstructor {
+		return
+	}
+	for _, param := range b.owner.Parameters() {
+		if ast.GetCombinedModifierFlags(param)&ast.ModifierFlagsParameterPropertyModifier == 0 {
+			continue
+		}
+		if cell := b.e.bindings[param]; cell != nil {
+			name := param.Name().Text()
+			id := memberName(name)
+			field := b.e.primitive(b.concrete.fields[name])
+			if cell.primitive.kind != "" && cell.primitive == field {
+				read := "read"
+				if field.nulls != 0 {
+					read = "optional"
+				}
+				b.emit("self." + id + "=" + cell.name + "." + read + "();self.has" + id + "=true")
+				b.emit(fmt.Sprintf("self.properties.define(%q)", name))
+			} else {
+				b.emit("self.Set" + id + "(" + cell.name + ".get())")
+			}
+		}
+	}
 }

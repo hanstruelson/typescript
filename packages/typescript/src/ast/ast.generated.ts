@@ -144,6 +144,18 @@ export type KeywordSyntaxKind =
     | SyntaxKind.ReadonlyKeyword
     | SyntaxKind.RequireKeyword
     | SyntaxKind.NumberKeyword
+    | SyntaxKind.Float32Keyword
+    | SyntaxKind.Float64Keyword
+    | SyntaxKind.IntKeyword
+    | SyntaxKind.Int8Keyword
+    | SyntaxKind.Int16Keyword
+    | SyntaxKind.Int32Keyword
+    | SyntaxKind.Int64Keyword
+    | SyntaxKind.UintKeyword
+    | SyntaxKind.Uint8Keyword
+    | SyntaxKind.Uint16Keyword
+    | SyntaxKind.Uint32Keyword
+    | SyntaxKind.Uint64Keyword
     | SyntaxKind.ObjectKeyword
     | SyntaxKind.SatisfiesKeyword
     | SyntaxKind.SetKeyword
@@ -160,9 +172,10 @@ export type KeywordSyntaxKind =
     | SyntaxKind.OverrideKeyword
     | SyntaxKind.OfKeyword
     | SyntaxKind.DeferKeyword
+    | SyntaxKind.GoKeyword
     | SyntaxKind.SourceKeyword;
 export type ModifierSyntaxKind = SyntaxKind.AbstractKeyword | SyntaxKind.AccessorKeyword | SyntaxKind.AsyncKeyword | SyntaxKind.ConstKeyword | SyntaxKind.DeclareKeyword | SyntaxKind.DefaultKeyword | SyntaxKind.ExportKeyword | SyntaxKind.InKeyword | SyntaxKind.PrivateKeyword | SyntaxKind.ProtectedKeyword | SyntaxKind.PublicKeyword | SyntaxKind.ReadonlyKeyword | SyntaxKind.OutKeyword | SyntaxKind.OverrideKeyword | SyntaxKind.StaticKeyword;
-export type KeywordTypeSyntaxKind = SyntaxKind.AnyKeyword | SyntaxKind.BigIntKeyword | SyntaxKind.BooleanKeyword | SyntaxKind.IntrinsicKeyword | SyntaxKind.NeverKeyword | SyntaxKind.NumberKeyword | SyntaxKind.ObjectKeyword | SyntaxKind.StringKeyword | SyntaxKind.SymbolKeyword | SyntaxKind.UndefinedKeyword | SyntaxKind.UnknownKeyword | SyntaxKind.VoidKeyword;
+export type KeywordTypeSyntaxKind = SyntaxKind.AnyKeyword | SyntaxKind.BigIntKeyword | SyntaxKind.BooleanKeyword | SyntaxKind.IntrinsicKeyword | SyntaxKind.NeverKeyword | SyntaxKind.NumberKeyword | SyntaxKind.Float32Keyword | SyntaxKind.Float64Keyword | SyntaxKind.IntKeyword | SyntaxKind.Int8Keyword | SyntaxKind.Int16Keyword | SyntaxKind.Int32Keyword | SyntaxKind.Int64Keyword | SyntaxKind.UintKeyword | SyntaxKind.Uint8Keyword | SyntaxKind.Uint16Keyword | SyntaxKind.Uint32Keyword | SyntaxKind.Uint64Keyword | SyntaxKind.ObjectKeyword | SyntaxKind.StringKeyword | SyntaxKind.SymbolKeyword | SyntaxKind.UndefinedKeyword | SyntaxKind.UnknownKeyword | SyntaxKind.VoidKeyword;
 export type KeywordExpressionSyntaxKind = SyntaxKind.NullKeyword | SyntaxKind.TrueKeyword | SyntaxKind.FalseKeyword | SyntaxKind.ThisKeyword | SyntaxKind.SuperKeyword | SyntaxKind.ImportKeyword;
 export type TokenSyntaxKind =
     | SyntaxKind.Unknown
@@ -316,6 +329,18 @@ export type TokenSyntaxKind =
     | SyntaxKind.ReadonlyKeyword
     | SyntaxKind.RequireKeyword
     | SyntaxKind.NumberKeyword
+    | SyntaxKind.Float32Keyword
+    | SyntaxKind.Float64Keyword
+    | SyntaxKind.IntKeyword
+    | SyntaxKind.Int8Keyword
+    | SyntaxKind.Int16Keyword
+    | SyntaxKind.Int32Keyword
+    | SyntaxKind.Int64Keyword
+    | SyntaxKind.UintKeyword
+    | SyntaxKind.Uint8Keyword
+    | SyntaxKind.Uint16Keyword
+    | SyntaxKind.Uint32Keyword
+    | SyntaxKind.Uint64Keyword
     | SyntaxKind.ObjectKeyword
     | SyntaxKind.SatisfiesKeyword
     | SyntaxKind.SetKeyword
@@ -332,6 +357,7 @@ export type TokenSyntaxKind =
     | SyntaxKind.OverrideKeyword
     | SyntaxKind.OfKeyword
     | SyntaxKind.DeferKeyword
+    | SyntaxKind.GoKeyword
     | SyntaxKind.SourceKeyword;
 export type JsxTokenSyntaxKind = SyntaxKind.LessThanSlashToken | SyntaxKind.EndOfFile | SyntaxKind.ConflictMarkerTrivia | SyntaxKind.JsxText | SyntaxKind.JsxTextAllWhiteSpaces | SyntaxKind.OpenBraceToken | SyntaxKind.LessThanToken;
 export type JSDocNodeSyntaxKind =
@@ -939,6 +965,10 @@ export interface VoidExpression extends UnaryExpressionBase {
 }
 export interface AwaitExpression extends UnaryExpressionBase {
     readonly kind: SyntaxKind.AwaitExpression;
+    readonly expression: Expression;
+}
+export interface GoExpression extends UnaryExpressionBase {
+    readonly kind: SyntaxKind.GoExpression;
     readonly expression: Expression;
 }
 export interface TypeAssertion extends UnaryExpressionBase {

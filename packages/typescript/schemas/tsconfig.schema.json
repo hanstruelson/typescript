@@ -1210,8 +1210,18 @@
                     "default": false,
                     "markdownDescription": "Enforces using indexed accessors for keys declared using an indexed type.\n\nSee the [TSConfig reference](https://www.typescriptlang.org/tsconfig/#noPropertyAccessFromIndexSignature)."
                 },
-                "coerceAny": { "type": "boolean", "default": false, "description": "Coerce dynamic values at typed boundaries when emitting Go." },
- "noUncheckedIndexedAccess": {
+                "coerceAny": {
+                    "anyOf": [
+                        {
+                            "type": "boolean"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ],
+                    "default": true
+                },
+                "noUncheckedIndexedAccess": {
                     "anyOf": [
                         {
                             "type": "boolean"
@@ -1652,8 +1662,8 @@
                                         "es2024",
                                         "es2025",
                                         "es2026",
-                                        "go",
                                         "esnext",
+                                        "go",
                                         "es3"
                                     ],
                                     "enumDescriptions": [

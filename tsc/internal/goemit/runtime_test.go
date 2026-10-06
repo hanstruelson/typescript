@@ -2,9 +2,13 @@ package goemit
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -14,11 +18,15 @@ import (
 // pointer-based completion publication does not share mutable loop state.
 func TestRuntimeWorkers(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "runtime.go"), []byte("package main\n"+Runtime+ValueRuntime+ModuleRuntime+ClassRuntime+TypeRuntime+StringRuntime+RegexRuntime+EqualityRuntime+ObjectRuntime), 0600); err != nil {
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "runtime.go"), source, 0600); err != nil {
 		t.Fatal(err)
 	}
 	tests := `package main
-import("testing";"runtime";"strings")
+import("testing";"runtime";"strings";"unsafe";"math")
 func TestFailures(t *testing.T){
  for _,work:=range []func()tsResult{
   func()tsResult{panic("worker failure")},
@@ -33,22 +41,63 @@ func TestFailures(t *testing.T){
 }
 func TestManyCompletions(t *testing.T){
  loop:=tsNewLoop();count,sum:=0,0
- for i:=0;i<1000;i++ {value:=i;loop.start(func()tsResult{return tsResult{value,false}}).then(func(result tsResult){count++;sum+=result.value.(int)})}
+ for i:=0;i<1000;i++ {value:=i;loop.start(func()tsResult{return tsResult{tsNumberValue(float64(value)),false}}).then(func(result tsResult){count++;sum+=int(result.value.number)})}
  if err:=loop.run();err!=nil {t.Fatal(err)}
  if count!=1000 || sum!=499500 || len(loop.pending)!=0 {t.Fatalf("lost results: %d %d",count,sum)}
 }
 func TestFinishFailureDrains(t *testing.T){
  loop:=tsNewLoop();called:=false
- loop.submit(func()tsResult{return tsResult{nil,false}},func(tsResult){panic("finish failure")})
- loop.submit(func()tsResult{return tsResult{nil,false}},func(tsResult){called=true})
+ loop.submit(func()tsResult{return tsResult{tsNull,false}},func(tsResult){panic("finish failure")})
+ loop.submit(func()tsResult{return tsResult{tsNull,false}},func(tsResult){called=true})
  err:=loop.run();if err==nil || !strings.Contains(err.Error(),"finish failure") || !called || len(loop.pending)!=0 {t.Fatalf("drain failed: %v",err)}
 }
-func TestArbitraryValue(t *testing.T){
- type payload struct{Text string;Number int}
- loop:=tsNewLoop();var got payload
- loop.start(func()tsResult{return tsResult{payload{"value",10},false}}).then(func(result tsResult){got=result.value.(payload)})
- if err:=loop.run();err!=nil || got!=(payload{"value",10}) {t.Fatalf("payload lost: %v %v",got,err)}
+func TestValueLayoutAndGC(t *testing.T){
+ if unsafe.Sizeof(tsValue{})!=24 || unsafe.Offsetof(tsValue{}.kind)!=0 || unsafe.Offsetof(tsValue{}.number)!=8 || unsafe.Offsetof(tsValue{}.ref)!=16 {t.Fatal("incorrect value ABI")}
+ values:=make([]tsValue,1000)
+ for i:=range values {values[i]=tsStringReference(tsStringUTF8(strings.Repeat("x",i+1)))}
+ runtime.GC()
+ for i,value:=range values {if len((*tsString)(value.ref).units)!=i+1 {t.Fatal("lost GC reference")}}
 }
+func TestInstanceGC(t *testing.T){
+ type instance struct{properties *tsProperties;number float64}
+ values:=make([]tsValue,1000)
+ for i:=range values{self:=&instance{properties:tsNewProperties(),number:float64(i)};self.properties.self=unsafe.Pointer(self);values[i]=tsInstanceValue(self.properties)}
+ runtime.GC()
+ for i,value:=range values{if (*instance)((*tsProperties)(value.ref).self).number!=float64(i){t.Fatal("lost concrete instance")}}
+}
+func TestReferenceDispatch(t *testing.T){
+ loop:=tsNewLoop()
+ object:=tsNewObject();array:=&tsArray{values:[]tsValue{tsNumberValue(3)}}
+ object.set(loop,"array",tsArrayValue(array));runtime.GC()
+ if tsGet(loop,tsGet(loop,tsObjectValue(object),tsStringReference(tsStringUTF8("array"))),tsNumberValue(0)).number!=3{t.Fatal("nested reference lost")}
+ tsSet(loop,tsObjectValue(object),tsStringReference(tsStringUTF8("value")),tsNumberValue(7))
+ if tsGet(loop,tsObjectValue(object),tsStringReference(tsStringUTF8("value"))).number!=7{t.Fatal("object mutation lost")}
+ for _,value:=range []tsValue{tsU,tsNull,tsNumberValue(1),tsBooleanValue(true),tsStringReference(tsStringUTF8("x")),tsArrayValue(array)}{
+  back:=tsFromECMA(tsToECMA(loop,value))
+  if value.kind==tsArrayKind{if tsGet(loop,back,tsNumberValue(0)).number!=3{t.Fatal("Goja array boundary")}}else if !tsStrictEqual(value,back){t.Fatal("Goja primitive boundary")}
+ }
+}
+func TestWorkerContext(t *testing.T){
+ parent:=tsNewLoop();shared:=&tsObject{values:map[string]tsValue{}};var workerLoop *tsLoop
+ function:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{
+  if loop==parent{panic("worker reused parent loop")};workerLoop=loop
+  object:=(*tsObject)(args[0].ref);object.values["answer"]=tsInt64Value(9223372036854775807)
+  return tsPromiseValue(loop.delay(tsNumberValue(1)))
+ })
+ parent.spawn(tsFunctionValue(function),tsObjectValue(shared)).then(func(r tsResult){if r.rejected{t.Error(tsText(r.value))}})
+ if err:=parent.run();err!=nil{t.Fatal(err)}
+ if workerLoop==nil||tsText(shared.values["answer"])!="9223372036854775807"{t.Fatal("worker lost shared reference")}
+}
+func TestPrimitiveTags(t *testing.T){
+ loop:=tsNewLoop()
+ if tsStrictEqual(tsNumberValue(math.NaN()),tsNumberValue(math.NaN())) || !tsStrictEqual(tsNumberValue(0),tsNumberValue(math.Copysign(0,-1))) {t.Fatal("numeric equality")}
+ if tsStrictEqual(tsNumberValue(1),tsBooleanValue(true)) || tsStrictEqual(tsNull,tsU) {t.Fatal("different tags compare equal")}
+ if !tsStrictEqual(tsStringReference(tsStringUTF8("abc")),tsStringReference(tsStringUTF8("abc"))) {t.Fatal("string equality uses identity")}
+ if tsTruthy(tsU)||tsTruthy(tsNull)||tsTruthy(tsNumberValue(math.NaN()))||tsTruthy(tsBooleanValue(false))||tsTruthy(tsStringReference(tsStringUTF8(""))) {t.Fatal("truthiness")}
+ if tsBoundary(loop,tsStringReference(tsStringUTF8("12")),"number",0,true).number!=12 {t.Fatal("coercion")}
+ if tsOptionalFrom[float64](tsNull).tag!=1 || tsOptionalFrom[float64](tsU).tag!=2 || tsOptionalFrom[float64](tsNumberValue(2)).value!=2 {t.Fatal("nullable tags")}
+}
+
 `
 	if err := os.WriteFile(filepath.Join(dir, "runtime_test.go"), []byte(tests), 0600); err != nil {
 		t.Fatal(err)
@@ -70,5 +119,53 @@ func TestArbitraryValue(t *testing.T){
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("runtime tests: %v\n%s", err, output)
+	}
+}
+
+// Only host APIs and generic static-type selection may inspect Go interfaces.
+// Application values must never fall back to interface boxing or assertions.
+func TestRuntimeInterfaceBoundaries(t *testing.T) {
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, legacy := range []string{"tsUnbox", "tsValueOf", "tsDynamicObject"} {
+		if strings.Contains(string(source), legacy) {
+			t.Fatalf("legacy adapter remains: %s", legacy)
+		}
+	}
+	file, err := parser.ParseFile(token.NewFileSet(), "runtime.go", source, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := map[string]bool{"tsUnwrap": true, "tsFromECMA": true, "tsECMAFailure": true, "tsNative": true, "tsPrimitiveValue": true}
+	for _, decl := range file.Decls {
+		fn, ok := decl.(*ast.FuncDecl)
+		if !ok {
+			continue
+		}
+		ast.Inspect(fn.Body, func(node ast.Node) bool {
+			if _, ok := node.(*ast.TypeAssertExpr); ok && !allowed[fn.Name.Name] {
+				t.Errorf("interface assertion in %s", fn.Name.Name)
+			}
+			if call, ok := node.(*ast.CallExpr); ok {
+				if name, ok := call.Fun.(*ast.Ident); ok && name.Name == "any" {
+					if (fn.Name.Name != "tsNative" && fn.Name.Name != "tsPrimitiveValue") || len(call.Args) != 1 || valueType(call.Args[0]) != "zero" {
+						t.Errorf("value boxed in %s", fn.Name.Name)
+					}
+				}
+			}
+			return true
+		})
+	}
+}
+func TestRejectInterfaceValueFallback(t *testing.T) {
+	for _, source := range []string{
+		"package main;func f(value any)tsValue{return value}",
+		"package main;func f(value tsValue){_ = value.(*tsObject)}",
+	} {
+		if _, err := formatValueSource([]byte(source)); err == nil {
+			t.Fatal("interface fallback accepted")
+		}
 	}
 }

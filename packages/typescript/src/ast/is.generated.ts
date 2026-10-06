@@ -102,6 +102,7 @@ import type {
     FunctionLikeDeclaration,
     FunctionTypeNode,
     GetAccessorDeclaration,
+    GoExpression,
     HeritageClause,
     HeritageClauseElement,
     Identifier,
@@ -1224,6 +1225,15 @@ export declare namespace isAwaitExpression {
     function Handle<T extends NodeHandleLike<Node>>(node: T): node is SpecializeNodeHandle<T, AwaitExpression>;
 }
 isAwaitExpression.Handle = isAwaitExpression as any;
+
+export function isGoExpression(node: Node): node is GoExpression {
+    return node.kind === SyntaxKind.GoExpression;
+}
+
+export declare namespace isGoExpression {
+    function Handle<T extends NodeHandleLike<Node>>(node: T): node is SpecializeNodeHandle<T, GoExpression>;
+}
+isGoExpression.Handle = isGoExpression as any;
 
 export function isTypeAssertion(node: Node): node is TypeAssertion {
     return node.kind === SyntaxKind.TypeAssertionExpression;
@@ -2744,6 +2754,18 @@ export function isKeywordTypeKind(kind: SyntaxKind): kind is KeywordTypeSyntaxKi
         || kind === SyntaxKind.IntrinsicKeyword
         || kind === SyntaxKind.NeverKeyword
         || kind === SyntaxKind.NumberKeyword
+        || kind === SyntaxKind.Float32Keyword
+        || kind === SyntaxKind.Float64Keyword
+        || kind === SyntaxKind.IntKeyword
+        || kind === SyntaxKind.Int8Keyword
+        || kind === SyntaxKind.Int16Keyword
+        || kind === SyntaxKind.Int32Keyword
+        || kind === SyntaxKind.Int64Keyword
+        || kind === SyntaxKind.UintKeyword
+        || kind === SyntaxKind.Uint8Keyword
+        || kind === SyntaxKind.Uint16Keyword
+        || kind === SyntaxKind.Uint32Keyword
+        || kind === SyntaxKind.Uint64Keyword
         || kind === SyntaxKind.ObjectKeyword
         || kind === SyntaxKind.StringKeyword
         || kind === SyntaxKind.SymbolKeyword

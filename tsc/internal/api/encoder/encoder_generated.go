@@ -293,6 +293,9 @@ func getChildrenPropertyMask(node *ast.Node) uint8 {
 	case ast.KindAwaitExpression:
 		n := node.AsAwaitExpression()
 		return (boolToByte(n.Expression != nil) << 0)
+	case ast.KindGoExpression:
+		n := node.AsGoExpression()
+		return (boolToByte(n.Expression != nil) << 0)
 	case ast.KindTypeAssertionExpression:
 		n := node.AsTypeAssertion()
 		return (boolToByte(n.Type != nil) << 0) | (boolToByte(n.Expression != nil) << 1)

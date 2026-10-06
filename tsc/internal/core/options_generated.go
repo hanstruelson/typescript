@@ -67,7 +67,6 @@ type CompilerOptions struct {
 	ModuleDetection                           ModuleDetectionKind                       `json:"moduleDetection,omitzero"`
 	NewLine                                   NewLineKind                               `json:"newLine,omitzero"`
 	NoEmit                                    Tristate                                  `json:"noEmit,omitzero"`
-	CoerceAny                                 Tristate                                  `json:"coerceAny,omitzero"`
 	NoCheck                                   Tristate                                  `json:"noCheck,omitzero"`
 	NoErrorTruncation                         Tristate                                  `json:"noErrorTruncation,omitzero"`
 	NoFallthroughCasesInSwitch                Tristate                                  `json:"noFallthroughCasesInSwitch,omitzero"`
@@ -77,6 +76,7 @@ type CompilerOptions struct {
 	NoEmitHelpers                             Tristate                                  `json:"noEmitHelpers,omitzero"`
 	NoLib                                     Tristate                                  `json:"noLib,omitzero"`
 	NoPropertyAccessFromIndexSignature        Tristate                                  `json:"noPropertyAccessFromIndexSignature,omitzero"`
+	CoerceAny                                 Tristate                                  `json:"coerceAny,omitzero"`
 	NoUncheckedIndexedAccess                  Tristate                                  `json:"noUncheckedIndexedAccess,omitzero"`
 	NoEmitOnError                             Tristate                                  `json:"noEmitOnError,omitzero"`
 	NoUnusedLocals                            Tristate                                  `json:"noUnusedLocals,omitzero"`
@@ -215,7 +215,6 @@ func (options *CompilerOptions) Clone() *CompilerOptions {
 		ModuleDetection:                         options.ModuleDetection,
 		NewLine:                                 options.NewLine,
 		NoEmit:                                  options.NoEmit,
-		CoerceAny:                               options.CoerceAny,
 		NoCheck:                                 options.NoCheck,
 		NoErrorTruncation:                       options.NoErrorTruncation,
 		NoFallthroughCasesInSwitch:              options.NoFallthroughCasesInSwitch,
@@ -225,6 +224,7 @@ func (options *CompilerOptions) Clone() *CompilerOptions {
 		NoEmitHelpers:                           options.NoEmitHelpers,
 		NoLib:                                   options.NoLib,
 		NoPropertyAccessFromIndexSignature:      options.NoPropertyAccessFromIndexSignature,
+		CoerceAny:                               options.CoerceAny,
 		NoUncheckedIndexedAccess:                options.NoUncheckedIndexedAccess,
 		NoEmitOnError:                           options.NoEmitOnError,
 		NoUnusedLocals:                          options.NoUnusedLocals,
@@ -458,9 +458,6 @@ func (options *CompilerOptions) Equals(other *CompilerOptions) bool {
 	if options.NoEmit != other.NoEmit {
 		return false
 	}
-	if options.CoerceAny != other.CoerceAny {
-		return false
-	}
 	if options.NoCheck != other.NoCheck {
 		return false
 	}
@@ -486,6 +483,9 @@ func (options *CompilerOptions) Equals(other *CompilerOptions) bool {
 		return false
 	}
 	if options.NoPropertyAccessFromIndexSignature != other.NoPropertyAccessFromIndexSignature {
+		return false
+	}
+	if options.CoerceAny != other.CoerceAny {
 		return false
 	}
 	if options.NoUncheckedIndexedAccess != other.NoUncheckedIndexedAccess {

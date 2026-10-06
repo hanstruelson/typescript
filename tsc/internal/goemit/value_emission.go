@@ -2,6 +2,7 @@ package goemit
 
 import (
 	"bytes"
+	"fmt"
 	"go/ast"
 	"go/format"
 	"go/parser"
@@ -19,6 +20,7 @@ func formatValueSource(source []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	threadLoopContext(file)
 	pass := valueEmission{fields: map[string]map[string]string{}, functions: map[string][]valueSignature{}, globals: map[string]string{}}
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
@@ -49,7 +51,7 @@ func formatValueSource(source []byte) ([]byte, error) {
 		if d, ok := decl.(*ast.FuncDecl); ok {
 			// Host adapters deliberately accept/return Go interfaces. Their body is not
 			// JavaScript code and must not recursively call itself through this pass.
-			if d.Name.Name == "tsValueOf" || d.Name.Name == "tsUnbox" || d.Name.Name == "tsPrimitiveValue" || d.Name.Name == "tsNative" {
+			if d.Name.Name == "tsUnwrap" || d.Name.Name == "tsPrimitiveValue" || d.Name.Name == "tsNative" {
 				continue
 			}
 			env := copyValueEnvironment(pass.globals)
@@ -60,17 +62,22 @@ func formatValueSource(source []byte) ([]byte, error) {
 			pass.block(d.Body, env, valueFunctionSignature(d.Type).result)
 		}
 	}
+	if pass.err != nil {
+		return nil, pass.err
+	}
 	var out bytes.Buffer
 	err = format.Node(&out, set, file)
 	return out.Bytes(), err
 }
 
 type valueSignature struct {
-	parameters []string
-	variadic   bool
-	result     string
+	typeParameters []string
+	parameters     []string
+	variadic       bool
+	result         string
 }
 type valueEmission struct {
+	err       error
 	fields    map[string]map[string]string
 	functions map[string][]valueSignature
 	globals   map[string]string
@@ -86,6 +93,13 @@ func valueType(expr ast.Expr) string {
 }
 func valueFunctionSignature(fn *ast.FuncType) valueSignature {
 	sig := valueSignature{}
+	if fn.TypeParams != nil {
+		for _, field := range fn.TypeParams.List {
+			for _, name := range field.Names {
+				sig.typeParameters = append(sig.typeParameters, name.Name)
+			}
+		}
+	}
 	if fn.Params != nil {
 		for _, field := range fn.Params.List {
 			kind := valueType(field.Type)
@@ -156,24 +170,49 @@ func valueCallName(expr ast.Expr) string {
 		return e.Sel.Name
 	case *ast.IndexExpr:
 		return valueCallName(e.X)
+	case *ast.IndexListExpr:
+		return valueCallName(e.X)
 	}
 	return ""
 }
 func (p *valueEmission) signature(call *ast.CallExpr, env map[string]string) valueSignature {
-	// A local callback or function-valued field takes precedence over a method
-	// with the same name elsewhere in the generated runtime.
-	if ident, ok := call.Fun.(*ast.Ident); ok {
-		if typ := env[ident.Name]; strings.HasPrefix(typ, "func(") {
-			if parsed, err := parser.ParseExpr(typ); err == nil {
-				if fn, ok := parsed.(*ast.FuncType); ok {
-					return valueFunctionSignature(fn)
-				}
+	// Callback signatures live on locals and struct fields, including the
+	// concrete class views. Resolve these before same-named runtime methods.
+	if typ := p.kind(call.Fun, env); strings.HasPrefix(typ, "func(") {
+		if parsed, err := parser.ParseExpr(typ); err == nil {
+			if fn, ok := parsed.(*ast.FuncType); ok {
+				return valueFunctionSignature(fn)
 			}
 		}
 	}
 	candidates := p.functions[valueCallName(call.Fun)]
 	for _, sig := range candidates {
 		if (!sig.variadic && len(sig.parameters) == len(call.Args)) || (sig.variadic && len(call.Args) >= len(sig.parameters)-1) {
+			types := []ast.Expr{}
+			switch indexed := call.Fun.(type) {
+			case *ast.IndexExpr:
+				types = append(types, indexed.Index)
+			case *ast.IndexListExpr:
+				types = indexed.Indices
+			}
+			if len(types) == len(sig.typeParameters) && len(types) > 0 {
+				replace := func(typ string) string {
+					for i, name := range sig.typeParameters {
+						if typ == name {
+							return valueType(types[i])
+						}
+						if typ == "[]"+name {
+							return "[]" + valueType(types[i])
+						}
+					}
+					return typ
+				}
+				sig.parameters = append([]string(nil), sig.parameters...)
+				for i, typ := range sig.parameters {
+					sig.parameters[i] = replace(typ)
+				}
+				sig.result = replace(sig.result)
+			}
 			return sig
 		}
 	}
@@ -227,11 +266,33 @@ func (p *valueEmission) kind(expr ast.Expr, env map[string]string) string {
 	case *ast.FuncLit:
 		return valueType(e.Type)
 	case *ast.CallExpr:
+		if selector, ok := e.Fun.(*ast.SelectorExpr); ok {
+			if pkg, ok := selector.X.(*ast.Ident); ok {
+				switch pkg.Name {
+				case "math":
+					if selector.Sel.Name == "IsNaN" || selector.Sel.Name == "IsInf" {
+						return "bool"
+					}
+					return "float64"
+				case "fmt":
+					if selector.Sel.Name == "Sprint" || selector.Sel.Name == "Sprintf" {
+						return "string"
+					}
+				case "strings":
+					if selector.Sel.Name == "Join" {
+						return "string"
+					}
+				}
+			}
+			if selector.Sel.Name == "Error" {
+				return "string"
+			}
+		}
 		name := valueCallName(e.Fun)
 		switch name {
-		case "tsNumberValue", "tsBooleanValue", "tsStringReference", "tsValueOf", "tsPrimitiveValue":
+		case "tsNumberValue", "tsBooleanValue", "tsStringReference", "tsPrimitiveValue":
 			return "tsValue"
-		case "float64", "float32", "int", "int64", "uint16", "uint32", "uint64", "bool", "string":
+		case "float64", "float32", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "bool", "string":
 			return name
 		case "make":
 			if len(e.Args) > 0 {
@@ -275,6 +336,15 @@ func valueWrapper(name string, expr ast.Expr) ast.Expr {
 	return &ast.CallExpr{Fun: ast.NewIdent(name), Args: []ast.Expr{expr}}
 }
 func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]string) ast.Expr {
+	if expected == "tsBindingCell" {
+		kind := p.kind(expr, env)
+		if kind == "nil" {
+			return &ast.CompositeLit{Type: ast.NewIdent("tsBindingCell")}
+		}
+		if kind == "*tsCell" || valueBase(kind) == "tsTypedCell" {
+			return &ast.CallExpr{Fun: &ast.SelectorExpr{X: expr, Sel: ast.NewIdent("bindingRef")}}
+		}
+	}
 	if expected != "tsValue" {
 		return expr
 	}
@@ -284,11 +354,10 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 		return expr
 	case "nil":
 		return ast.NewIdent("tsNull")
-	case "float64", "float32", "int", "int64", "uint16", "uint32", "uint64":
-		if kind != "float64" {
-			expr = valueWrapper("float64", expr)
-		}
+	case "float64":
 		return valueWrapper("tsNumberValue", expr)
+	case "float32", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return valueWrapper("ts"+strings.ToUpper(kind[:1])+kind[1:]+"Value", expr)
 	case "bool":
 		return valueWrapper("tsBooleanValue", expr)
 	case "*tsString":
@@ -298,7 +367,20 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 	case "T":
 		return valueWrapper("tsPrimitiveValue", expr)
 	}
-	return valueWrapper("tsValueOf", expr)
+	constructors := map[string]string{"*tsObject": "tsObjectValue", "*tsArray": "tsArrayValue", "*tsFunction": "tsFunctionValue", "*tsClass": "tsClassValue", "*tsProperties": "tsInstanceValue", "*tsRegExp": "tsRegExpValue", "*tsECMAObject": "tsECMAValue", "*tsRuntimeError": "tsErrorValue", "*tsPromise": "tsPromiseValue", "*tsTask": "tsTaskValue", "*tsModule": "tsModuleValue", "*tsIterator": "tsIteratorValueReference", "tsNamespace": "tsNamespaceValue", "tsImportRef": "tsImportValue"}
+	if constructor := constructors[kind]; constructor != "" {
+		return valueWrapper(constructor, expr)
+	}
+	if valueBase(kind) == "tsOptional" {
+		return &ast.CallExpr{Fun: &ast.SelectorExpr{X: expr, Sel: ast.NewIdent("raw")}}
+	}
+	if strings.HasPrefix(kind, "*") && p.fields[valueBase(kind)]["properties"] == "*tsProperties" {
+		return valueWrapper("tsInstanceValue", &ast.SelectorExpr{X: expr, Sel: ast.NewIdent("properties")})
+	}
+	if p.err == nil {
+		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue", valueType(expr), kind)
+	}
+	return expr
 }
 func (p *valueEmission) expression(expr ast.Expr, env map[string]string) ast.Expr {
 	if expr == nil {
@@ -336,9 +418,9 @@ func (p *valueEmission) expression(expr ast.Expr, env map[string]string) ast.Exp
 	case *ast.TypeAssertExpr:
 		e.X = p.expression(e.X, env)
 		if p.kind(e.X, env) == "tsValue" {
-			// Preserve Go's comma-ok form (used by the runtime's type switches and
-			// checked assertions). Unboxing keeps the original assertion semantics.
-			e.X = valueWrapper("tsUnbox", e.X)
+			if p.err == nil {
+				p.err = fmt.Errorf("interface assertion on JavaScript value: %s", valueType(e))
+			}
 		}
 	case *ast.CompositeLit:
 		kind := valueType(e.Type)
@@ -389,6 +471,8 @@ func (p *valueEmission) expression(expr ast.Expr, env map[string]string) ast.Exp
 	case *ast.ParenExpr:
 		e.X = p.expression(e.X, env)
 	case *ast.SelectorExpr:
+		e.X = p.expression(e.X, env)
+	case *ast.IndexListExpr:
 		e.X = p.expression(e.X, env)
 	case *ast.IndexExpr:
 		e.X = p.expression(e.X, env)
@@ -463,6 +547,8 @@ func (p *valueEmission) statement(stmt ast.Stmt, env map[string]string, result s
 			s.Rhs[i] = p.expression(expr, env)
 		}
 		for i, left := range s.Lhs {
+			left = p.expression(left, env)
+			s.Lhs[i] = left
 			if i >= len(s.Rhs) {
 				if name, ok := left.(*ast.Ident); ok {
 					env[name.Name] = "bool"

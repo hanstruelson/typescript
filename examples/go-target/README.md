@@ -62,12 +62,10 @@ creates fresh iteration bindings; closures capture the appropriate cells.
 Protected-region and pending-completion stacks preserve return, rejection,
 `break`, and `continue` through `try`/`catch`/`finally`, including awaited cleanup.
 
-Only the event-loop goroutine accesses bindings, Promises, ready callbacks, and
-the pending-task set. A native task registers before its goroutine starts. A
-worker captures only native inputs, writes its own result, and sends its task
-pointer through the completion channel. Channel publication synchronizes the
-result transfer. The event loop removes the task and runs its completion action.
-There are no shared-map locks because workers never access the map.
+Each event loop runs its callbacks and async function steps on one goroutine.
+Native tasks publish completion through that loop's task channel. User workers
+have separate event loops; their reference values and captured bindings remain
+shared. Users are responsible for avoiding concurrent mutation of those values.
 
 After synchronous execution, the loop drains Promise reactions and completed
 timers. If tasks remain, it waits on the completion channel. It exits when ready
@@ -91,12 +89,48 @@ comparisons; strict equality; short-circuit and conditional expressions; `if`;
 throw; and `try`/`catch`/`finally`. Promises support an executor, `resolve`,
 `reject`, array `all`, `then`, and `catch`. Every output includes the runtime.
 
-General objects, generators, async iterators, destructuring, spread,
-JSX, and source maps are outside this initial subset and produce diagnostics.
-This is not a complete JavaScript or Node.js runtime: general coercions,
-thenables, built-in objects, and additional filesystem encodings are not
-implemented. Errors use runtime rejection values rather than JavaScript Error
-objects. Timer handles are opaque, not browser numeric IDs.
+Objects, destructuring, spread, classes, regular expressions, optional chaining,
+named function expressions, logical assignments, exponentiation, bitwise
+operators, loose equality, property membership, and numeric/string enums are
+also supported. Enums include numeric reverse mappings and declaration merging.
+Array elisions and gaps created by index or length assignments remain absent
+properties. Iteration yields `undefined` for those slots, while spread creates
+present `undefined` elements; property membership and key enumeration distinguish
+these cases.
+
+For `number`, bitwise operations truncate and wrap operands to 32 bits; shift
+counts are masked to five bits, and `>>>` returns an unsigned 32-bit result as a
+`number`. Known `number` operands use native Go numeric helpers, including
+compound assignments and exponentiation. Dynamic operands perform JavaScript
+primitive conversion first. Explicit native integer types retain their native
+width and Go-style shift behavior.
+
+
+Union types retain TypeScript's control-flow narrowing. Intersection objects use
+one flat property store and preserve object identity. Generic functions, classes,
+and aliases are checked by TypeScript. Eligible named synchronous generic
+functions now receive cached concrete Go implementations for checked call-site
+types. Primitive arguments, locals, and results stay native; TypeScript `any`
+uses `tsValue`. Small bodies emit direct Go expressions. More complex supported
+bodies reuse the lowering machinery with concrete substitutions, including
+indexed-access and conditional types. Captures are passed as binding pointers.
+This is our own specialization implementation, rather than Go type parameters.
+
+Generic classes, first-class function calls, reassigned functions, async generic
+functions, and bodies with unsupported specialization control flow retain the
+existing tagged ABI. Structural objects still use the existing flat property
+store; specialization does not yet create native structs for their fields.
+The specializer limits expansion to 64 implementations per function and 16 nested
+specializations, then falls back to the ordinary function ABI. Primitive templates
+share implementations by Go representation; dependent bodies use checked type
+identity to avoid conflating different shapes. `keyof`, indexed access, mapped
+and conditional types, and `satisfies` remain supported.
+
+Generators, async iterators, decorators, namespaces, and several advanced class
+features still need backend work. This is not a complete JavaScript or Node.js
+runtime: additional built-ins and host APIs remain incomplete. JSX and dynamic
+code execution are excluded from the project scope. Timer handles are opaque,
+not browser numeric IDs.
 
 ## Demand-driven modules
 
@@ -156,7 +190,7 @@ fields retain JavaScript's `undefined` behavior through initialization flags.
 Simple synchronous methods emit structured Go bodies; asynchronous methods and
 complex control flow reuse the existing state-machine machinery.
 
-Known class dot access uses concrete fields/accessors and generated Go interfaces,
+Known class dot access uses concrete fields/accessors and generated callback views,
 without property-name hashing. Parent-typed references can hold different concrete
 descendants. Bracket reads and writes use an instance-owned property table with
 generated accessors into those same fields; dynamically added properties use
@@ -169,19 +203,36 @@ Inherited static fields read parent storage until a child writes its own value;
 static methods retain lexical `super` and the current class receiver.
 
 The initial class subset requires named classes and statically resolved base
-classes in the same source file. Accessors, ECMAScript private fields, parameter properties, and computed
-declarations are diagnosed. Ordinary array storage still uses dynamic values. Typed primitive bindings and
+classes in the same source file. Constructor parameter properties use the same
+native slots as ordinary fields.
+Synthetic property declarations precede regular fields; parameter values are
+assigned after base field initialization or after `super()` in derived classes.
+Validated native and nullable parameters write their slots directly. Constructors
+and methods support rest and destructured parameters, and constructor calls
+support spread arguments. Defaults preserve parameter temporal dead zones and
+exact native integer literals, including declared numeric rest arguments. Accessors, ECMAScript private fields, and computed
+declarations are diagnosed. Ordinary array storage still uses dynamic values.
+Typed primitive bindings and
 suitable ordinary functions use native payloads and signatures.
 
 
 ## Types and strings
 
+Dynamic values use a 24-byte tagged container on 64-bit Go: an eight-byte
+type tag, an eight-byte numeric payload, and an eight-byte GC-visible
+`unsafe.Pointer`. The numeric payload remains `float64` to preserve JavaScript
+Number semantics. Runtime dispatch and generated class views use tags and concrete
+pointers. Go interfaces are confined to host APIs (Goja, panic recovery, formatting)
+and selection of the static generic primitive type; JavaScript values are never
+boxed into interfaces for internal dispatch.
+
 Non-nullable primitive bindings use native payloads (`float64`, `bool`, or a
 pointer to our UTF-16 string). Nullable primitive bindings use a payload plus a
 small tag distinguishing value, null, and undefined. Dynamic values entering a
-typed parameter, assignment, or return are checked at runtime. `--coerceAny` (or
-`"coerceAny": true` in tsconfig) enables conversions at those boundaries. Without
-it, incompatible values raise a catchable TypeError with an option hint. Null
+typed parameter, assignment, return, or mixed typed/dynamic comparison are
+converted at runtime by default. `--coerceAny false` (or `"coerceAny": false`
+in tsconfig) instead checks tags and raises a catchable TypeError for an
+incompatible value. Null
 and undefined are accepted only when permitted by the destination type, or
 converted when coercion is enabled. Hoisted variable reads and lexical temporal
 dead zones retain separate initialization tracking.
@@ -220,11 +271,55 @@ go run ./tsc/cmd/tsc --project examples/go-target/types
 go run examples/go-target/types/out/main.go
 ```
 
-Add `--coerceAny` to the compiler command to convert the dynamic `"42"` argument
-instead of reporting a type mismatch.
+The dynamic `"42"` argument converts by default. Add `--coerceAny false`
+to report a type mismatch instead.
 
 The [implementation plan](IMPLEMENTATION_PLAN.md) describes the remaining features,
 performance work, dynamic representation, and proposed comparison policy.
 
 The [dynamic-value benchmarks](benchmarks/README.md) compare Go interfaces with
 custom tagged containers; the production dynamic representation is still `any`.
+
+## Native numeric types and user workers
+
+The parser and checker recognize `float32`, `float64`, `int`, `int8`, `int16`,
+`int32`, `int64`, `uint`, `uint8`, `uint16`, `uint32`, and `uint64`. `number`
+continues to mean `float64`. Statically typed bindings, parameters, results, and
+fields use the corresponding Go types. Dynamic values retain exact integer bits
+in the 24-byte tagged representation, including all `int64` and `uint64` values.
+
+Conversions always check representability, regardless of `coerceAny`. Invalid
+constants produce an emit diagnostic; runtime overflow, fractional integer
+conversion, NaN, or infinity converted to an integer raise `RangeError`.
+`float32` rounds to native precision, rejecting finite values that overflow.
+`coerceAny` controls conversion from nonnumeric dynamic values and defaults to
+true. Same-type native integer arithmetic uses Go's integer arithmetic semantics.
+Mixed native arithmetic promotes to a common native type and checks operand
+conversions; explicit `number` operands select `float64`. Inferred arithmetic
+results retain their native type.
+
+```ts
+declare function delay(ms: number): Promise<void>;
+let count: int64 = 9223372036854775807;
+async function worker(value: int64): Promise<int64> {
+    await delay(1);
+    return value;
+}
+async function main() {
+    const result = await go worker(count);
+    console.log(result);
+}
+main();
+```
+
+`go worker(args)` evaluates the function and arguments once, starts a task with
+its own event loop, and returns a Promise for the worker's result or error.
+Nested calls, timers, async functions, and further `go` calls use the executing
+worker's loop. Scalars pass by value; object, array, function, and class references
+pass by pointer. No arguments, captures, or results are deep copied.
+
+Local literal dynamic imports such as `await import("./helper.js")` reuse the
+bundle's module registry. Initialization runs once on the registry's owner loop,
+protected by an internal once lock; concurrent workers wait through task
+completion. Export lookup uses an internal read lock. No channels or user mutex
+primitives are introduced.

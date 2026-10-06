@@ -5,9 +5,14 @@ virtual CPU. One Go execution thread (`GOMAXPROCS=1`, `-cpu=1`). Each result is
 the median of five 200 ms runs. These are representation microbenchmarks, not
 measurements of complete transpiled programs or npm packages.
 
+The backend now uses the Inline24 layout for dynamic storage. The recommendations
+below record the original experiment; they do not describe the current ABI.
+Complete generated-program performance still needs measurement as legacy
+interface adapters are removed.
+
 ## What was compared
 
-- **Any (16 bytes):** the current Go interface representation. Numbers may need
+- **Any (16 bytes):** the Go interface compatibility baseline. Numbers may need
   separate storage when returned through a non-inlined dynamic call or written to
   an escaping dynamic cell. Object pointers do not require that numeric box.
 - **Inline24 (24 bytes):** our own inline tag, float64 payload, and a dedicated

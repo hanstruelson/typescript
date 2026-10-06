@@ -2,13 +2,23 @@ package goemit
 
 import (
 	"fmt"
+	"go/constant"
+	"go/token"
+	"math"
 	"strconv"
 	"strings"
 
 	"github.com/microsoft/TypeScript/tsc/internal/ast"
+	"github.com/microsoft/TypeScript/tsc/internal/core"
+	"github.com/microsoft/TypeScript/tsc/internal/scanner"
 )
 
 func (b *machineBuilder) identifier(node *ast.Node) string {
+	if member := b.e.reference(node); member != nil && member.Kind == ast.KindEnumMember {
+		if cell := b.e.bindings[member.Parent]; cell != nil {
+			return "tsGet(" + cell.name + ".get()," + strconv.Quote(member.Name().Text()) + ")"
+		}
+	}
 	if cell := b.e.binding(node); cell != nil {
 		return cell.name + ".get()"
 	}
@@ -52,6 +62,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	if node == nil {
 		return "tsU"
 	}
+	if ast.IsOptionalChain(node) {
+		return b.optionalChain(node)
+	}
 	switch node.Kind {
 	case ast.KindNumericLiteral:
 		text := strings.ReplaceAll(node.Text(), "_", "")
@@ -88,9 +101,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 		return b.typedTemp(stringLiteral(node.Text()), "*tsString")
 	case ast.KindTrueKeyword:
-		return b.temp("true")
+		return b.typedTemp("true", "bool")
 	case ast.KindFalseKeyword:
-		return b.temp("false")
+		return b.typedTemp("false", "bool")
 	case ast.KindNullKeyword:
 		return b.temp("nil")
 	case ast.KindThisKeyword:
@@ -105,6 +118,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindSuperKeyword:
 		return b.receiver
 	case ast.KindIdentifier:
+		if cell := b.e.binding(node); cell != nil && b.e.strictNulls && (cell.primitive.kind == "" || cell.primitive.nulls != 0) && (!cell.maybeUndefined || b.definitelyInitialized(cell, node)) {
+			if p := b.e.primitive(node); p.kind != "" && p.nulls == 0 {
+				return b.typedTemp(fmt.Sprintf("tsNative[%s](tsBoundary(%s.get(),%q,0,false))", p.goType(), cell.name, p.kind), p.goType())
+			}
+		}
 		if cell := b.e.binding(node); cell != nil && cell.primitive.kind != "" && (cell.primitive.nulls != 0 || (cell.maybeUndefined && !b.definitelyInitialized(cell, node))) {
 			return b.typedTemp(cell.name+".optional()", "tsOptional["+cell.primitive.goType()+"]")
 		}
@@ -118,11 +136,35 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindParenthesizedExpression:
 		return b.expression(node.AsParenthesizedExpression().Expression)
 	case ast.KindAsExpression:
-		return b.expression(node.AsAsExpression().Expression)
+		return b.numericAssertion(node.AsAsExpression().Expression, node.AsAsExpression().Type)
 	case ast.KindTypeAssertionExpression:
-		return b.expression(node.AsTypeAssertion().Expression)
+		return b.numericAssertion(node.AsTypeAssertion().Expression, node.AsTypeAssertion().Type)
+	case ast.KindSatisfiesExpression:
+		return b.expression(node.AsSatisfiesExpression().Expression)
 	case ast.KindNonNullExpression:
 		return b.expression(node.AsNonNullExpression().Expression)
+	case ast.KindGoExpression:
+		callNode := node.AsGoExpression().Expression
+		if callNode.Kind != ast.KindCallExpression {
+			b.e.fail(node, "go requires a function call")
+			return "tsU"
+		}
+		call := callNode.AsCallExpression()
+		callee := b.expression(call.Expression)
+		args := []string{}
+		spread := false
+		for _, arg := range call.Arguments.Nodes {
+			if arg.Kind == ast.KindSpreadElement {
+				spread = true
+			}
+		}
+		if spread {
+			return b.temp("loop.spawn(" + callee + "," + b.spreadArguments(call.Arguments.Nodes) + "...)")
+		}
+		for i := range call.Arguments.Nodes {
+			args = append(args, b.callArgument(call, i))
+		}
+		return b.temp("loop.spawn(" + callee + ",[]tsValue{" + strings.Join(args, ",") + "}...)")
 	case ast.KindAwaitExpression:
 		if !b.async {
 			b.e.fail(node, "await is supported only inside async functions")
@@ -154,10 +196,21 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			class := b.expression(n.Expression)
 			args := []string{}
 			if n.Arguments != nil {
+				spread := false
 				for _, arg := range n.Arguments.Nodes {
-					args = append(args, b.expression(arg))
+					if arg.Kind == ast.KindSpreadElement {
+						spread = true
+					}
+				}
+				if spread {
+					args = append(args, b.spreadArguments(n.Arguments.Nodes)+"...")
+				} else {
+					for i, arg := range n.Arguments.Nodes {
+						args = append(args, b.constructorArgument(node, b.e.classReference(n.Expression), i, arg))
+					}
 				}
 			}
+
 			suffix := ""
 			if len(args) > 0 {
 				suffix = "," + strings.Join(args, ",")
@@ -169,17 +222,31 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return "tsU"
 		}
 		executor := b.expression(n.Arguments.Nodes[0])
-		return b.temp("loop.construct(" + executor + ")")
+		return b.temp("loop.constructPromise(" + executor + ")")
 	case ast.KindCallExpression:
 		call := node.AsCallExpression()
+		if call.Expression.Kind == ast.KindImportKeyword {
+			target := b.e.targets[node]
+			if target == "" {
+				b.e.fail(node, "dynamic import requires a resolved literal module")
+				return "tsU"
+			}
+			return b.temp("modules[" + strconv.Quote(target) + "].load(loop)")
+		}
+
 		hasSpread := false
 		for _, arg := range call.Arguments.Nodes {
 			if arg.Kind == ast.KindSpreadElement {
 				hasSpread = true
 			}
 		}
-		if call.Expression.Kind == ast.KindIdentifier && b.concrete == nil && !hasSpread {
-			if fn := b.e.nativeFunctions[b.e.reference(call.Expression)]; fn != nil {
+		if call.Expression.Kind == ast.KindIdentifier && !hasSpread {
+			if fn := b.e.genericFunctions[b.e.reference(call.Expression)]; fn != nil {
+				if value, ok := b.genericCall(node, fn); ok {
+					return value
+				}
+			}
+			if fn := b.e.nativeFunctions[b.e.reference(call.Expression)]; fn != nil && b.concrete == nil {
 				return b.nativeCall(node, fn)
 			}
 		}
@@ -189,12 +256,18 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				return "tsU"
 			}
 			args := []string{}
-			for _, arg := range call.Arguments.Nodes {
-				args = append(args, b.expression(arg))
+			if hasSpread {
+				args = append(args, b.spreadArguments(call.Arguments.Nodes)+"...")
+			} else {
+				for i, arg := range call.Arguments.Nodes {
+					args = append(args, b.constructorArgument(node, b.declaring.parent, i, arg))
+				}
 			}
+
 			b.emit("if " + b.receiver + ".properties.initialized {other:=" + b.receiver + ".newBlank();other." + ctorName(b.declaring.parent) + "(" + strings.Join(args, ",") + ");panic(\"Super constructor may only be called once\")}")
 			b.emit(b.receiver + "." + ctorName(b.declaring.parent) + "(" + strings.Join(args, ",") + ")")
 			b.initializeFields()
+			b.initializeParameterProperties()
 			return b.receiver
 		}
 		if call.QuestionDotToken != nil {
@@ -223,8 +296,8 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			}
 			if target != "" {
 				args := []string{}
-				for _, arg := range call.Arguments.Nodes {
-					args = append(args, b.expression(arg))
+				for i := range call.Arguments.Nodes {
+					args = append(args, b.callArgument(call, i))
 				}
 				return b.temp(target + "(" + strings.Join(args, ",") + ")")
 			}
@@ -234,11 +307,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return b.temp("tsCall(" + callee + "," + b.spreadArguments(call.Arguments.Nodes) + "...)")
 		}
 		args := []string{}
-		for _, arg := range call.Arguments.Nodes {
+		for i, arg := range call.Arguments.Nodes {
 			if arg.Kind == ast.KindSpreadElement {
 				b.e.fail(arg, "spread arguments are not supported")
 			}
-			args = append(args, b.expression(arg))
+			args = append(args, b.callArgument(call, i))
 		}
 		suffix := ""
 		if len(args) > 0 {
@@ -280,7 +353,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		index := b.expression(n.ArgumentExpression)
 		return b.temp("tsGet(" + receiver + "," + index + ")")
 	case ast.KindArrayLiteralExpression:
-		return b.temp("&tsArray{values:" + b.spreadArguments(node.AsArrayLiteralExpression().Elements.Nodes) + "}")
+		return b.arrayLiteral(node.AsArrayLiteralExpression().Elements.Nodes)
 	case ast.KindBinaryExpression:
 		return b.binary(node)
 	case ast.KindConditionalExpression:
@@ -319,9 +392,20 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		operand := b.expression(n.Operand)
 		switch n.Operator {
 		case ast.KindMinusToken:
+			if p := (primitive{kind: b.tempType(operand)}); p.numeric() {
+				return b.typedTemp("-"+operand, p.goType())
+			}
 			return b.temp("-tsNumber(" + operand + ")")
 		case ast.KindPlusToken:
+			if (primitive{kind: b.tempType(operand)}).numeric() {
+				return operand
+			}
 			return b.temp("tsNumber(" + operand + ")")
+		case ast.KindTildeToken:
+			if b.tempType(operand) == "float64" {
+				return b.typedTemp("tsNumberBitwiseNot("+operand+")", "float64")
+			}
+			return b.temp("tsBitwiseNot(" + operand + ")")
 		case ast.KindExclamationToken:
 			return b.temp("!tsTruthy(" + operand + ")")
 		}
@@ -397,7 +481,12 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 	if operator == ast.KindMinusMinusToken {
 		op = "-"
 	}
-	value := b.temp(write("tsNumber(" + old + ")" + op + "1"))
+	operand := "tsNumber(" + old + ")" + op + "1"
+	if p := b.e.primitive(node); p.numeric() {
+		one := b.typedTemp(p.goType()+"(1)", p.goType())
+		operand = "tsBinary(" + strconv.Quote(op) + "," + old + "," + one + ")"
+	}
+	value := b.temp(write(operand))
 	if postfix {
 		return old
 	}
@@ -406,16 +495,42 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 func (b *machineBuilder) binary(node *ast.Node) string {
 	n := node.AsBinaryExpression()
 	operator := n.OperatorToken.Kind
-	if operator == ast.KindEqualsToken || operator == ast.KindPlusEqualsToken || operator == ast.KindMinusEqualsToken || operator == ast.KindAsteriskEqualsToken {
+	if operator == ast.KindAmpersandAmpersandEqualsToken || operator == ast.KindBarBarEqualsToken || operator == ast.KindQuestionQuestionEqualsToken {
+		return b.logicalAssignment(n)
+	}
+	if operator == ast.KindEqualsToken || compoundOperator(operator) != "" {
 		read, write := b.lvalue(n.Left)
 		old := ""
 		if operator != ast.KindEqualsToken {
-			old = b.temp(read)
+			var cell *binding
+			if n.Left.Kind == ast.KindIdentifier {
+				cell = b.e.binding(n.Left)
+			}
+			if cell != nil && cell.primitive.goType() == "float64" && cell.primitive.nulls == 0 {
+				old = b.typedTemp(strings.TrimSuffix(read, ".get()")+".read()", "float64")
+			} else {
+				old = b.temp(read)
+			}
 		}
-		value := b.expression(n.Right)
+		value := ""
+		var assignment *binding
+		if n.Left.Kind == ast.KindIdentifier {
+			assignment = b.e.binding(n.Left)
+		}
+		if cell := assignment; cell != nil && cell.primitive.numeric() && cell.primitive.nulls == 0 {
+			value = b.numericExpression(n.Right, cell.primitive)
+		} else {
+			value = b.expression(n.Right)
+		}
 		if old != "" {
-			op := map[ast.Kind]string{ast.KindPlusEqualsToken: "+", ast.KindMinusEqualsToken: "-", ast.KindAsteriskEqualsToken: "*"}[operator]
-			value = b.temp("tsBinary(" + strconv.Quote(op) + "," + old + "," + value + ")")
+			op := compoundOperator(operator)
+			if op == "**" && b.tempType(old) == "float64" && b.tempType(value) == "float64" {
+				value = b.typedTemp("tsPow("+old+","+value+")", "float64")
+			} else if isBitwiseOperator(op) && b.tempType(old) == "float64" && b.tempType(value) == "float64" {
+				value = b.typedTemp("tsNumberBitwise("+strconv.Quote(op)+","+old+","+value+")", "float64")
+			} else {
+				value = b.temp("tsBinary(" + strconv.Quote(op) + "," + old + "," + value + ")")
+			}
 		}
 		if n.Left.Kind == ast.KindIdentifier {
 			if cell := b.e.binding(n.Left); cell != nil && cell.primitive.kind != "" && b.tempType(value) == cell.primitive.goType() {
@@ -424,7 +539,12 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		}
 		return b.temp(write(value))
 	}
-	left := b.expression(n.Left)
+	left := ""
+	if p := b.e.primitive(n.Right); p.numeric() && p.kind != "number" && n.Left.Kind == ast.KindNumericLiteral {
+		left = b.numericExpression(n.Left, p)
+	} else {
+		left = b.expression(n.Left)
+	}
 	if operator == ast.KindCommaToken {
 		return b.expression(n.Right)
 	}
@@ -453,15 +573,47 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		b.current = end
 		return result
 	}
-	right := b.expression(n.Right)
+	right := ""
+	if p := (primitive{kind: b.tempType(left)}); p.numeric() && p.kind != "float64" && n.Right.Kind == ast.KindNumericLiteral {
+		right = b.numericExpression(n.Right, p)
+	} else {
+		right = b.expression(n.Right)
+	}
 	if operator == ast.KindInstanceOfKeyword {
 		return b.temp("tsInstanceOf(" + left + "," + right + ")")
 	}
-	operators := map[ast.Kind]string{ast.KindPlusToken: "+", ast.KindMinusToken: "-", ast.KindAsteriskToken: "*", ast.KindSlashToken: "/", ast.KindPercentToken: "%", ast.KindLessThanToken: "<", ast.KindLessThanEqualsToken: "<=", ast.KindGreaterThanToken: ">", ast.KindGreaterThanEqualsToken: ">=", ast.KindEqualsEqualsEqualsToken: "===", ast.KindExclamationEqualsEqualsToken: "!=="}
+	operators := map[ast.Kind]string{ast.KindPlusToken: "+", ast.KindMinusToken: "-", ast.KindAsteriskToken: "*", ast.KindSlashToken: "/", ast.KindPercentToken: "%", ast.KindLessThanToken: "<", ast.KindLessThanEqualsToken: "<=", ast.KindGreaterThanToken: ">", ast.KindGreaterThanEqualsToken: ">=", ast.KindEqualsEqualsEqualsToken: "===", ast.KindExclamationEqualsEqualsToken: "!==", ast.KindEqualsEqualsToken: "==", ast.KindExclamationEqualsToken: "!=", ast.KindAsteriskAsteriskToken: "**", ast.KindAmpersandToken: "&", ast.KindBarToken: "|", ast.KindCaretToken: "^", ast.KindLessThanLessThanToken: "<<", ast.KindGreaterThanGreaterThanToken: ">>", ast.KindGreaterThanGreaterThanGreaterThanToken: ">>>", ast.KindInKeyword: "in"}
 	op, ok := operators[operator]
 	if !ok {
 		b.e.fail(node, "unsupported binary operator "+operator.String())
 		return "tsU"
+	}
+	// Operands have already been saved in left-to-right order. A dynamic value
+	// compared with a typed primitive uses the same policy as typed assignments.
+	switch op {
+	case "==", "!=", "===", "!==", "<", "<=", ">", ">=":
+		leftPlan, rightPlan := b.e.primitive(n.Left), b.e.primitive(n.Right)
+		if leftPlan.kind != "" && rightPlan.kind == "" && !isNullishComparisonOperand(n.Right) {
+			right = b.comparisonBoundary(right, leftPlan)
+		} else if rightPlan.kind != "" && leftPlan.kind == "" && !isNullishComparisonOperand(n.Left) {
+			left = b.comparisonBoundary(left, rightPlan)
+		}
+	}
+	if op == "**" && b.tempType(left) == "float64" && b.tempType(right) == "float64" {
+		return b.typedTemp("tsPow("+left+","+right+")", "float64")
+	}
+	if isBitwiseOperator(op) && b.tempType(left) == "float64" && b.tempType(right) == "float64" {
+		return b.typedTemp("tsNumberBitwise("+strconv.Quote(op)+","+left+","+right+")", "float64")
+	}
+	if op == "in" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == ">>>" || op == "**" || op == "==" || op == "!=" {
+		return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
+	}
+	if b.tempType(left) == "bool" && b.tempType(right) == "bool" && (op == "===" || op == "!==") {
+		goop := "=="
+		if op == "!==" {
+			goop = "!="
+		}
+		return b.typedTemp(left+goop+right, "bool")
 	}
 	if b.tempType(left) == "*tsString" && b.tempType(right) == "*tsString" {
 		switch op {
@@ -476,6 +628,33 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		}
 	}
 	numberLeft, numberRight := b.tempType(left), b.tempType(right)
+	if numberLeft != numberRight && (primitive{kind: numberLeft}).numeric() && (primitive{kind: numberRight}).numeric() && (op == "+" || op == "-" || op == "*" || op == "/" || op == "%") {
+		target := numericPromotion(numberLeft, numberRight)
+		left = b.comparisonBoundary(left, primitive{kind: target})
+		right = b.comparisonBoundary(right, primitive{kind: target})
+		numberLeft = target
+		numberRight = target
+	}
+
+	if numberLeft == numberRight && numberLeft != "float64" && (primitive{kind: numberLeft}).numeric() {
+		goop := op
+		kind := numberLeft
+		switch op {
+		case "===":
+			goop = "=="
+			kind = "bool"
+		case "!==":
+			goop = "!="
+			kind = "bool"
+		case "<", "<=", ">", ">=":
+			kind = "bool"
+		}
+		if op == "%" && numberLeft == "float32" {
+			return b.typedTemp("float32(math.Mod(float64("+left+"),float64("+right+")))", kind)
+		}
+		return b.typedTemp(left+goop+right, kind)
+	}
+
 	if (numberLeft == "float64" || numberLeft == "tsOptional[float64]") && (numberRight == "float64" || numberRight == "tsOptional[float64]") {
 		if (op == "===" || op == "!==") && (numberLeft != "float64" || numberRight != "float64") {
 			return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
@@ -504,4 +683,203 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		return b.typedTemp(left+goop+right, kind)
 	}
 	return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
+}
+
+func isNullishComparisonOperand(node *ast.Node) bool {
+	switch node.Kind {
+	case ast.KindNullKeyword:
+		return true
+	case ast.KindIdentifier:
+		return node.Text() == "undefined"
+	case ast.KindParenthesizedExpression:
+		return isNullishComparisonOperand(node.AsParenthesizedExpression().Expression)
+	}
+	return false
+}
+func (b *machineBuilder) comparisonBoundary(value string, p primitive) string {
+	checked := fmt.Sprintf("tsBoundary(%s,%q,%d,%t)", value, p.kind, p.nulls, b.e.coerce)
+	if p.nulls != 0 {
+		return b.typedTemp("tsOptionalFrom["+p.goType()+"]("+checked+")", "tsOptional["+p.goType()+"]")
+	}
+	return b.typedTemp("tsNative["+p.goType()+"]("+checked+")", p.goType())
+}
+
+func (b *machineBuilder) numericAssertion(expression, typeNode *ast.Node) string {
+	p := b.e.annotationPrimitive(typeNode)
+	if p.numeric() {
+		return b.numericExpression(expression, p)
+	}
+	return b.expression(expression)
+}
+func (b *machineBuilder) numericExpression(node *ast.Node, p primitive) string {
+	if node.Kind == ast.KindParenthesizedExpression {
+		return b.numericExpression(node.Expression(), p)
+	}
+
+	if p.kind != "number" && p.kind != "float64" {
+		if c, known := b.nativeConstant(node); known {
+			if p.kind == "float32" {
+				v, _ := constant.Float64Val(constant.ToFloat(c))
+				rounded := float32(v)
+				if !math.IsInf(float64(rounded), 0) {
+					return b.typedTemp("float32("+strconv.FormatFloat(float64(rounded), 'g', -1, 32)+")", "float32")
+				}
+			}
+			if p.kind != "float32" {
+				bits := 64
+				switch p.kind {
+				case "int", "uint":
+					bits = strconv.IntSize
+				case "int8", "uint8":
+					bits = 8
+				case "int16", "uint16":
+					bits = 16
+				case "int32", "uint32":
+					bits = 32
+				}
+				integer := constant.ToInt(c)
+				if integer.Kind() == constant.Int {
+					if strings.HasPrefix(p.kind, "uint") {
+						v, ok := constant.Uint64Val(integer)
+						if ok && (bits == 64 || v < uint64(1)<<bits) {
+							return b.typedTemp(p.goType()+"("+strconv.FormatUint(v, 10)+")", p.goType())
+						}
+					} else {
+						v, ok := constant.Int64Val(integer)
+						if ok && (bits == 64 || (v >= -(int64(1)<<(bits-1)) && v < int64(1)<<(bits-1))) {
+							return b.typedTemp(p.goType()+"("+strconv.FormatInt(v, 10)+")", p.goType())
+						}
+					}
+				}
+			}
+			b.e.fail(node, "numeric constant cannot be represented as "+p.kind)
+			return "tsU"
+		}
+	}
+
+	value := b.expression(node)
+	if b.tempType(value) == p.goType() {
+		return value
+	}
+	return b.comparisonBoundary(value, p)
+}
+
+func (b *machineBuilder) callArgument(call *ast.CallExpression, index int) string {
+	var declaration *ast.Node
+	if call.Expression.Kind == ast.KindIdentifier {
+		declaration = b.e.reference(call.Expression)
+	}
+	if call.Expression.Kind == ast.KindPropertyAccessExpression {
+		property := call.Expression.AsPropertyAccessExpression()
+		if c := b.classOf(property.Expression); c != nil {
+			declaration = c.methods[property.Name().Text()]
+		}
+	}
+	if declaration != nil && declaration.Kind == ast.KindVariableDeclaration {
+		declaration = declaration.AsVariableDeclaration().Initializer
+	}
+	if declaration != nil && ast.IsFunctionLike(declaration) {
+		p := b.argumentPrimitive(declaration, index)
+		if p.numeric() && p.nulls == 0 {
+			return b.numericExpression(call.Arguments.Nodes[index], p)
+		}
+	}
+	return b.expression(call.Arguments.Nodes[index])
+}
+
+func numericPromotion(a, b string) string { return core.NativeNumericPromotion(a, b) }
+
+func (b *machineBuilder) nativeConstant(node *ast.Node) (constant.Value, bool) {
+	switch node.Kind {
+	case ast.KindNumericLiteral:
+		text := strings.TrimSpace(b.e.file.Text()[scanner.SkipTrivia(b.e.file.Text(), node.Pos()):node.End()])
+		text = strings.ReplaceAll(text, "_", "")
+		kind := token.INT
+		if strings.ContainsAny(text, ".eEpP") && !strings.HasPrefix(strings.ToLower(text), "0x") {
+			kind = token.FLOAT
+		}
+		value := constant.MakeFromLiteral(text, kind, 0)
+		return value, value.Kind() != constant.Unknown
+	case ast.KindParenthesizedExpression:
+		return b.nativeConstant(node.Expression())
+	case ast.KindPrefixUnaryExpression:
+		unary := node.AsPrefixUnaryExpression()
+		if unary.Operator != ast.KindPlusToken && unary.Operator != ast.KindMinusToken {
+			return nil, false
+		}
+		value, known := b.nativeConstant(unary.Operand)
+		if !known {
+			return nil, false
+		}
+		op := token.ADD
+		if unary.Operator == ast.KindMinusToken {
+			op = token.SUB
+		}
+		return constant.UnaryOp(op, value, 0), true
+	case ast.KindBinaryExpression:
+		binary := node.AsBinaryExpression()
+		op := map[ast.Kind]token.Token{ast.KindPlusToken: token.ADD, ast.KindMinusToken: token.SUB, ast.KindAsteriskToken: token.MUL, ast.KindSlashToken: token.QUO, ast.KindPercentToken: token.REM}[binary.OperatorToken.Kind]
+		if op == token.ILLEGAL {
+			return nil, false
+		}
+		left, lk := b.nativeConstant(binary.Left)
+		right, rk := b.nativeConstant(binary.Right)
+		if !lk || !rk {
+			return nil, false
+		}
+		if (op == token.QUO || op == token.REM) && constant.Sign(right) == 0 {
+			return nil, false
+		}
+		if op == token.QUO {
+			left = constant.ToFloat(left)
+			right = constant.ToFloat(right)
+		}
+		if op == token.REM {
+			left = constant.ToInt(left)
+			right = constant.ToInt(right)
+			if left.Kind() != constant.Int || right.Kind() != constant.Int {
+				return nil, false
+			}
+		}
+		return constant.BinaryOp(left, op, right), true
+	}
+	return nil, false
+}
+
+func compoundOperator(kind ast.Kind) string {
+	return map[ast.Kind]string{ast.KindPlusEqualsToken: "+", ast.KindMinusEqualsToken: "-", ast.KindAsteriskEqualsToken: "*", ast.KindSlashEqualsToken: "/", ast.KindPercentEqualsToken: "%", ast.KindAsteriskAsteriskEqualsToken: "**", ast.KindAmpersandEqualsToken: "&", ast.KindBarEqualsToken: "|", ast.KindCaretEqualsToken: "^", ast.KindLessThanLessThanEqualsToken: "<<", ast.KindGreaterThanGreaterThanEqualsToken: ">>", ast.KindGreaterThanGreaterThanGreaterThanEqualsToken: ">>>"}[kind]
+}
+func (b *machineBuilder) logicalAssignment(node *ast.BinaryExpression) string {
+	read, write := b.lvalue(node.Left)
+	result := b.temp(read)
+	condition := "tsTruthy(" + result + ")"
+	switch node.OperatorToken.Kind {
+	case ast.KindBarBarEqualsToken:
+		condition = "!" + condition
+	case ast.KindQuestionQuestionEqualsToken:
+		condition = "tsNullish(" + result + ")"
+	}
+	if b.direct {
+		b.emit("if " + condition + " {")
+		value := b.expression(node.Right)
+		b.emit(result + "=" + write(value))
+		b.emit("}")
+		return result
+	}
+	yes, end := b.block(), b.block()
+	b.emit(fmt.Sprintf("if %s{m.pc=%d}else{m.pc=%d};return", condition, yes, end))
+	b.current = yes
+	value := b.expression(node.Right)
+	b.emit(result + "=" + write(value))
+	b.jump(end)
+	b.current = end
+	return result
+}
+
+func isBitwiseOperator(op string) bool {
+	switch op {
+	case "&", "|", "^", "<<", ">>", ">>>":
+		return true
+	}
+	return false
 }

@@ -750,7 +750,7 @@ export const options: OptionsModel = {
         {
             name: "coerceAny",
             type: "Tristate",
-            declaration: { group: "optionsForCompiler", affectsEmit: true, affectsBuildInfo: true, category: diagnostic("Emit"), defaultValueDescription: false },
+            declaration: { group: "optionsForCompiler", affectsEmit: true, affectsBuildInfo: true, category: diagnostic("Emit"), defaultValueDescription: true },
         },
         {
             name: "noUncheckedIndexedAccess",
@@ -1653,7 +1653,6 @@ export const options: OptionsModel = {
             "emitDeclarationOnly",
             "sourceMap",
             "inlineSourceMap",
-            "coerceAny",
             "noCheck",
             "deduplicatePackages",
             "noEmit",
@@ -1666,6 +1665,7 @@ export const options: OptionsModel = {
             "runExternalCode",
         ],
         optionsForCompiler: [
+            "coerceAny",
             "all",
             "version",
             "init",

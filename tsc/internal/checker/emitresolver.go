@@ -1,6 +1,7 @@
 package checker
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -1327,7 +1328,10 @@ func (r *EmitResolver) IsThisPropertyAssignmentDeclarationRedundant(node *ast.No
 func (r *EmitResolver) GetEmitPrimitiveType(node *ast.Node) (string, uint8) {
 	r.checkerMu.Lock()
 	defer r.checkerMu.Unlock()
-	t := r.checker.GetTypeAtLocation(node)
+	return emitPrimitiveShape(r.checker.GetTypeAtLocation(node))
+}
+
+func emitPrimitiveShape(t *Type) (string, uint8) {
 	var shape func(*Type) (string, uint8)
 	shape = func(t *Type) (string, uint8) {
 		if t == nil {
@@ -1354,6 +1358,12 @@ func (r *EmitResolver) GetEmitPrimitiveType(node *ast.Node) (string, uint8) {
 		}
 		switch {
 		case flags&TypeFlagsNumberLike != 0:
+			if flags == TypeFlagsNumber {
+				name := t.AsIntrinsicType().IntrinsicName()
+				if name != "number" {
+					return name, 0
+				}
+			}
 			return "number", 0
 		case flags&TypeFlagsStringLike != 0:
 			return "string", 0
@@ -1367,4 +1377,96 @@ func (r *EmitResolver) GetEmitPrimitiveType(node *ast.Node) (string, uint8) {
 		return "", 0
 	}
 	return shape(t)
+}
+
+// GetEmitGenericCallTypes reports the checked instantiation, including inferred
+// and defaulted arguments. Emitters must not infer types from argument spelling.
+func (r *EmitResolver) GetEmitGenericCallTypes(node *ast.Node, context []*ast.Node) (*ast.Node, []string, []string, string, string) {
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	c := r.checker
+	sig := c.getResolvedSignature(node, nil, CheckModeNormal)
+	if sig == nil {
+		return nil, nil, nil, "", ""
+	}
+	contextual := func(t *Type) *Type {
+		if t == nil {
+			return nil
+		}
+		for i := len(context) - 1; i >= 0; i-- {
+			if outer := c.getResolvedSignature(context[i], nil, CheckModeNormal); outer != nil {
+				t = c.instantiateType(t, outer.mapper)
+			}
+		}
+		return t
+	}
+	var shape func(*Type) string
+	shape = func(t *Type) string {
+		if t == nil {
+			return "tsValue"
+		}
+
+		flags := t.Flags()
+		if flags&TypeFlagsUnion != 0 {
+			kind := ""
+			for _, part := range t.Types() {
+				k := shape(part)
+				if kind != "" && kind != k {
+					return "tsValue"
+				}
+				kind = k
+			}
+			if kind != "" {
+				return kind
+			}
+			return "tsValue"
+		}
+		switch {
+		case flags&TypeFlagsNumberLike != 0:
+			if flags == TypeFlagsNumber {
+				name := t.AsIntrinsicType().IntrinsicName()
+				if name != "number" {
+					return name
+				}
+			}
+			return "float64"
+		case flags&TypeFlagsStringLike != 0:
+			return "*tsString"
+		case flags&TypeFlagsBooleanLike != 0:
+			return "bool"
+		default:
+			return "tsValue"
+		}
+	}
+	target := sig
+	if sig.target != nil {
+		target = sig.target
+	}
+	types := []string{}
+	key := ""
+	for _, t := range target.typeParameters {
+		instantiated := contextual(c.instantiateType(t, sig.mapper))
+		key += fmt.Sprint(instantiated.Id()) + ";"
+		types = append(types, shape(instantiated))
+	}
+	parameters := []string{}
+	for _, param := range sig.parameters {
+		parameters = append(parameters, shape(contextual(c.getTypeOfSymbol(param))))
+	}
+	return sig.declaration, types, parameters, shape(contextual(c.getReturnTypeOfSignature(sig))), key
+}
+
+// GetEmitSpecializedPrimitiveType evaluates a body location under the resolved
+// call's substitution, including indexed and conditional types.
+func (r *EmitResolver) GetEmitSpecializedPrimitiveType(node *ast.Node, calls []*ast.Node) (string, uint8) {
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	t := r.checker.GetTypeAtLocation(node)
+	for i := len(calls) - 1; i >= 0; i-- {
+		sig := r.checker.getResolvedSignature(calls[i], nil, CheckModeNormal)
+		if sig != nil {
+			t = r.checker.instantiateType(t, sig.mapper)
+		}
+	}
+	return emitPrimitiveShape(t)
 }

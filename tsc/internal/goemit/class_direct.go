@@ -49,10 +49,18 @@ func (b *machineBuilder) directStatement(node *ast.Node) {
 	case ast.KindVariableStatement:
 		b.declarations(node.AsVariableStatement().DeclarationList)
 	case ast.KindReturnStatement:
-		value := b.expression(node.AsReturnStatement().Expression)
+		value := "tsU"
+		expr := node.AsReturnStatement().Expression
+		if expr != nil {
+			if p := b.e.returnPrimitive(b.owner); p.numeric() && p.nulls == 0 {
+				value = b.numericExpression(expr, p)
+			} else {
+				value = b.expression(expr)
+			}
+		}
 		if b.nativeReturn != "" {
 			if b.tempType(value) != b.nativeReturn {
-				value = b.returnValue(value) + ".(" + b.nativeReturn + ")"
+				value = "tsNative[" + b.nativeReturn + "](" + b.returnValue(value) + ")"
 			}
 			b.emit("return " + value)
 		} else {
@@ -70,6 +78,8 @@ func (b *machineBuilder) directStatement(node *ast.Node) {
 		b.directStatement(n.ElseStatement)
 		b.emit("}")
 	case ast.KindEmptyStatement, ast.KindFunctionDeclaration, ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration:
+	case ast.KindEnumDeclaration:
+		b.enumDeclaration(node)
 	case ast.KindClassDeclaration:
 		b.classDeclaration(node)
 	default:

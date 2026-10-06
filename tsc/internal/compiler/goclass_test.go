@@ -151,8 +151,8 @@ func TestGoClassLayout(t *testing.T) {
 	if strings.Contains(methods, "&tsMachine") || strings.Contains(methods, "tsGet(") || strings.Contains(methods, "tsSet(") {
 		t.Fatal("simple methods used a machine or dynamic property lookup")
 	}
-	if !strings.Contains(text, "View = (*") {
-		t.Fatal("missing compile-time parent interface assertion")
+	if !strings.Contains(text, "View struct") || !strings.Contains(text, "Invalid concrete class layout") {
+		t.Fatal("missing concrete class views and checked layout casts")
 	}
 }
 

@@ -115,8 +115,6 @@ func parseCompilerOptions(key string, value any, allOptions *core.CompilerOption
 		allOptions.NewLine = floatOrInt32ToFlag[core.NewLineKind](value)
 	case "noEmit":
 		allOptions.NoEmit = ParseTristate(value)
-	case "coerceAny":
-		allOptions.CoerceAny = ParseTristate(value)
 	case "noCheck":
 		allOptions.NoCheck = ParseTristate(value)
 	case "noErrorTruncation":
@@ -135,6 +133,8 @@ func parseCompilerOptions(key string, value any, allOptions *core.CompilerOption
 		allOptions.NoLib = ParseTristate(value)
 	case "noPropertyAccessFromIndexSignature":
 		allOptions.NoPropertyAccessFromIndexSignature = ParseTristate(value)
+	case "coerceAny":
+		allOptions.CoerceAny = ParseTristate(value)
 	case "noUncheckedIndexedAccess":
 		allOptions.NoUncheckedIndexedAccess = ParseTristate(value)
 	case "noEmitOnError":
@@ -445,6 +445,7 @@ func CompilerOptionsAffectEmit(oldOptions *core.CompilerOptions, newOptions *cor
 		oldOptions.Module != newOptions.Module ||
 		oldOptions.NewLine != newOptions.NewLine ||
 		oldOptions.NoEmitHelpers != newOptions.NoEmitHelpers ||
+		oldOptions.CoerceAny != newOptions.CoerceAny ||
 		oldOptions.NoEmitOnError != newOptions.NoEmitOnError ||
 		oldOptions.OutDir != newOptions.OutDir ||
 		oldOptions.PreserveConstEnums != newOptions.PreserveConstEnums ||
@@ -563,6 +564,9 @@ func ForEachCompilerOptionAffectingBuildInfo(options *core.CompilerOptions, fn f
 	}
 	if options.NoPropertyAccessFromIndexSignature != core.TSUnknown {
 		fn(CommandLineCompilerOptionsMap.Get("noPropertyAccessFromIndexSignature"), options.NoPropertyAccessFromIndexSignature)
+	}
+	if options.CoerceAny != core.TSUnknown {
+		fn(CommandLineCompilerOptionsMap.Get("coerceAny"), options.CoerceAny)
 	}
 	if options.NoUncheckedIndexedAccess != core.TSUnknown {
 		fn(CommandLineCompilerOptionsMap.Get("noUncheckedIndexedAccess"), options.NoUncheckedIndexedAccess)
@@ -914,11 +918,6 @@ func mergeCompilerOptionFields(targetOptions, sourceOptions *core.CompilerOption
 	} else if sourceOptions.NoEmit != core.TSUnknown {
 		targetOptions.NoEmit = sourceOptions.NoEmit
 	}
-	if explicitNullFields.Has("coerceAny") {
-		targetOptions.CoerceAny = core.TSUnknown
-	} else if sourceOptions.CoerceAny != core.TSUnknown {
-		targetOptions.CoerceAny = sourceOptions.CoerceAny
-	}
 	if explicitNullFields.Has("noCheck") {
 		targetOptions.NoCheck = core.TSUnknown
 	} else if sourceOptions.NoCheck != core.TSUnknown {
@@ -963,6 +962,11 @@ func mergeCompilerOptionFields(targetOptions, sourceOptions *core.CompilerOption
 		targetOptions.NoPropertyAccessFromIndexSignature = core.TSUnknown
 	} else if sourceOptions.NoPropertyAccessFromIndexSignature != core.TSUnknown {
 		targetOptions.NoPropertyAccessFromIndexSignature = sourceOptions.NoPropertyAccessFromIndexSignature
+	}
+	if explicitNullFields.Has("coerceAny") {
+		targetOptions.CoerceAny = core.TSUnknown
+	} else if sourceOptions.CoerceAny != core.TSUnknown {
+		targetOptions.CoerceAny = sourceOptions.CoerceAny
 	}
 	if explicitNullFields.Has("noUncheckedIndexedAccess") {
 		targetOptions.NoUncheckedIndexedAccess = core.TSUnknown
@@ -1513,9 +1517,6 @@ func serializeCompilerOptions(options *core.CompilerOptions, configFilePath tspa
 	if options.NoEmit == core.TSTrue || options.NoEmit == core.TSFalse {
 		result.Set("noEmit", options.NoEmit == core.TSTrue)
 	}
-	if options.CoerceAny == core.TSTrue || options.CoerceAny == core.TSFalse {
-		result.Set("coerceAny", options.CoerceAny == core.TSTrue)
-	}
 	if options.NoCheck == core.TSTrue || options.NoCheck == core.TSFalse {
 		result.Set("noCheck", options.NoCheck == core.TSTrue)
 	}
@@ -1539,6 +1540,9 @@ func serializeCompilerOptions(options *core.CompilerOptions, configFilePath tspa
 	}
 	if options.NoPropertyAccessFromIndexSignature == core.TSTrue || options.NoPropertyAccessFromIndexSignature == core.TSFalse {
 		result.Set("noPropertyAccessFromIndexSignature", options.NoPropertyAccessFromIndexSignature == core.TSTrue)
+	}
+	if options.CoerceAny == core.TSTrue || options.CoerceAny == core.TSFalse {
+		result.Set("coerceAny", options.CoerceAny == core.TSTrue)
 	}
 	if options.NoUncheckedIndexedAccess == core.TSTrue || options.NoUncheckedIndexedAccess == core.TSFalse {
 		result.Set("noUncheckedIndexedAccess", options.NoUncheckedIndexedAccess == core.TSTrue)

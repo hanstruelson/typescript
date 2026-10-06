@@ -344,6 +344,8 @@ func (n *Node) Expression() *Node {
 		return n.AsDeleteExpression().Expression
 	case KindVoidExpression:
 		return n.AsVoidExpression().Expression
+	case KindGoExpression:
+		return n.AsGoExpression().Expression
 	case KindAwaitExpression:
 		return n.AsAwaitExpression().Expression
 	case KindYieldExpression:
@@ -433,6 +435,8 @@ func (m *MutableNode) SetExpression(expr *Node) {
 		n.AsDeleteExpression().Expression = expr
 	case KindVoidExpression:
 		n.AsVoidExpression().Expression = expr
+	case KindGoExpression:
+		n.AsGoExpression().Expression = expr
 	case KindAwaitExpression:
 		n.AsAwaitExpression().Expression = expr
 	case KindYieldExpression:
