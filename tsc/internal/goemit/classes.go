@@ -93,6 +93,10 @@ func (e *emitter) prepareClass(c *classInfo) {
 		}
 	}
 	for _, member := range c.node.AsClassDeclaration().Members.Nodes {
+		if ast.HasDecorators(member) {
+			e.fail(member, "member decorators are not supported yet")
+		}
+
 		if member.Kind == ast.KindClassStaticBlockDeclaration || ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
 			continue
 		}
@@ -101,6 +105,9 @@ func (e *emitter) prepareClass(c *classInfo) {
 			if member.Body() != nil {
 				c.constructor = member
 				for _, param := range member.Parameters() {
+					if ast.HasDecorators(param) {
+						e.fail(param, "parameter decorators are not supported yet")
+					}
 					if ast.GetCombinedModifierFlags(param)&ast.ModifierFlagsParameterPropertyModifier == 0 {
 						continue
 					}
@@ -227,6 +234,7 @@ func (c *classInfo) ownerOf(method *ast.Node) *classInfo {
 func implName(c *classInfo, name string) string { return "impl_" + c.name + "_" + memberName(name) }
 func ctorName(c *classInfo) string              { return "ctor_" + c.name }
 func (b *machineBuilder) classDeclaration(node *ast.Node) {
+	decorators := b.classDecorators(node)
 	c := b.e.classes[node]
 	if c == nil {
 		return
@@ -266,7 +274,13 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 		b.emit(target + "." + capture.name + "=" + capture.name)
 	}
 	b.emit(target + ".initProperties()")
+	decoration := b.applyClassDecorators(node, decorators, cell.name+".get()")
 	b.emit(target + "." + ctorName(st) + "()")
+	if decoration != "" {
+		b.emit(cell.name + ".value=" + decoration + ".class")
+		b.emit("tsRunClassInitializers(" + decoration + ")")
+	}
+
 	if b.module && ast.HasSyntacticModifier(node, ast.ModifierFlagsExport) {
 		name := "default"
 		if node.Name() != nil {
@@ -498,6 +512,13 @@ func (b *machineBuilder) initializeFields() {
 // classOf uses declaration identity and explicit annotations. Unknown receivers
 // retain dynamic bracket access; concrete class dot access bypasses lookup.
 func (b *machineBuilder) classOf(node *ast.Node) *classInfo {
+	c := b.undecoratedClassOf(node)
+	if c != nil && ast.HasDecorators(c.node) {
+		return nil
+	}
+	return c
+}
+func (b *machineBuilder) undecoratedClassOf(node *ast.Node) *classInfo {
 	if node == nil {
 		return nil
 	}
@@ -546,7 +567,11 @@ func (b *machineBuilder) classOf(node *ast.Node) *classInfo {
 }
 func (b *machineBuilder) classType(node *ast.Node) *classInfo {
 	if node != nil && node.Kind == ast.KindTypeReference {
-		return b.e.classReference(node.AsTypeReferenceNode().TypeName)
+		c := b.e.classReference(node.AsTypeReferenceNode().TypeName)
+		if c != nil && ast.HasDecorators(c.node) {
+			return nil
+		}
+		return c
 	}
 	return nil
 }

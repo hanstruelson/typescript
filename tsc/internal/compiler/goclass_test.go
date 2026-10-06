@@ -17,9 +17,12 @@ import (
 // Compare the executable Go output with the compiler's normal JavaScript output.
 // This catches lexical-super mistakes that hand-written expected strings miss.
 func javascriptOutput(t *testing.T, source string) string {
+	return javascriptOutputTarget(t, source, core.ScriptTargetESNext)
+}
+func javascriptOutputTarget(t *testing.T, source string, target core.ScriptTarget) string {
 	t.Helper()
 	fs := bundled.WrapFS(vfstest.FromMap(map[string]string{"/src/input.ts": source}, tspath.CaseSensitive))
-	options := core.CompilerOptions{Target: core.ScriptTargetESNext, OutDir: "/out"}
+	options := core.CompilerOptions{Target: target, OutDir: "/out"}
 	p := compiler.NewProgram(compiler.ProgramOptions{Config: tsoptions.NewParsedCommandLine(&options, []tspath.RootedFilePath{"/src/input.ts"}, nil, "/src", fs.CaseSensitivity()), Host: compiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil)})
 	var js string
 	result := p.Emit(context.Background(), compiler.EmitOptions{WriteFile: func(path tspath.RootedFilePath, text string, data *compiler.WriteFileData) error {

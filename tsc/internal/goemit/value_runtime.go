@@ -35,6 +35,9 @@ const (
  tsUint32Kind
  tsUint64Kind
  tsIteratorKind
+ tsCollectionKind
+ tsTypedArrayKind
+ tsArrayBufferKind
 )
 type tsValue struct {kind tsKind;number float64;ref unsafe.Pointer}
 var tsU=tsValue{}

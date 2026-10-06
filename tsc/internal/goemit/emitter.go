@@ -37,6 +37,7 @@ type emitter struct {
 	classText           strings.Builder
 	coerce              bool
 	strictNulls         bool
+	legacyDecorators    bool
 	nativeFunctions     map[*ast.Node]*nativeFunction
 	genericFunctions    map[*ast.Node]*genericFunction
 	specializationCalls []*ast.Node
@@ -212,6 +213,10 @@ func (e *emitter) collect(node, owner *ast.Node) {
 func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver ReferenceResolver) (string, []*ast.Diagnostic) {
 	e := &emitter{file: file, resolver: resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string)}
 	e.coerce = !options.CoerceAny.IsFalse()
+	e.legacyDecorators = options.ExperimentalDecorators.IsTrue()
+	if options.EmitDecoratorMetadata.IsTrue() {
+		e.fail(file.AsNode(), "decorator metadata emission is not supported yet")
+	}
 	e.strictNulls = options.GetStrictOptionValue(options.StrictNullChecks)
 	if options.SourceMap.IsTrue() || options.InlineSourceMap.IsTrue() {
 		e.fail(file.AsNode(), "source maps are not supported")
@@ -241,7 +246,7 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 	if len(e.diags) != 0 {
 		return "", e.diags
 	}
-	text, err := formatValueSource([]byte("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + e.classText.String() + "\nfunc main() {\nloop := tsNewLoop()\nloop.invoke(func(){ _ = tsCall(" + body + ") })\nif err := loop.run(); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n}\n"))
+	text, err := formatValueSource([]byte("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + e.classText.String() + "\nfunc main() {\nloop := tsNewLoop()\nloop.invoke(func(){ _ = tsCall(" + body + ") })\nif err := loop.run(); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n}\n"))
 	if err != nil {
 		e.fail(file.AsNode(), "could not format output: "+err.Error())
 		return "", e.diags

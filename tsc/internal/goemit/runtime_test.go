@@ -18,7 +18,7 @@ import (
 // pointer-based completion publication does not share mutable loop state.
 func TestRuntimeWorkers(t *testing.T) {
 	dir := t.TempDir()
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime))
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,6 +27,18 @@ func TestRuntimeWorkers(t *testing.T) {
 	}
 	tests := `package main
 import("testing";"runtime";"strings";"unsafe";"math")
+func TestIteratorUsesConsumerLoop(t *testing.T){
+ wanted:=tsNewLoop();called:=false;it:=&tsIterator{pull:func(loop *tsLoop)(tsValue,bool){called=true;if loop!=wanted{t.Fatal("iterator used its creation loop")};return tsU,false}}
+ if it.next(wanted)||!called{t.Fatal("iterator pull was not executed")}
+}
+func TestNativeArrayStorageAndGC(t *testing.T){
+ array:=tsNativeArray(make([]float64,1024),"Float64Array",func(n float64)float64{return n})
+ if unsafe.Sizeof((*tsNativeArrayStorage[float64])(array.storage).values[0])!=8{t.Fatal("wrong float64 slot width")}
+ value:=tsTypedArrayValue(array);runtime.GC();view:=array.view(1,3);view.write(0,7.5)
+ if array.read(1)!=7.5||view.buffer!=array.buffer||tsNativeArrayRead[float64](tsNewLoop(),value,tsNumberValue(1),"Float64Array").number!=7.5{t.Fatal("native view lost identity or storage")}
+ small:=tsNativeArray(make([]int8,4),"Int8Array",func(n float64)int8{return int8(n)})
+ if unsafe.Sizeof((*tsNativeArrayStorage[int8])(small.storage).values[0])!=1{t.Fatal("wrong int8 slot width")}
+}
 func TestFailures(t *testing.T){
  for _,work:=range []func()tsResult{
   func()tsResult{panic("worker failure")},
@@ -125,7 +137,7 @@ func TestPrimitiveTags(t *testing.T){
 // Only host APIs and generic static-type selection may inspect Go interfaces.
 // Application values must never fall back to interface boxing or assertions.
 func TestRuntimeInterfaceBoundaries(t *testing.T) {
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime))
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +179,15 @@ func TestRejectInterfaceValueFallback(t *testing.T) {
 		if _, err := formatValueSource([]byte(source)); err == nil {
 			t.Fatal("interface fallback accepted")
 		}
+	}
+}
+
+func TestMultipleReturnValueABI(t *testing.T) {
+	source, err := formatValueSource([]byte("package main\ntype tsValue struct{}\nfunc pair()(tsValue,bool){return tsValue{},false}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(source), "tsBooleanValue") {
+		t.Fatal("native boolean return was boxed using the first result type")
 	}
 }

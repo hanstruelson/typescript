@@ -34,7 +34,9 @@ The optimization order is:
 3. Avoid allocating cells for uncaptured locals. Captured mutable bindings and
    suspended state-machine locals need persistent storage; ordinary locals do
    not. Preserve TDZ, per-iteration bindings, and closure lifetime.
-4. Specialize arrays whose element representation is stable. Use native slices
+4. Standard numeric typed arrays now use native slices and shared ArrayBuffer
+   views, with guarded concrete indexed-access helpers and tagged adapters.
+   Specialize ordinary arrays whose element representation is stable. Use native slices
    for proven dense typed arrays, with adapters for dynamic views. Mutation
    through an alias must not silently corrupt an optimized representation.
 5. Benchmark dynamic numeric loops, object property access, function calls,
@@ -111,7 +113,7 @@ instances of the same evaluated class share its singleton.
 | Prototypes/dynamic properties | Add prototype links and descriptor lookup/set algorithms. Known class slots stay direct. Prototype mutation and dynamic overrides require guards or fallback paths, not stale direct dispatch. | Object.create/setPrototypeOf, inherited setters, property deletion, hasOwn vs `in`, for-in. |
 | Symbols/property keys | Use a property-key type distinguishing UTF-16 string keys and unique symbol identities. Intern string keys for repeated dynamic access. Keep direct typed fields independent of this lookup. | Distinct same-description symbols, well-known symbols, key ordering, lone surrogates. |
 | Sparse arrays | Track length separately from storage, presence with a bitmap for dense regions, and a sparse map for remote indices. Holes differ from explicit undefined. Preserve insertion order for non-index keys. | Holes, delete, large indices, length truncation, keys, map/filter/reduce, and iterator behavior. |
-| Array/collection methods | Add ECMAScript Array, Map, Set, WeakMap, and WeakSet APIs over native storage. Use SameValueZero for collection keys and preserve order. Typed-array views need buffer ownership, bounds, and aliasing rules. | NaN/-0 keys, mutation during iteration, callbacks, holes, buffer views, weak-key lifetime. |
+| Array/collection methods | Array methods, Map/Set hash indexes and live iterators, Set algebra, native numeric typed arrays, and shared buffer views are implemented. Next: ordinary typed-array specialization, DataView, weak collections, resizable buffers, and remaining built-ins. | NaN/-0 keys, mutation during iteration, callbacks, holes, buffer views, weak-key lifetime. |
 | Destructuring assignments | Generalize pattern lowering to lvalues. Snapshot RHS, computed keys, and targets in specification order; handle defaults, rest, and iterator closing on abrupt completion. | Getters, aliasing, nested assignments, skipped elements, throwing iterators. |
 | Optional chaining | Lower through branch blocks and saved receivers. Skip arguments/computed keys when nullish and preserve member-call receivers. Optional delete has separate semantics. | Nested chains, calls, computed-key side effects, and grouping boundaries. |
 | Missing operators | Add ToPrimitive and separate operator algorithms, then support loose equality, exponentiation, bitwise shifts, logical assignments, `in`, delete, and void. Use native arithmetic only when the representation plan proves it safe. | Signed/unsigned 32-bit conversion, infinities, NaN, string/object conversion order, lazy assignments. |
@@ -121,7 +123,7 @@ instances of the same evaluated class share its singleton.
 | using/await using | Reuse TypeScript resource-management lowering or translate its disposal stack into the Go runtime. Preserve reverse disposal and suppressed-error semantics. | Normal/abrupt exits, multiple errors, awaited disposal, nested scopes. |
 | Namespaces/enums/import-equals | Reuse established TypeScript erasure/lowering concepts. Emit persistent namespace objects, correct numeric enum reverse mappings, and resolved import aliases. | Declaration merging, enum initialization order, const enums, ambient erasure. |
 | BigInt | Add an immutable BigInt wrapper over math/big, with operators, conversions, and separate dynamic tags. Never silently convert BigInt arithmetic to float64. | Precision, signed division/remainder, mixing with Number, equality, serialization errors. |
-| Decorators | Reuse TypeScript's decorator lowering and implement the helper contract, including initializer lists and metadata. | Evaluation/application order, field/method replacement, static/instance initializers. |
+| Decorators | Class decorators and queued initializers are implemented, including legacy class decorators. Next: member/parameter decorators, dynamic initializer receivers, metadata, and complete replacement inheritance. | Evaluation/application order, field/method replacement, static/instance initializers. |
 | JSX | Excluded from project scope by user request. | No JSX runtime or transform planned. |
 | Source maps | Track generated spans against original AST positions. Emit mapping data for diagnostics/debug tooling; optionally use Go line directives where useful without corrupting generated-file tooling. | Multi-file bundles, lowered awaits, synthetic helpers, source locations. |
 

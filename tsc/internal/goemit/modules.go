@@ -52,7 +52,7 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 // Bundle formats one executable containing a persistent initializer per source.
 func Bundle(names, fragments, roots []string) (string, error) {
 	var out strings.Builder
-	out.WriteString("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + "\n")
+	out.WriteString("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + "\n")
 	for index, fragment := range fragments {
 		signature := fmt.Sprintf("func tsSourceModule%d(loop *tsLoop,modules map[string]*tsModule,module *tsModule)", index)
 		out.WriteString(strings.Replace(fragment, "func(module *tsModule)", signature, 1))

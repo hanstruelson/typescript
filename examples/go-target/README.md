@@ -98,13 +98,40 @@ properties. Iteration yields `undefined` for those slots, while spread creates
 present `undefined` elements; property membership and key enumeration distinguish
 these cases.
 
+Ordinary arrays retain `tsValue` elements and sparse-slot tracking. Array methods
+include iteration, search, map/filter, reduce, flattening, slicing/splicing,
+concatenation, fill, sorting, reversal, copyWithin, and the copy-returning
+`with`, `toReversed`, `toSorted`, and `toSpliced` variants. Array construction,
+`from`, `of`, and `isArray` are supported, including array-like inputs.
+
+Standard numeric typed arrays use native Go numeric slices: Float32/Float64,
+Int8/Int16/Int32, Uint8/Uint16/Uint32, and Uint8Clamped. Known typed-array indexed
+reads and writes select concrete Go helpers with runtime layout guards; other
+accesses use the tagged adapter. ArrayBuffer views and subarrays share storage;
+`slice` copies it. Typed-array copyWithin uses a native byte copy. Native storage
+reduces element widths, but end-to-end performance has not yet been benchmarked.
+Ordinary `number[]` and custom `int64[]` arrays still use the tagged array store;
+specializing those representations remains separate work. DataView, BigInt typed
+arrays, resizable buffers, and buffer transfer are not implemented yet.
+
+Map and Set use native hash indexes and preserve insertion order. Keys use
+SameValueZero (including NaN and signed zero) and reference identity for objects.
+Standard lookup, mutation, iteration, and forEach methods are supported; iterators
+remain live during mutation. Set union, intersection, difference, symmetric
+difference, and relationship checks also accept set-like objects. WeakMap and
+WeakSet remain unimplemented.
+
+Class decorators support standard evaluation/application order, constructor
+replacement, and queued arrow initializers, plus legacy class decorators.
+Member/parameter decorators and decorator metadata report explicit diagnostics.
+Initializer functions that require dynamic `this` still need receiver support.
+
 For `number`, bitwise operations truncate and wrap operands to 32 bits; shift
 counts are masked to five bits, and `>>>` returns an unsigned 32-bit result as a
 `number`. Known `number` operands use native Go numeric helpers, including
 compound assignments and exponentiation. Dynamic operands perform JavaScript
 primitive conversion first. Explicit native integer types retain their native
 width and Go-style shift behavior.
-
 
 Union types retain TypeScript's control-flow narrowing. Intersection objects use
 one flat property store and preserve object identity. Generic functions, classes,
@@ -126,7 +153,7 @@ share implementations by Go representation; dependent bodies use checked type
 identity to avoid conflating different shapes. `keyof`, indexed access, mapped
 and conditional types, and `satisfies` remain supported.
 
-Generators, async iterators, decorators, namespaces, and several advanced class
+Generators, async iterators, remaining decorator forms, namespaces, and advanced class
 features still need backend work. This is not a complete JavaScript or Node.js
 runtime: additional built-ins and host APIs remain incomplete. JSX and dynamic
 code execution are excluded from the project scope. Timer handles are opaque,

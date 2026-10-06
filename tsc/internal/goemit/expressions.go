@@ -25,6 +25,9 @@ func (b *machineBuilder) identifier(node *ast.Node) string {
 	if imported := b.e.imports[b.e.reference(node)]; imported != "" {
 		return b.builtin(imported)
 	}
+	if node.Text() == "Map" || node.Text() == "Set" || node.Text() == "Array" || node.Text() == "ArrayBuffer" || isTypedArrayName(node.Text()) {
+		return "tsBuiltinClass(" + strconv.Quote(node.Text()) + ")"
+	}
 	switch node.Text() {
 	case "String":
 		return "tsFunc(func(args ...tsValue)tsValue {if len(args)==0 {return tsStringUnits(nil)};return tsStringValue(args[0])})"
@@ -182,6 +185,50 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp(b.function(node))
 	case ast.KindNewExpression:
 		n := node.AsNewExpression()
+		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "ArrayBuffer" && b.e.binding(n.Expression) == nil {
+			args := []string{}
+			if n.Arguments != nil {
+				for _, arg := range n.Arguments.Nodes {
+					args = append(args, b.expression(arg))
+				}
+			}
+			return b.temp("tsNewArrayBuffer(" + strings.Join(args, ",") + ")")
+		}
+		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "Array" && b.e.binding(n.Expression) == nil {
+			args := []string{}
+			if n.Arguments != nil {
+				for _, arg := range n.Arguments.Nodes {
+					args = append(args, b.expression(arg))
+				}
+			}
+			return b.temp("tsNewArray(" + strings.Join(args, ",") + ")")
+		}
+		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil && isTypedArrayName(n.Expression.Text()) {
+			args := []string{}
+			if n.Arguments != nil {
+				for _, arg := range n.Arguments.Nodes {
+					args = append(args, b.expression(arg))
+				}
+			}
+			suffix := ""
+			if len(args) > 0 {
+				suffix = "," + strings.Join(args, ",")
+			}
+			return b.temp("tsNewTypedArray(" + strconv.Quote(n.Expression.Text()) + suffix + ")")
+		}
+		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil && (n.Expression.Text() == "Map" || n.Expression.Text() == "Set") {
+			args := []string{}
+			if n.Arguments != nil {
+				for _, arg := range n.Arguments.Nodes {
+					args = append(args, b.expression(arg))
+				}
+			}
+			suffix := ""
+			if len(args) > 0 {
+				suffix = "," + strings.Join(args, ",")
+			}
+			return b.temp("tsNewCollection(" + strconv.FormatBool(n.Expression.Text() == "Set") + suffix + ")")
+		}
 		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "RegExp" && b.e.binding(n.Expression) == nil {
 			args := []string{}
 			if n.Arguments != nil {
@@ -325,6 +372,15 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		}
 		name := node.Name().Text()
 		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil {
+			if isTypedArrayName(n.Expression.Text()) && (name == "from" || name == "of") {
+				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsTypedArrayBuiltin(" + strconv.Quote(n.Expression.Text()) + "," + strconv.Quote(name) + ",args)})")
+			}
+			if n.Expression.Text() == "ArrayBuffer" && name == "isView" {
+				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsBooleanValue(tsArg(args,0).kind==tsTypedArrayKind)})")
+			}
+			if n.Expression.Text() == "Array" {
+				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsArrayBuiltin(" + strconv.Quote(name) + ",args)})")
+			}
 			if n.Expression.Text() == "Object" {
 				return b.temp(b.objectBuiltin(name))
 			}
@@ -351,7 +407,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		n := node.AsElementAccessExpression()
 		receiver := b.expression(n.Expression)
 		index := b.expression(n.ArgumentExpression)
-		return b.temp("tsGet(" + receiver + "," + index + ")")
+		return b.temp(b.nativeArrayRead(n.Expression, receiver, index))
 	case ast.KindArrayLiteralExpression:
 		return b.arrayLiteral(node.AsArrayLiteralExpression().Elements.Nodes)
 	case ast.KindBinaryExpression:
@@ -469,7 +525,7 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 		n := node.AsElementAccessExpression()
 		receiver := b.expression(n.Expression)
 		key := b.expression(n.ArgumentExpression)
-		return "tsGet(" + receiver + "," + key + ")", func(value string) string { return "tsSet(" + receiver + "," + key + "," + value + ")" }
+		return b.nativeArrayRead(n.Expression, receiver, key), func(value string) string { return b.nativeArrayWrite(n.Expression, receiver, key, value) }
 	}
 	b.e.fail(node, "unsupported assignment target")
 	return "tsU", func(string) string { return "tsU" }
@@ -879,6 +935,14 @@ func (b *machineBuilder) logicalAssignment(node *ast.BinaryExpression) string {
 func isBitwiseOperator(op string) bool {
 	switch op {
 	case "&", "|", "^", "<<", ">>", ">>>":
+		return true
+	}
+	return false
+}
+
+func isTypedArrayName(name string) bool {
+	switch name {
+	case "Float64Array", "Float32Array", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array":
 		return true
 	}
 	return false

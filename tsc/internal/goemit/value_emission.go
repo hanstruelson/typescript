@@ -59,7 +59,7 @@ func formatValueSource(source []byte) ([]byte, error) {
 			if d.Recv != nil {
 				pass.fieldNames(d.Recv, env)
 			}
-			pass.block(d.Body, env, valueFunctionSignature(d.Type).result)
+			pass.block(d.Body, env, valueReturnTypes(d.Type))
 		}
 	}
 	if pass.err != nil {
@@ -452,7 +452,7 @@ func (p *valueEmission) expression(expr ast.Expr, env map[string]string) ast.Exp
 	case *ast.FuncLit:
 		child := copyValueEnvironment(env)
 		p.parameters(e.Type, child)
-		p.block(e.Body, child, valueFunctionSignature(e.Type).result)
+		p.block(e.Body, child, valueReturnTypes(e.Type))
 	case *ast.BinaryExpr:
 		e.X = p.expression(e.X, env)
 		e.Y = p.expression(e.Y, env)
@@ -568,7 +568,14 @@ func (p *valueEmission) statement(stmt ast.Stmt, env map[string]string, result s
 		s.X = p.expression(s.X, env)
 	case *ast.ReturnStmt:
 		for i, expr := range s.Results {
-			s.Results[i] = p.coerce(p.expression(expr, env), result, env)
+			target := result
+			if results := strings.Split(result, "|"); len(results) > 1 {
+				target = ""
+				if i < len(results) {
+					target = results[i]
+				}
+			}
+			s.Results[i] = p.coerce(p.expression(expr, env), target, env)
 		}
 	case *ast.IfStmt:
 		child := copyValueEnvironment(env)
@@ -645,4 +652,20 @@ func (p *valueEmission) statement(stmt ast.Stmt, env map[string]string, result s
 	case *ast.LabeledStmt:
 		p.statement(s.Stmt, env, result)
 	}
+}
+
+func valueReturnTypes(fn *ast.FuncType) string {
+	results := []string{}
+	if fn.Results != nil {
+		for _, field := range fn.Results.List {
+			count := len(field.Names)
+			if count == 0 {
+				count = 1
+			}
+			for i := 0; i < count; i++ {
+				results = append(results, valueType(field.Type))
+			}
+		}
+	}
+	return strings.Join(results, "|")
 }

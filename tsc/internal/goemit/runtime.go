@@ -31,7 +31,7 @@ func (c *tsCell) set(value tsValue) tsValue { if !c.initialized { panic("Cannot 
 func tsClone(c *tsCell) *tsCell { value := *c; return &value }
 type tsFunction struct {call func(*tsLoop,...tsValue) tsValue}
 func tsFunc(call func(*tsLoop,...tsValue)tsValue)*tsFunction{return &tsFunction{call:call}}
-func tsCall(loop *tsLoop,value tsValue,args ...tsValue)tsValue{if value.kind!=tsFunctionKind{panic("Value is not callable")};return (*tsFunction)(value.ref).call(loop,args...)}
+func tsCall(loop *tsLoop,value tsValue,args ...tsValue)tsValue{if value.kind==tsClassKind&&(*tsClass)(value.ref).builtin=="Array"{return tsNewArray(args...)};if value.kind!=tsFunctionKind{panic("Value is not callable")};return (*tsFunction)(value.ref).call(loop,args...)}
 func tsArg(args []tsValue, index int) tsValue { if index < len(args) { return args[index] }; return tsU }
 func tsNumberText(number float64)string{
  if math.IsNaN(number){return "NaN"};if math.IsInf(number,1){return "Infinity"};if math.IsInf(number,-1){return "-Infinity"};if number==0{return "0"}
@@ -60,6 +60,9 @@ func tsText(value tsValue)string{switch value.kind{
  case tsNamespaceKind:return fmt.Sprint(*(*tsNamespace)(value.ref))
  case tsImportKind:return fmt.Sprint(*(*tsImportRef)(value.ref))
  case tsModuleKind:return fmt.Sprint((*tsModule)(value.ref))
+ case tsArrayBufferKind:return "[object ArrayBuffer]"
+ case tsTypedArrayKind:a:=(*tsTypedArray)(value.ref);parts:=make([]string,a.length);for i:=range parts{parts[i]=tsNumberText(a.read(i))};return strings.Join(parts,",")
+ case tsCollectionKind:if (*tsCollection)(value.ref).set{return "[object Set]"};return "[object Map]"
  case tsIteratorKind:return fmt.Sprint((*tsIterator)(value.ref))
  default:panic("Invalid JavaScript value tag")}}
 func(value tsValue)String()string{return tsText(value)}
@@ -67,18 +70,22 @@ func tsConsoleLog(values ...tsValue) tsValue { for i, value := range values { if
 func tsIsUndefined(value tsValue) bool {return value.kind==tsUndefinedKind}
 func tsNullish(value tsValue) bool {return value.kind==tsNullKind || value.kind==tsUndefinedKind}
 type tsArray struct { values []tsValue;properties map[string]tsValue;holes map[int]bool }
-type tsIterator struct {array *tsArray; text *tsString; ecma *goja.Object; index int; value tsValue}
-func tsIterate(value tsValue)*tsIterator{switch value.kind{case tsArrayKind:return &tsIterator{array:(*tsArray)(value.ref)};case tsStringKind:return &tsIterator{text:(*tsString)(value.ref)};case tsECMAKind:v:=(*tsECMAObject)(value.ref);if v.object.ClassName()=="Array"{values:=[]tsValue{};for i:=int64(0);i<v.object.Get("length").ToInteger();i++{values=append(values,tsFromECMA(v.object.Get(strconv.FormatInt(i,10))))};return &tsIterator{array:&tsArray{values:values}}};return &tsIterator{ecma:v.object};default:panic("Value is not iterable")}}
-func (it *tsIterator) next() bool {if it.ecma!=nil {call,_:=goja.AssertFunction(it.ecma.Get("next"));result,err:=call(it.ecma);if err!=nil {tsECMAFailure(err)};object:=result.ToObject(tsEngine());if object.Get("done").ToBoolean(){return false};it.value=tsFromECMA(object.Get("value"));return true};if it.array!=nil {if it.index>=len(it.array.values){return false};it.value=it.array.values[it.index];it.index++;return true};if it.index>=len(it.text.units){return false};start:=it.index;it.index++;c:=it.text.units[start];if c>=0xd800&&c<=0xdbff&&it.index<len(it.text.units)&&it.text.units[it.index]>=0xdc00&&it.text.units[it.index]<=0xdfff {it.index++};it.value=it.text.slice(start,it.index);return true}
+type tsIterator struct {pull func()(tsValue,bool);array *tsArray; text *tsString; ecma *goja.Object; index int; value tsValue}
+func tsIterate(value tsValue)*tsIterator{switch value.kind{case tsTypedArrayKind:array:=(*tsTypedArray)(value.ref);index:=0;return &tsIterator{pull:func()(tsValue,bool){if index>=array.length{return tsU,false};item:=tsNumberValue(array.read(index));index++;return item,true}};case tsCollectionKind:c:=(*tsCollection)(value.ref);mode:="entries";if c.set{mode="values"};return c.iterator(mode);case tsIteratorKind:return (*tsIterator)(value.ref);case tsArrayKind:return &tsIterator{array:(*tsArray)(value.ref)};case tsStringKind:return &tsIterator{text:(*tsString)(value.ref)};case tsECMAKind:v:=(*tsECMAObject)(value.ref);if v.object.ClassName()=="Array"{values:=[]tsValue{};for i:=int64(0);i<v.object.Get("length").ToInteger();i++{values=append(values,tsFromECMA(v.object.Get(strconv.FormatInt(i,10))))};return &tsIterator{array:&tsArray{values:values}}};return &tsIterator{ecma:v.object};default:panic("Value is not iterable")}}
+func (it *tsIterator) next() bool {if it.pull!=nil{value,ok:=it.pull();it.value=value;return ok};if it.ecma!=nil {call,_:=goja.AssertFunction(it.ecma.Get("next"));result,err:=call(it.ecma);if err!=nil {tsECMAFailure(err)};object:=result.ToObject(tsEngine());if object.Get("done").ToBoolean(){return false};it.value=tsFromECMA(object.Get("value"));return true};if it.array!=nil {if it.index>=len(it.array.values){return false};it.value=it.array.values[it.index];it.index++;return true};if it.index>=len(it.text.units){return false};start:=it.index;it.index++;c:=it.text.units[start];if c>=0xd800&&c<=0xdbff&&it.index<len(it.text.units)&&it.text.units[it.index]>=0xdc00&&it.text.units[it.index]<=0xdfff {it.index++};it.value=it.text.slice(start,it.index);return true}
 func tsGet(value,key tsValue) tsValue { switch value.kind {
- case tsClassKind:v:=(*tsClass)(value.ref);return tsInstanceProperties(v.static).get(tsPropertyKey(key))
+ case tsArrayBufferKind:return tsArrayBufferGet(value,tsPropertyKey(key))
+ case tsTypedArrayKind:return tsTypedArrayGet(value,tsPropertyKey(key))
+ case tsCollectionKind:return tsCollectionGet(value,tsPropertyKey(key))
+ case tsIteratorKind:return tsIteratorGet((*tsIterator)(value.ref),tsPropertyKey(key))
+ case tsClassKind:v:=(*tsClass)(value.ref);if v.builtin!=""{if tsPropertyKey(key)=="name"{return tsStringReference(tsStringUTF8(v.builtin))};if tsPropertyKey(key)=="BYTES_PER_ELEMENT"&&v.builtin!="Map"&&v.builtin!="Set"&&v.builtin!="Array"{size:=1;switch v.builtin{case "Float64Array":size=8;case "Float32Array","Int32Array","Uint32Array":size=4;case "Int16Array","Uint16Array":size=2};return tsNumberValue(float64(size))}};return tsInstanceProperties(v.static).get(tsPropertyKey(key))
  case tsInstanceKind:v:=(*tsProperties)(value.ref);return v.get(tsPropertyKey(key))
  case tsObjectKind:v:=(*tsObject)(value.ref);return v.get(tsPropertyKey(key))
  case tsArrayKind:v:=(*tsArray)(value.ref);
   if value,ok:=v.properties[tsPropertyKey(key)];ok {return value}
   if tsText(key)=="length" {return float64(len(v.values))}
   if tsText(key)=="push" {return tsFunc(func(args ...tsValue) tsValue {v.values=append(v.values,args...);return float64(len(v.values))})}
-  index,err:=strconv.Atoi(tsPropertyKey(key));if err!=nil||strconv.Itoa(index)!=tsPropertyKey(key)||index<0 || index>=len(v.values) {return tsU};return v.values[index]
+  index,err:=strconv.Atoi(tsPropertyKey(key));if err!=nil||strconv.Itoa(index)!=tsPropertyKey(key){return tsSequenceMethod(value,tsPropertyKey(key))};if index<0||index>=len(v.values){return tsU};return v.values[index]
  case tsStringKind:v:=(*tsString)(value.ref);return tsStringGet(v,key)
  case tsRegExpKind:v:=(*tsRegExp)(value.ref);return tsECMAGet(v.object,key)
  case tsECMAKind:v:=(*tsECMAObject)(value.ref);return tsECMAGet(v.object,key)
@@ -92,7 +99,7 @@ func tsGet(value,key tsValue) tsValue { switch value.kind {
  }
  panic("Unsupported property access")
 }
-func tsSet(value,key,item tsValue)tsValue{switch value.kind{case tsClassKind:return tsInstanceProperties((*tsClass)(value.ref).static).set(tsPropertyKey(key),item);case tsInstanceKind:return (*tsProperties)(value.ref).set(tsPropertyKey(key),item);case tsObjectKind:return (*tsObject)(value.ref).set(tsPropertyKey(key),item);case tsRegExpKind:return tsECMASet((*tsRegExp)(value.ref).object,key,item);case tsECMAKind:return tsECMASet((*tsECMAObject)(value.ref).object,key,item)};if value.kind!=tsArrayKind{panic("Expected an array")};array:=(*tsArray)(value.ref);name:=tsPropertyKey(key);if name=="length"{length:=tsNumber(item);if length<0||length>4294967295||math.Trunc(length)!=length{panic("Invalid array length")};for len(array.values)<int(length){tsArrayHole(array)};clear(array.values[int(length):]);array.values=array.values[:int(length)];for index:=range array.holes{if index>=int(length){delete(array.holes,index)}};return item};index,err:=strconv.Atoi(name);if err!=nil||index<0||uint64(index)>=4294967295||strconv.Itoa(index)!=name{if array.properties==nil{array.properties=map[string]tsValue{}};array.properties[name]=item;return item};for len(array.values)<=index{tsArrayHole(array)};delete(array.holes,index);array.values[index]=item;return item}
+func tsSet(value,key,item tsValue)tsValue{switch value.kind{case tsTypedArrayKind:return tsTypedArraySet(value,key,item);case tsCollectionKind:c:=(*tsCollection)(value.ref);if c.properties==nil{c.properties=map[string]tsValue{}};name:=tsPropertyKey(key);if name=="size"{panic("Collection size is read-only")};if _,ok:=c.properties[name];!ok{c.order=append(c.order,name)};c.properties[name]=item;return item;case tsClassKind:return tsInstanceProperties((*tsClass)(value.ref).static).set(tsPropertyKey(key),item);case tsInstanceKind:return (*tsProperties)(value.ref).set(tsPropertyKey(key),item);case tsObjectKind:return (*tsObject)(value.ref).set(tsPropertyKey(key),item);case tsRegExpKind:return tsECMASet((*tsRegExp)(value.ref).object,key,item);case tsECMAKind:return tsECMASet((*tsECMAObject)(value.ref).object,key,item)};if value.kind!=tsArrayKind{panic("Expected an array")};array:=(*tsArray)(value.ref);name:=tsPropertyKey(key);if name=="length"{length:=tsNumber(item);if length<0||length>4294967295||math.Trunc(length)!=length{panic("Invalid array length")};for len(array.values)<int(length){tsArrayHole(array)};clear(array.values[int(length):]);array.values=array.values[:int(length)];for index:=range array.holes{if index>=int(length){delete(array.holes,index)}};return item};index,err:=strconv.Atoi(name);if err!=nil||index<0||uint64(index)>=4294967295||strconv.Itoa(index)!=name{if array.properties==nil{array.properties=map[string]tsValue{}};array.properties[name]=item;return item};for len(array.values)<=index{tsArrayHole(array)};delete(array.holes,index);array.values[index]=item;return item}
 func tsNumber(value tsValue) float64 {switch value.kind {case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return float64(int64(math.Float64bits(value.number)));case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return float64(math.Float64bits(value.number));case tsFloat32Kind,tsNumberKind,tsBooleanKind:return value.number;case tsNullKind:return 0;case tsUndefinedKind:return math.NaN();case tsStringKind:return goja.StringFromUTF16((*tsString)(value.ref).units).ToFloat();default:panic("Expected a number")}}
 func tsTruthy(value tsValue) bool {switch value.kind {case tsUndefinedKind,tsNullKind:return false;case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return math.Float64bits(value.number)!=0;case tsFloat32Kind,tsNumberKind:return value.number!=0 && !math.IsNaN(value.number);case tsBooleanKind:return value.number!=0;case tsStringKind:return len((*tsString)(value.ref).units)!=0;default:return true}}
 func tsBinary(op string, left, right tsValue) tsValue {
@@ -314,10 +321,13 @@ func tsLooseEqual(a,b tsValue)bool{
 func tsHas(value,key tsValue)bool{
  name:=tsPropertyKey(key)
  switch value.kind{
+ case tsArrayBufferKind:return !tsIsUndefined(tsArrayBufferGet(value,name))
+ case tsTypedArrayKind:return !tsIsUndefined(tsTypedArrayGet(value,name))
+ case tsCollectionKind:return !tsIsUndefined(tsCollectionGet(value,name))
  case tsObjectKind:_,ok:=(*tsObject)(value.ref).values[name];return ok
  case tsClassKind:return tsHas(tsInstanceValue(tsInstanceProperties((*tsClass)(value.ref).static)),key)
  case tsInstanceKind:for p:=(*tsProperties)(value.ref);p!=nil;p=p.prototype{if _,ok:=p.declared[name];ok{return true};if _,ok:=p.extra[name];ok{return true};if _,ok:=p.methods[name];ok{return true}};return false
- case tsArrayKind:array:=(*tsArray)(value.ref);if name=="length"||name=="push"{return true};if _,ok:=array.properties[name];ok{return true};index,err:=strconv.Atoi(name);return err==nil&&index>=0&&index<len(array.values)&&strconv.Itoa(index)==name&&!array.holes[index]
+ case tsArrayKind:array:=(*tsArray)(value.ref);if name=="length"||name=="push"{return true};if _,ok:=array.properties[name];ok{return true};if !tsIsUndefined(tsSequenceMethod(value,name)){return true};index,err:=strconv.Atoi(name);return err==nil&&index>=0&&index<len(array.values)&&strconv.Itoa(index)==name&&!array.holes[index]
  case tsECMAKind,tsRegExpKind:var object *goja.Object;if value.kind==tsECMAKind{object=(*tsECMAObject)(value.ref).object}else{object=(*tsRegExp)(value.ref).object};for ;object!=nil;object=object.Prototype(){for _,property:=range object.GetOwnPropertyNames(){if property==name{return true}}};return false
  }
  panic(tsThrown{tsErrorValue(&tsRuntimeError{"TypeError","Right operand of in must be an object"})})
@@ -325,6 +335,6 @@ func tsHas(value,key tsValue)bool{
 `
 
 const EqualityRuntime = `
-func tsStrictEqual(a,b tsValue)bool {if tsIsNumeric(a)&&tsIsNumeric(b){return tsNumericEqual(a,b)};if a.kind!=b.kind{return false};switch a.kind {case tsUndefinedKind,tsNullKind:return true;case tsNumberKind,tsBooleanKind:return a.number==b.number;case tsStringKind:return tsStringEqual((*tsString)(a.ref),(*tsString)(b.ref));case tsRegExpKind:return (*tsRegExp)(a.ref).object==(*tsRegExp)(b.ref).object;case tsECMAKind:return (*tsECMAObject)(a.ref).object==(*tsECMAObject)(b.ref).object;case tsFunctionKind,tsObjectKind,tsArrayKind,tsClassKind,tsPromiseKind,tsInstanceKind:return a.ref==b.ref;default:return false}}
+func tsStrictEqual(a,b tsValue)bool {if tsIsNumeric(a)&&tsIsNumeric(b){return tsNumericEqual(a,b)};if a.kind!=b.kind{return false};switch a.kind {case tsUndefinedKind,tsNullKind:return true;case tsNumberKind,tsBooleanKind:return a.number==b.number;case tsStringKind:return tsStringEqual((*tsString)(a.ref),(*tsString)(b.ref));case tsRegExpKind:return (*tsRegExp)(a.ref).object==(*tsRegExp)(b.ref).object;case tsECMAKind:return (*tsECMAObject)(a.ref).object==(*tsECMAObject)(b.ref).object;case tsFunctionKind,tsObjectKind,tsArrayKind,tsClassKind,tsPromiseKind,tsInstanceKind,tsCollectionKind,tsIteratorKind,tsTypedArrayKind,tsArrayBufferKind:return a.ref==b.ref;default:return false}}
 
 `
