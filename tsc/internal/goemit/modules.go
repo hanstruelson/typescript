@@ -169,6 +169,22 @@ func (b *machineBuilder) exportDeclaration(node *ast.Node) {
 		b.e.fail(node, "exports require module bundling")
 		return
 	}
+	if n.ModuleSpecifier != nil && IsNativeNodeModule(n.ModuleSpecifier.Text()) {
+		module := "tsNodeModule(" + strconv.Quote(strings.TrimPrefix(n.ModuleSpecifier.Text(), "node:")) + ")"
+		for _, specifier := range n.ExportClause.AsNamedExports().Elements.Nodes {
+			s := specifier.AsExportSpecifier()
+			if s.IsTypeOnly {
+				continue
+			}
+			name := specifier.Name().Text()
+			if s.PropertyName != nil {
+				name = s.PropertyName.Text()
+			}
+			value := b.temp("tsGet(" + module + "," + strconv.Quote(name) + ")")
+			b.publish(specifier.Name().Text(), value, "nil")
+		}
+		return
+	}
 	names := []string{}
 	for _, specifier := range n.ExportClause.AsNamedExports().Elements.Nodes {
 		s := specifier.AsExportSpecifier()

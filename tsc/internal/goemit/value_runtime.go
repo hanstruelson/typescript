@@ -38,6 +38,7 @@ const (
  tsCollectionKind
  tsTypedArrayKind
  tsArrayBufferKind
+ tsBigIntKind
 )
 type tsValue struct {kind tsKind;number float64;ref unsafe.Pointer}
 var tsU=tsValue{}

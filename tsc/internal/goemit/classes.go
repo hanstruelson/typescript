@@ -129,10 +129,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 				continue
 			}
 			shape := e.primitive(member)
-			if member.Type() != nil && member.Type().Kind == ast.KindBigIntKeyword {
-				e.fail(member, "bigint fields are not supported yet")
-				continue
-			}
+
 			_ = shape
 			name := member.Name().Text()
 			if c.fields[name] == nil {
@@ -347,7 +344,7 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 	fmt.Fprintf(&out, "func tsView_%s(value tsValue)%sView{p:=tsInstanceProperties(value);for class:=p.class;class!=nil;class=class.parent{if class.layout==&tsLayout_%s{return %sView{", c.name, c.name, c.name, c.name)
 	for _, name := range c.fieldOrder {
 		id := memberName(name)
-		fmt.Fprintf(&out, "Get%s:p.declared[%q].get,Set%s:p.declared[%q].set,", id, name, id, name)
+		fmt.Fprintf(&out, "Get%s:p.declared[%q].readField,Set%s:p.declared[%q].writeField,", id, name, id, name)
 	}
 	for _, name := range c.methodOrder {
 		fmt.Fprintf(&out, "Call%s:(*tsFunction)(p.methods[%q].ref).call,", memberName(name), name)
@@ -380,7 +377,7 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 	fmt.Fprintf(&out, "func(self *%s) initProperties() {self.properties.self=unsafe.Pointer(self);self.properties.layout=&tsLayout_%s;\n", c.name, c.name)
 	for _, name := range c.fieldOrder {
 		id := memberName(name)
-		fmt.Fprintf(&out, "self.properties.declared[%q]=tsProperty{get:func()tsValue{return self.Get%s()},set:func(value tsValue)tsValue{return self.Set%s(value)}}\n", name, id, id)
+		fmt.Fprintf(&out, "self.properties.declared[%q]=tsProperty{readField:func()tsValue{return self.Get%s()},writeField:func(value tsValue)tsValue{return self.Set%s(value)}}\n", name, id, id)
 	}
 	for _, name := range c.methodOrder {
 		fmt.Fprintf(&out, "self.properties.methods[%q]=tsFunc(self.Call%s)\n", name, memberName(name))

@@ -1,0 +1,993 @@
+{
+  "reference": "v24.19.0",
+  "scope": "ECMAScript built-ins; API presence is not a conformance claim.",
+  "excluded": [
+    "eval",
+    "Function constructor dynamic source compilation"
+  ],
+  "builtins": {
+    "Object": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "assign",
+        "getOwnPropertyDescriptor",
+        "getOwnPropertyDescriptors",
+        "getOwnPropertyNames",
+        "getOwnPropertySymbols",
+        "hasOwn",
+        "is",
+        "preventExtensions",
+        "seal",
+        "create",
+        "defineProperties",
+        "defineProperty",
+        "freeze",
+        "getPrototypeOf",
+        "setPrototypeOf",
+        "isExtensible",
+        "isFrozen",
+        "isSealed",
+        "keys",
+        "entries",
+        "fromEntries",
+        "values",
+        "groupBy"
+      ],
+      "prototype": [
+        "constructor",
+        "__defineGetter__",
+        "__defineSetter__",
+        "hasOwnProperty",
+        "__lookupGetter__",
+        "__lookupSetter__",
+        "isPrototypeOf",
+        "propertyIsEnumerable",
+        "toString",
+        "valueOf",
+        "__proto__",
+        "toLocaleString"
+      ]
+    },
+    "Function": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "length",
+        "name",
+        "arguments",
+        "caller",
+        "constructor",
+        "apply",
+        "bind",
+        "call",
+        "toString",
+        "Symbol(Symbol.hasInstance)"
+      ]
+    },
+    "Boolean": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "toString",
+        "valueOf"
+      ]
+    },
+    "Symbol": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "for",
+        "keyFor",
+        "asyncIterator",
+        "hasInstance",
+        "isConcatSpreadable",
+        "iterator",
+        "match",
+        "matchAll",
+        "replace",
+        "search",
+        "species",
+        "split",
+        "toPrimitive",
+        "toStringTag",
+        "unscopables",
+        "dispose",
+        "asyncDispose"
+      ],
+      "prototype": [
+        "constructor",
+        "toString",
+        "valueOf",
+        "description",
+        "Symbol(Symbol.toStringTag)",
+        "Symbol(Symbol.toPrimitive)"
+      ]
+    },
+    "Error": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "captureStackTrace",
+        "prepareStackTrace",
+        "isError",
+        "stackTraceLimit"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message",
+        "toString"
+      ]
+    },
+    "AggregateError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "EvalError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "RangeError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "ReferenceError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "SyntaxError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "TypeError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "URIError": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "name",
+        "message"
+      ]
+    },
+    "Number": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "isFinite",
+        "isInteger",
+        "isNaN",
+        "isSafeInteger",
+        "parseFloat",
+        "parseInt",
+        "MAX_VALUE",
+        "MIN_VALUE",
+        "NaN",
+        "NEGATIVE_INFINITY",
+        "POSITIVE_INFINITY",
+        "MAX_SAFE_INTEGER",
+        "MIN_SAFE_INTEGER",
+        "EPSILON"
+      ],
+      "prototype": [
+        "constructor",
+        "toExponential",
+        "toFixed",
+        "toPrecision",
+        "toString",
+        "valueOf",
+        "toLocaleString"
+      ]
+    },
+    "BigInt": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "asUintN",
+        "asIntN"
+      ],
+      "prototype": [
+        "constructor",
+        "toLocaleString",
+        "toString",
+        "valueOf",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "Math": {
+      "static": [
+        "abs",
+        "acos",
+        "acosh",
+        "asin",
+        "asinh",
+        "atan",
+        "atanh",
+        "atan2",
+        "ceil",
+        "cbrt",
+        "expm1",
+        "clz32",
+        "cos",
+        "cosh",
+        "exp",
+        "floor",
+        "fround",
+        "hypot",
+        "imul",
+        "log",
+        "log1p",
+        "log2",
+        "log10",
+        "max",
+        "min",
+        "pow",
+        "random",
+        "round",
+        "sign",
+        "sin",
+        "sinh",
+        "sqrt",
+        "tan",
+        "tanh",
+        "trunc",
+        "E",
+        "LN10",
+        "LN2",
+        "LOG10E",
+        "LOG2E",
+        "PI",
+        "SQRT1_2",
+        "SQRT2",
+        "f16round",
+        "Symbol(Symbol.toStringTag)"
+      ],
+      "prototype": []
+    },
+    "Date": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "now",
+        "parse",
+        "UTC"
+      ],
+      "prototype": [
+        "constructor",
+        "toString",
+        "toDateString",
+        "toTimeString",
+        "toISOString",
+        "toUTCString",
+        "toGMTString",
+        "getDate",
+        "setDate",
+        "getDay",
+        "getFullYear",
+        "setFullYear",
+        "getHours",
+        "setHours",
+        "getMilliseconds",
+        "setMilliseconds",
+        "getMinutes",
+        "setMinutes",
+        "getMonth",
+        "setMonth",
+        "getSeconds",
+        "setSeconds",
+        "getTime",
+        "setTime",
+        "getTimezoneOffset",
+        "getUTCDate",
+        "setUTCDate",
+        "getUTCDay",
+        "getUTCFullYear",
+        "setUTCFullYear",
+        "getUTCHours",
+        "setUTCHours",
+        "getUTCMilliseconds",
+        "setUTCMilliseconds",
+        "getUTCMinutes",
+        "setUTCMinutes",
+        "getUTCMonth",
+        "setUTCMonth",
+        "getUTCSeconds",
+        "setUTCSeconds",
+        "valueOf",
+        "getYear",
+        "setYear",
+        "toJSON",
+        "toLocaleString",
+        "toLocaleDateString",
+        "toLocaleTimeString",
+        "Symbol(Symbol.toPrimitive)"
+      ]
+    },
+    "String": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "fromCharCode",
+        "fromCodePoint",
+        "raw"
+      ],
+      "prototype": [
+        "length",
+        "constructor",
+        "anchor",
+        "at",
+        "big",
+        "blink",
+        "bold",
+        "charAt",
+        "charCodeAt",
+        "codePointAt",
+        "concat",
+        "endsWith",
+        "fontcolor",
+        "fontsize",
+        "fixed",
+        "includes",
+        "indexOf",
+        "isWellFormed",
+        "italics",
+        "lastIndexOf",
+        "link",
+        "localeCompare",
+        "match",
+        "matchAll",
+        "normalize",
+        "padEnd",
+        "padStart",
+        "repeat",
+        "replace",
+        "replaceAll",
+        "search",
+        "slice",
+        "small",
+        "split",
+        "strike",
+        "sub",
+        "substr",
+        "substring",
+        "sup",
+        "startsWith",
+        "toString",
+        "toWellFormed",
+        "trim",
+        "trimStart",
+        "trimLeft",
+        "trimEnd",
+        "trimRight",
+        "toLocaleLowerCase",
+        "toLocaleUpperCase",
+        "toLowerCase",
+        "toUpperCase",
+        "valueOf",
+        "Symbol(Symbol.iterator)"
+      ]
+    },
+    "RegExp": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "input",
+        "$_",
+        "lastMatch",
+        "$&",
+        "lastParen",
+        "$+",
+        "leftContext",
+        "$`",
+        "rightContext",
+        "$'",
+        "$1",
+        "$2",
+        "$3",
+        "$4",
+        "$5",
+        "$6",
+        "$7",
+        "$8",
+        "$9",
+        "escape",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "constructor",
+        "exec",
+        "dotAll",
+        "flags",
+        "global",
+        "hasIndices",
+        "ignoreCase",
+        "multiline",
+        "source",
+        "sticky",
+        "unicode",
+        "unicodeSets",
+        "compile",
+        "toString",
+        "test",
+        "Symbol(Symbol.match)",
+        "Symbol(Symbol.matchAll)",
+        "Symbol(Symbol.replace)",
+        "Symbol(Symbol.search)",
+        "Symbol(Symbol.split)"
+      ]
+    },
+    "Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "isArray",
+        "from",
+        "fromAsync",
+        "of",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "length",
+        "constructor",
+        "at",
+        "concat",
+        "copyWithin",
+        "fill",
+        "find",
+        "findIndex",
+        "findLast",
+        "findLastIndex",
+        "lastIndexOf",
+        "pop",
+        "push",
+        "reverse",
+        "shift",
+        "unshift",
+        "slice",
+        "sort",
+        "splice",
+        "includes",
+        "indexOf",
+        "join",
+        "keys",
+        "entries",
+        "values",
+        "forEach",
+        "filter",
+        "flat",
+        "flatMap",
+        "map",
+        "every",
+        "some",
+        "reduce",
+        "reduceRight",
+        "toReversed",
+        "toSorted",
+        "toSpliced",
+        "with",
+        "toLocaleString",
+        "toString",
+        "Symbol(Symbol.iterator)",
+        "Symbol(Symbol.unscopables)"
+      ]
+    },
+    "Int8Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Uint8Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Uint8ClampedArray": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Int16Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Uint16Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Int32Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Uint32Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "BigInt64Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "BigUint64Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Float16Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Float32Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Float64Array": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "BYTES_PER_ELEMENT"
+      ],
+      "prototype": [
+        "constructor",
+        "BYTES_PER_ELEMENT"
+      ]
+    },
+    "Map": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "groupBy",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "constructor",
+        "get",
+        "set",
+        "has",
+        "delete",
+        "clear",
+        "entries",
+        "forEach",
+        "keys",
+        "size",
+        "values",
+        "Symbol(Symbol.toStringTag)",
+        "Symbol(Symbol.iterator)"
+      ]
+    },
+    "Set": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "constructor",
+        "has",
+        "add",
+        "delete",
+        "difference",
+        "clear",
+        "entries",
+        "forEach",
+        "intersection",
+        "isSubsetOf",
+        "isSupersetOf",
+        "isDisjointFrom",
+        "size",
+        "symmetricDifference",
+        "union",
+        "values",
+        "keys",
+        "Symbol(Symbol.toStringTag)",
+        "Symbol(Symbol.iterator)"
+      ]
+    },
+    "WeakMap": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "delete",
+        "get",
+        "set",
+        "has",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "WeakSet": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "delete",
+        "has",
+        "add",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "ArrayBuffer": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "isView",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "constructor",
+        "byteLength",
+        "slice",
+        "maxByteLength",
+        "resizable",
+        "resize",
+        "transfer",
+        "transferToFixedLength",
+        "detached",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "SharedArrayBuffer": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "constructor",
+        "byteLength",
+        "slice",
+        "maxByteLength",
+        "growable",
+        "grow",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "DataView": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "buffer",
+        "byteLength",
+        "byteOffset",
+        "getInt8",
+        "setInt8",
+        "getUint8",
+        "setUint8",
+        "getInt16",
+        "setInt16",
+        "getUint16",
+        "setUint16",
+        "getInt32",
+        "setInt32",
+        "getUint32",
+        "setUint32",
+        "getFloat32",
+        "setFloat32",
+        "getFloat64",
+        "setFloat64",
+        "getBigInt64",
+        "setBigInt64",
+        "getBigUint64",
+        "setBigUint64",
+        "getFloat16",
+        "setFloat16",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "Atomics": {
+      "static": [
+        "load",
+        "store",
+        "add",
+        "sub",
+        "and",
+        "or",
+        "xor",
+        "exchange",
+        "compareExchange",
+        "isLockFree",
+        "wait",
+        "waitAsync",
+        "notify",
+        "pause",
+        "Symbol(Symbol.toStringTag)"
+      ],
+      "prototype": []
+    },
+    "JSON": {
+      "static": [
+        "parse",
+        "stringify",
+        "rawJSON",
+        "isRawJSON",
+        "Symbol(Symbol.toStringTag)"
+      ],
+      "prototype": []
+    },
+    "WeakRef": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "deref",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "FinalizationRegistry": {
+      "static": [
+        "length",
+        "name",
+        "prototype"
+      ],
+      "prototype": [
+        "constructor",
+        "register",
+        "unregister",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "Promise": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "all",
+        "allSettled",
+        "any",
+        "race",
+        "resolve",
+        "reject",
+        "withResolvers",
+        "try",
+        "Symbol(Symbol.species)"
+      ],
+      "prototype": [
+        "constructor",
+        "then",
+        "catch",
+        "finally",
+        "Symbol(Symbol.toStringTag)"
+      ]
+    },
+    "Proxy": {
+      "static": [
+        "length",
+        "name",
+        "revocable"
+      ],
+      "prototype": []
+    },
+    "Reflect": {
+      "static": [
+        "defineProperty",
+        "deleteProperty",
+        "apply",
+        "construct",
+        "get",
+        "getOwnPropertyDescriptor",
+        "getPrototypeOf",
+        "has",
+        "isExtensible",
+        "ownKeys",
+        "preventExtensions",
+        "set",
+        "setPrototypeOf",
+        "Symbol(Symbol.toStringTag)"
+      ],
+      "prototype": []
+    },
+    "Iterator": {
+      "static": [
+        "length",
+        "name",
+        "prototype",
+        "from"
+      ],
+      "prototype": [
+        "constructor",
+        "reduce",
+        "toArray",
+        "forEach",
+        "some",
+        "every",
+        "find",
+        "map",
+        "filter",
+        "take",
+        "drop",
+        "flatMap",
+        "Symbol(Symbol.iterator)",
+        "Symbol(Symbol.toStringTag)",
+        "Symbol(Symbol.dispose)"
+      ]
+    },
+    "Intl": {
+      "static": [
+        "getCanonicalLocales",
+        "supportedValuesOf",
+        "DateTimeFormat",
+        "NumberFormat",
+        "Collator",
+        "PluralRules",
+        "RelativeTimeFormat",
+        "ListFormat",
+        "Locale",
+        "DisplayNames",
+        "Segmenter",
+        "DurationFormat",
+        "Symbol(Symbol.toStringTag)"
+      ],
+      "prototype": []
+    }
+  }
+}

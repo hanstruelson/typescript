@@ -137,6 +137,8 @@ func (e *emitter) collect(node, owner *ast.Node) {
 			}
 		}
 		return
+	case ast.KindImportEqualsDeclaration:
+		return
 	case ast.KindImportDeclaration:
 		if e.targets[node] != "" {
 			clause := node.AsImportDeclaration().ImportClause
@@ -177,7 +179,7 @@ func (e *emitter) collect(node, owner *ast.Node) {
 		}
 		e.collect(node.Body(), node)
 		return
-	case ast.KindArrowFunction, ast.KindFunctionExpression:
+	case ast.KindArrowFunction, ast.KindFunctionExpression, ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor:
 		if ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0 {
 			e.fail(node, "generator functions are not supported")
 		}
@@ -243,6 +245,8 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 	for _, node := range file.Statements.Nodes {
 		if node.Kind == ast.KindImportDeclaration {
 			builder.importDeclaration(node)
+		} else if node.Kind == ast.KindImportEqualsDeclaration {
+			builder.nodeImportEquals(node)
 		}
 	}
 	builder.statements(file.Statements.Nodes)
@@ -261,8 +265,8 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 
 type resumeBlock struct{ lines []string }
 type loopTarget struct {
-	breakPC, continuePC, depth int
-	label                      string
+	breakPC, continuePC, depth, continueDepth int
+	label                                     string
 }
 type machineBuilder struct {
 	e                   *emitter
@@ -286,6 +290,7 @@ type machineBuilder struct {
 	nativeReturnCount   int
 	constructor         bool
 	receiver            string
+	dynamicReceiver     bool
 }
 
 func (e *emitter) newMachine(owner *ast.Node, parent *machineBuilder, async bool) *machineBuilder {
@@ -391,6 +396,10 @@ func (b *machineBuilder) function(node *ast.Node) string {
 		return b.nativeFunction(node, fn)
 	}
 	child := b.e.newMachine(node, b, ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync))
+	if node.Kind != ast.KindArrowFunction {
+		child.receiver = "receiver"
+		child.dynamicReceiver = true
+	}
 	if node.Kind == ast.KindArrowFunction {
 		child.concrete = b.concrete
 		child.declaring = b.declaring
@@ -424,6 +433,8 @@ func (b *machineBuilder) finish() string {
 	}
 	if b.module {
 		out.WriteString("func(module *tsModule) {\n")
+	} else if b.dynamicReceiver {
+		fmt.Fprintf(&out, "func(%s) *tsFunction { return &tsFunction{receiverCall:func(loop *tsLoop,receiver tsValue,args ...tsValue) tsValue {\n", strings.Join(captures, ","))
 	} else {
 		fmt.Fprintf(&out, "func(%s) *tsFunction { return tsFunc(func(args ...tsValue) tsValue {\n", strings.Join(captures, ","))
 	}
@@ -459,6 +470,10 @@ func (b *machineBuilder) finish() string {
 	} else {
 		out.WriteString("return m.result\n")
 	}
-	fmt.Fprintf(&out, "}) }(%s)", strings.Join(args, ","))
+	if b.dynamicReceiver {
+		fmt.Fprintf(&out, "}} }(%s)", strings.Join(args, ","))
+	} else {
+		fmt.Fprintf(&out, "}) }(%s)", strings.Join(args, ","))
+	}
 	return out.String()
 }

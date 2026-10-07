@@ -29,6 +29,20 @@ func (b *machineBuilder) identifier(node *ast.Node) string {
 		return "tsBuiltinClass(" + strconv.Quote(node.Text()) + ")"
 	}
 	switch node.Text() {
+	case "Blob", "ReadableStream", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader":
+		return "tsClassValue(tsNativeClass(" + strconv.Quote(node.Text()) + "))"
+	case "JSON":
+		return "tsJSONModule()"
+	case "Date":
+		return "tsClassValue(tsNativeClass(\"Date\"))"
+	case "Number":
+		return "tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{value:=tsArg(args,0);if len(args)==0{return tsNumberValue(0)};if value.kind==tsBigIntKind{number,_:=new(big.Float).SetInt((*big.Int)(value.ref)).Float64();return tsNumberValue(number)};return tsNumberValue(tsNumber(tsToPrimitive(value)))})"
+	case "BigInt":
+		return "tsBigIntFunction()"
+	case "AbortSignal":
+		return "tsAbortSignalModule(loop)"
+	case "Buffer":
+		return "tsNodeBufferModule()"
 	case "String":
 		return "tsFunc(func(args ...tsValue)tsValue {if len(args)==0 {return tsStringUnits(nil)};return tsStringValue(args[0])})"
 	case "RegExp":
@@ -48,6 +62,14 @@ func (b *machineBuilder) identifier(node *ast.Node) string {
 	return "tsU"
 }
 func (b *machineBuilder) builtin(name string) string {
+	if strings.HasPrefix(name, "node-module|") {
+		parts := strings.SplitN(name, "|", 3)
+		value := "tsNodeModule(" + strconv.Quote(parts[1]) + ")"
+		if parts[2] != "" {
+			value = "tsGet(" + value + "," + strconv.Quote(parts[2]) + ")"
+		}
+		return value
+	}
 	switch name {
 	case "readFile":
 		return "tsFunc(func(args ...tsValue) tsValue { return loop.readFile(tsArg(args,0)) })"
@@ -101,6 +123,8 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindTypeOfExpression:
 		value := b.expression(node.AsTypeOfExpression().Expression)
 		return b.typedTemp("tsTypeOf("+value+")", "*tsString")
+	case ast.KindBigIntLiteral:
+		return b.temp("tsBigIntLiteral(" + strconv.Quote(node.Text()) + ")")
 	case ast.KindStringLiteral, ast.KindNoSubstitutionTemplateLiteral:
 		return b.typedTemp(stringLiteral(node.Text()), "*tsString")
 	case ast.KindTrueKeyword:
@@ -113,6 +137,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if b.receiver == "" {
 			b.e.fail(node, "this is supported only in class methods and their arrow closures")
 			return "tsU"
+		}
+		if b.concrete == nil {
+			return b.temp(b.receiver)
 		}
 		if b.concrete != nil && b.concrete.static {
 			return b.temp(b.receiver + ".properties.class")
@@ -193,6 +220,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp(b.function(node))
 	case ast.KindNewExpression:
 		n := node.AsNewExpression()
+		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "AbortController" && b.e.binding(n.Expression) == nil {
+			return b.temp("tsAbortController(loop)")
+		}
 		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "ArrayBuffer" && b.e.binding(n.Expression) == nil {
 			args := []string{}
 			if n.Arguments != nil {
@@ -301,7 +331,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return b.temp("tsNewRegExp(" + strings.Join(args, ",") + ")")
 		}
 
-		if b.e.classReference(n.Expression) != nil || (n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) != nil) {
+		if n.Expression.Kind != ast.KindIdentifier || n.Expression.Text() != "Promise" || b.e.binding(n.Expression) != nil {
 			class := b.expression(n.Expression)
 			args := []string{}
 			if n.Arguments != nil {
@@ -341,6 +371,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				value := b.expression(property.Expression)
 				return b.explicitConversion(value, primitive{kind: target})
 			}
+		}
+		if value, ok := b.nodeModuleCall(node); ok {
+			return value
 		}
 		if call.Expression.Kind == ast.KindImportKeyword {
 			target := b.e.targets[node]
@@ -390,11 +423,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if call.QuestionDotToken != nil {
 			b.e.fail(node, "optional calls are not supported")
 		}
-		if call.Expression.Kind == ast.KindIdentifier && b.e.imports[b.e.reference(call.Expression)] == "readFile" {
-			if len(call.Arguments.Nodes) != 2 || call.Arguments.Nodes[1].Kind != ast.KindStringLiteral || (call.Arguments.Nodes[1].Text() != "utf8" && call.Arguments.Nodes[1].Text() != "utf-8") {
-				b.e.fail(node, "imported readFile currently requires an explicit utf8 encoding")
-			}
-		}
+
 		if value, ok := b.denseArrayCall(call); ok {
 			return value
 		}
@@ -423,9 +452,39 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				return b.temp(target + "(" + strings.Join(args, ",") + ")")
 			}
 		}
-		callee := b.expression(call.Expression)
+		receiver := ""
+		callee := ""
+		if call.Expression.Kind == ast.KindPropertyAccessExpression {
+			property := call.Expression.AsPropertyAccessExpression()
+			if b.classOf(property.Expression) == nil && b.e.primitive(property.Expression).kind == "" {
+				special := false
+				if property.Expression.Kind == ast.KindIdentifier {
+					switch property.Expression.Text() {
+					case "Math", "JSON", "Object", "console", "Promise", "String", "Array", "RegExp":
+						special = b.e.binding(property.Expression) == nil
+					}
+				}
+				if !special {
+					receiver = b.expression(property.Expression)
+					callee = b.temp("tsGet(" + receiver + "," + strconv.Quote(property.Name().Text()) + ")")
+				}
+			}
+		}
+		if call.Expression.Kind == ast.KindElementAccessExpression {
+			property := call.Expression.AsElementAccessExpression()
+			receiver = b.expression(property.Expression)
+			key := b.expression(property.ArgumentExpression)
+			callee = b.temp("tsGet(" + receiver + "," + key + ")")
+		}
+		if callee == "" {
+			callee = b.expression(call.Expression)
+		}
+		invoke := "tsCall(" + callee
+		if receiver != "" {
+			invoke = "tsCallReceiver(" + callee + "," + receiver
+		}
 		if hasSpread {
-			return b.temp("tsCall(" + callee + "," + b.spreadArguments(call.Arguments.Nodes) + "...)")
+			return b.temp(invoke + "," + b.spreadArguments(call.Arguments.Nodes) + "...)")
 		}
 		args := []string{}
 		for i, arg := range call.Arguments.Nodes {
@@ -438,7 +497,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if len(args) > 0 {
 			suffix = "," + strings.Join(args, ",")
 		}
-		return b.temp("tsCall(" + callee + suffix + ")")
+		return b.temp(invoke + suffix + ")")
 	case ast.KindPropertyAccessExpression:
 		n := node.AsPropertyAccessExpression()
 		if n.QuestionDotToken != nil {
@@ -560,7 +619,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			if p := (primitive{kind: b.tempType(operand)}); p.numeric() {
 				return b.typedTemp("-"+operand, p.goType())
 			}
-			return b.temp("-tsNumber(" + operand + ")")
+			return b.temp("tsNegate(" + operand + ")")
 		case ast.KindPlusToken:
 			if (primitive{kind: b.tempType(operand)}).numeric() {
 				return operand
@@ -685,12 +744,12 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 		}
 		return value
 	}
-	old := b.temp(read)
+	old := b.temp("tsIncrementOperand(" + read + ")")
 	op := "+"
 	if operator == ast.KindMinusMinusToken {
 		op = "-"
 	}
-	operand := "tsNumber(" + old + ")" + op + "1"
+	operand := "tsIncrement(" + old + "," + strconv.Quote(op) + ")"
 	if p := b.e.primitive(node); p.numeric() {
 		one := b.typedTemp(p.goType()+"(1)", p.goType())
 		operand = "tsBinary(" + strconv.Quote(op) + "," + old + "," + one + ")"

@@ -21,7 +21,7 @@ func needsGoBundle(files []*ast.SourceFile) bool {
 			}
 			if node.Kind == ast.KindImportDeclaration {
 				name := node.AsImportDeclaration().ModuleSpecifier.Text()
-				if name != "node:fs/promises" && name != "fs/promises" {
+				if !goemit.IsNativeNodeModule(name) {
 					return true
 				}
 			}

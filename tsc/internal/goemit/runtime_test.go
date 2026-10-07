@@ -27,6 +27,21 @@ func TestRuntimeWorkers(t *testing.T) {
 	}
 	tests := `package main
 import("testing";"runtime";"strings";"unsafe";"math")
+func TestNativeDateSetters(t *testing.T){
+ loop:=tsNewLoop();date:=tsDateConstruct(loop,[]tsValue{tsStringReference(tsStringUTF8("2024-01-31T12:34:56.789Z"))})
+ invoke:=func(name string,args ...tsValue)tsValue{return tsCallReceiver(loop,tsGet(loop,date,tsStringReference(tsStringUTF8(name))),date,args...)}
+ invoke("setUTCMonth",tsNumberValue(1));if tsText(invoke("toISOString"))!="2024-03-02T12:34:56.789Z"{t.Fatal("month overflow")}
+ invoke("setUTCHours",tsNumberValue(25),tsNumberValue(2));if tsText(invoke("toISOString"))!="2024-03-03T01:02:56.789Z"{t.Fatal("hours normalization/defaults")}
+ invoke("setUTCSeconds",tsNumberValue(math.NaN()));if !math.IsNaN(tsNumber(invoke("getTime"))){t.Fatal("NaN setter")}
+ invoke("setUTCFullYear",tsNumberValue(2000));if tsText(invoke("toISOString"))!="2000-01-01T00:00:00.000Z"{t.Fatal("invalid-date recovery")}
+ if tsText(invoke("toGMTString"))!=tsText(invoke("toUTCString")){t.Fatal("GMT alias")}
+ if loop.ecma!=nil{t.Fatal("Date initialized regexp engine")}
+}
+func TestNativeStringNumber(t *testing.T){
+ cases:=[]struct{text string;want float64}{{"",0},{"\ufeff\u00a0 42 \u2029",42},{"0xFF",255},{"0o17",15},{"0b11",3},{".5",.5},{"1e309",math.Inf(1)},{"-0",math.Copysign(0,-1)},{"+Infinity",math.Inf(1)},{"1_000",math.NaN()},{"0x1p2",math.NaN()},{"Inf",math.NaN()},{"-0xff",math.NaN()},{"1e",math.NaN()},{"\u00851",math.NaN()}}
+ for _,item:=range cases{got:=tsStringNumber(tsStringUTF8(item.text));if math.IsNaN(item.want){if !math.IsNaN(got){t.Errorf("%q: wanted NaN, got %v",item.text,got)}}else if got!=item.want||got==0&&math.Signbit(got)!=math.Signbit(item.want){t.Errorf("%q: wanted %v, got %v",item.text,item.want,got)}}
+ loop:=tsNewLoop();if tsStringValue(loop,tsNumberValue(1e21)).String()!="1e+21"{t.Fatal("number formatting")};if loop.ecma!=nil{t.Fatal("numeric conversion initialized regexp engine")}
+}
 func BenchmarkDenseInt64Push(b *testing.B){storage:=&tsGrowableStorage[int64]{values:make([]int64,0,1)};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{storage.values=storage.values[:0];tsDensePush(storage,int64(i))};runtime.KeepAlive(storage)}
 func BenchmarkAnyInt64Push(b *testing.B){loop:=tsNewLoop();array:=&tsArray{values:make([]tsValue,0,1)};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{array.values=array.values[:0];array.appendItems(loop,tsInt64Value(int64(i)))};runtime.KeepAlive(array)}
 func BenchmarkDenseInt64Read(b *testing.B){storage:=&tsGrowableStorage[int64]{values:[]int64{7}};var sum int64;b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{sum+=tsDenseRead(storage,0)};runtime.KeepAlive(sum)}

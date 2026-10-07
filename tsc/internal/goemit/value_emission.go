@@ -54,6 +54,7 @@ func formatValueSource(source []byte) ([]byte, error) {
 			if d.Name.Name == "tsUnwrap" || d.Name.Name == "tsPrimitiveValue" || d.Name.Name == "tsNative" {
 				continue
 			}
+			pass.scope = d.Name.Name
 			env := copyValueEnvironment(pass.globals)
 			pass.parameters(d.Type, env)
 			if d.Recv != nil {
@@ -77,6 +78,7 @@ type valueSignature struct {
 	result         string
 }
 type valueEmission struct {
+	scope     string
 	err       error
 	fields    map[string]map[string]string
 	functions map[string][]valueSignature
@@ -382,7 +384,7 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 	if p.err == nil {
 		var detail bytes.Buffer
 		_ = format.Node(&detail, token.NewFileSet(), expr)
-		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue", detail.String(), kind)
+		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue in %s", detail.String(), kind, p.scope)
 	}
 	return expr
 }

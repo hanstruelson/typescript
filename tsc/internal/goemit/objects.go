@@ -26,6 +26,14 @@ func (b *machineBuilder) objectLiteral(node *ast.Node) string {
 			key := b.propertyKey(property.Name())
 			value := b.expression(property.Name())
 			b.emit("tsSet(" + object + "," + key + "," + value + ")")
+		case ast.KindMethodDeclaration:
+			key := b.propertyKey(property.Name())
+			value := b.function(property)
+			b.emit("tsSet(" + object + "," + key + "," + value + ")")
+		case ast.KindGetAccessor, ast.KindSetAccessor:
+			key := b.propertyKey(property.Name())
+			value := b.function(property)
+			b.emit("tsObjectLiteralAccessor(" + object + "," + key + "," + value + "," + strconv.FormatBool(property.Kind == ast.KindSetAccessor) + ")")
 		case ast.KindSpreadAssignment:
 			value := b.expression(property.AsSpreadAssignment().Expression)
 			b.emit("tsObjectSpread(" + object + "," + value + ")")
@@ -168,7 +176,7 @@ func (b *machineBuilder) forInStatement(node *ast.Node, label string) {
 	iterator := b.typedTemp("tsIterate("+keys+")", "*tsIterator")
 	test, body, end := b.block(), b.block(), b.block()
 	b.jump(test)
-	b.loops = append(b.loops, loopTarget{end, test, b.depth, label})
+	b.loops = append(b.loops, loopTarget{end, test, b.depth, b.depth, label})
 	b.current = test
 	b.emit(fmt.Sprintf("if %s.next(){m.pc=%d}else{m.pc=%d};return", iterator, body, end))
 	b.current = body

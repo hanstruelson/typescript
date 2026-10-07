@@ -16,7 +16,7 @@ func nativeCallbackBody(node *ast.Node) bool {
 		if n != node && ast.IsFunctionLike(n) {
 			return
 		}
-		if n.Kind == ast.KindAwaitExpression || n.Kind == ast.KindYieldExpression {
+		if n.Kind == ast.KindAwaitExpression || n.Kind == ast.KindYieldExpression || n.Kind == ast.KindThisKeyword {
 			valid = false
 		}
 		n.ForEachChild(func(child *ast.Node) bool { visit(child); return false })

@@ -120,3 +120,7 @@ Would you be willing to fork the Go compiler and integrate this emitter with it
 to provide a direct TypeScript-to-machine-code toolchain? Emitted Go already
 compiles to native machine code today; tighter compiler integration could make
 that path more seamless. We hope you can help make it happen.
+
+## Node module compatibility
+
+Native Go implementations of `fs` and `fs/promises` are in progress, using Bun as a behavior reference. Common filesystem operations, descriptors, directory iteration, watchers, and basic file streams are implemented. Full Node compatibility is not yet complete; see the [module checklist](docs/node-compat/README.md) and [filesystem coverage](docs/node-compat/fs.md). The current filesystem provider targets Linux.

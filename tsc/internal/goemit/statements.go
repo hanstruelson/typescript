@@ -2,7 +2,6 @@ package goemit
 
 import (
 	"fmt"
-	"strconv"
 
 	"github.com/microsoft/TypeScript/tsc/internal/ast"
 )
@@ -81,6 +80,8 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 		}
 		value := b.expression(n.Expression)
 		b.publish("default", value, "nil")
+	case ast.KindImportEqualsDeclaration:
+		b.nodeImportEquals(node)
 	case ast.KindImportDeclaration:
 		b.importDeclaration(node)
 	case ast.KindBlock:
@@ -149,7 +150,7 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 		} else {
 			b.jump(test)
 		}
-		b.loops = append(b.loops, loopTarget{end, test, b.depth, label})
+		b.loops = append(b.loops, loopTarget{end, test, b.depth, b.depth, label})
 		b.current = start
 		b.statement(body)
 		b.jump(test)
@@ -190,7 +191,11 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 			if node.Kind == ast.KindContinueStatement {
 				pc = target.continuePC
 			}
-			b.abrupt("jump", "tsU", pc, target.depth)
+			depth := target.depth
+			if node.Kind == ast.KindContinueStatement {
+				depth = target.continueDepth
+			}
+			b.abrupt("jump", "tsU", pc, depth)
 			found = true
 			break
 		}
@@ -239,7 +244,7 @@ func (b *machineBuilder) forStatement(node *ast.Node, label string) {
 	clone()
 	test, body, increment, end := b.block(), b.block(), b.block(), b.block()
 	b.jump(test)
-	b.loops = append(b.loops, loopTarget{end, increment, b.depth, label})
+	b.loops = append(b.loops, loopTarget{end, increment, b.depth, b.depth, label})
 	b.current = test
 	value := "true"
 	if n.Condition != nil {
@@ -261,7 +266,7 @@ func (b *machineBuilder) forStatement(node *ast.Node, label string) {
 func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 	n := node.AsForInOrOfStatement()
 	if n.AwaitModifier != nil {
-		b.e.fail(node, "for-await-of is not supported yet")
+		b.forAwaitStatement(node, label)
 		return
 	}
 	if n.Initializer.Kind != ast.KindVariableDeclarationList || len(n.Initializer.AsVariableDeclarationList().Declarations.Nodes) != 1 {
@@ -285,7 +290,7 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 	iterator := b.typedTemp("tsIterate("+iterable+")", "*tsIterator")
 	test, body, end := b.block(), b.block(), b.block()
 	b.jump(test)
-	b.loops = append(b.loops, loopTarget{end, test, b.depth, label})
+	b.loops = append(b.loops, loopTarget{end, test, b.depth, b.depth, label})
 	b.current = test
 	b.emit(fmt.Sprintf("if %s.next() {m.pc=%d} else {m.pc=%d}; return", iterator, body, end))
 	b.current = body
@@ -345,6 +350,9 @@ func (b *machineBuilder) tryStatement(node *ast.Node) {
 func (b *machineBuilder) importDeclaration(node *ast.Node) {
 	n := node.AsImportDeclaration()
 	module := n.ModuleSpecifier.Text()
+	if b.nodeImport(node) {
+		return
+	}
 	if b.e.targets[node] != "" {
 		b.localImport(node)
 		return
@@ -357,29 +365,7 @@ func (b *machineBuilder) importDeclaration(node *ast.Node) {
 	if c.PhaseModifier == ast.KindTypeKeyword {
 		return
 	}
-	if module != "node:fs/promises" && module != "fs/promises" {
-		b.e.fail(node, "only readFile from node:fs/promises is supported")
-		return
-	}
-	if c.Name() != nil || c.NamedBindings == nil || c.NamedBindings.Kind != ast.KindNamedImports {
-		b.e.fail(node, "readFile requires a named import")
-		return
-	}
-	for _, specifier := range c.NamedBindings.AsNamedImports().Elements.Nodes {
-		s := specifier.AsImportSpecifier()
-		if s.IsTypeOnly {
-			continue
-		}
-		name := specifier.Name().Text()
-		if s.PropertyName != nil {
-			name = s.PropertyName.Text()
-		}
-		if name != "readFile" {
-			b.e.fail(specifier, "unsupported fs/promises import "+strconv.Quote(name))
-			continue
-		}
-		b.e.imports[specifier] = "readFile"
-	}
+	b.e.fail(node, "unresolved import "+module)
 }
 
 func (b *machineBuilder) switchStatement(node *ast.Node, label string) {
@@ -410,7 +396,7 @@ func (b *machineBuilder) switchStatement(node *ast.Node, label string) {
 		b.current = next
 	}
 	b.jump(defaultPC)
-	b.loops = append(b.loops, loopTarget{end, -1, b.depth, label})
+	b.loops = append(b.loops, loopTarget{end, -1, b.depth, b.depth, label})
 	for i, clause := range clauses {
 		b.current = states[i]
 		var statements []*ast.Node

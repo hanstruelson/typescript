@@ -1,6 +1,8 @@
 package goemit
 
-const TypeRuntime = `
+const TypeRuntime = typeBaseRuntime + nodeModuleRuntime + FSRuntime + bigintRuntime + nativeClassRuntime + dateRuntime + bufferTransferRuntime
+
+const typeBaseRuntime = `
 type tsBindingCell struct {raw func() tsValue;initializedState func() bool}
 func(c *tsCell)bindingRef()tsBindingCell{return tsBindingCell{raw:c.raw,initializedState:c.initializedState}}
 func(c *tsTypedCell[T])bindingRef()tsBindingCell{return tsBindingCell{raw:c.raw,initializedState:c.initializedState}}
@@ -25,11 +27,11 @@ func(c *tsTypedCell[T])setNative(value T)T{if !c.initialized {panic("Cannot acce
 func(c *tsTypedCell[T])set(value tsValue)tsValue{if !c.initialized{panic("Cannot access binding before initialization")};if c.constant {panic("Assignment to constant variable")};checked:=tsBoundary(value,c.kind,c.nulls,c.coerce);return c.init(checked)}
 func(c *tsTypedCell[T])require(){c.init(tsBoundary(c.raw(),c.kind,c.nulls,c.coerce))}
 func tsCloneTyped[T tsPrimitive](cell *tsTypedCell[T])*tsTypedCell[T]{copy:=*cell;return &copy}
-type tsRuntimeError struct {name,message string}
+type tsRuntimeError struct {name,message string;fields map[string]tsValue}
 func(e *tsRuntimeError)String()string{return e.name+": "+e.message}
-func tsTypeFailure(kind string){panic(tsThrown{&tsRuntimeError{"TypeError","This value only accepts a "+kind+". Set coerceAny to true to enable automatic conversion."}})}
+func tsTypeFailure(kind string){panic(tsThrown{&tsRuntimeError{name:"TypeError",message:"This value only accepts a "+kind+". Set coerceAny to true to enable automatic conversion."}})}
 func tsRestArgs(args []tsValue,index int)*tsArray {if index>=len(args){return &tsArray{}};return &tsArray{values:append([]tsValue{},args[index:]...)}}
-func tsTypeOf(value tsValue)*tsString {name:="object";switch value.kind{case tsUndefinedKind:name="undefined";case tsStringKind:name="string";case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:name="number";case tsBooleanKind:name="boolean";case tsFunctionKind,tsClassKind:name="function"};return tsStringUTF8(name)}
+func tsTypeOf(value tsValue)*tsString {name:="object";switch value.kind{case tsBigIntKind:name="bigint";case tsUndefinedKind:name="undefined";case tsStringKind:name="string";case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:name="number";case tsBooleanKind:name="boolean";case tsFunctionKind,tsClassKind:name="function"};return tsStringUTF8(name)}
 func tsBoundary(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsNullKind&&nulls&1!=0{return value};if value.kind==tsUndefinedKind&&nulls&2!=0{return value};return tsConvertValue(value,kind,coerce)}
 func tsIsSigned(value tsValue)bool {switch value.kind {case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return true};return false}
 func tsIsUnsigned(value tsValue)bool {switch value.kind {case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return true};return false}
@@ -45,7 +47,7 @@ func tsNumericEqual(a,b tsValue)bool {
  if tsIsSigned(a){return f>=-9223372036854775808.0&&f<9223372036854775808.0&&int64(f)==int64(math.Float64bits(a.number))}
  return f>=0&&f<18446744073709551616.0&&uint64(f)==math.Float64bits(a.number)
 }
-func tsNumericRangeFailure(kind string){panic(tsThrown{tsErrorValue(&tsRuntimeError{"RangeError","Value cannot be represented as "+kind})})}
+func tsNumericRangeFailure(kind string){panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"RangeError",message:"Value cannot be represented as "+kind})})}
 func tsNumericBoundary(value tsValue,kind string,coerce bool)tsValue {
  if !coerce&&tsValueTypeName(value)!=kind&&!tsLosslessNumericConversion(kind,tsValueTypeName(value)){tsConversionTypeFailure(kind,tsValueTypeName(value))};if !tsIsNumeric(value){return tsConvertValue(value,kind,coerce)}
  if kind=="number"||kind=="float64" {return tsNumberValue(tsNumber(value))}

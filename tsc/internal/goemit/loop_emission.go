@@ -9,7 +9,7 @@ import (
 // threadLoopContext gives every JavaScript call an explicit execution context.
 // Native adapters and Go host callbacks retain their own ABI and close over it.
 func threadLoopContext(file *ast.File) {
-	required := map[string]bool{"tsCall": true, "tsEngine": true, "call": true, "construct": true, "pull": true, "growPut": true, "growSplice": true}
+	required := map[string]bool{"tsCall": true, "tsEngine": true, "call": true, "construct": true, "pull": true, "growPut": true, "growSplice": true, "writeField": true}
 	functions := []*ast.FuncDecl{}
 	addParam := func(fn *ast.FuncType) {
 		if fn.Params == nil {
