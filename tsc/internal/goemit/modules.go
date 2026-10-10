@@ -31,9 +31,12 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 		return "", input.File.Diagnostics()
 	}
 	e.collect(input.File.AsNode(), input.File.AsNode())
+	e.analyzePrototypes()
 	e.planNativeFunctions()
 	e.planGenericFunctions()
 	e.prepareClasses()
+	e.analyzeDeleteEffects()
+	e.planMathEffects()
 	if len(e.diags) != 0 {
 		return "", e.diags
 	}

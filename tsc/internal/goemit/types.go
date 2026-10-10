@@ -78,6 +78,9 @@ func syntaxPrimitive(node *ast.Node) primitive {
 	return primitive{}
 }
 func (e *emitter) primitive(node *ast.Node) primitive {
+	if e.dynamicFieldAccess(node) {
+		return primitive{}
+	}
 	if node == nil {
 		return primitive{}
 	}

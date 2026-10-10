@@ -16,6 +16,9 @@ func directClassBody(node *ast.Node) bool {
 	if ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync) {
 		return false
 	}
+	if ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0 {
+		return false
+	}
 	supported := true
 	var visit func(*ast.Node)
 	visit = func(n *ast.Node) {

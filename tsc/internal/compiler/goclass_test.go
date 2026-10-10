@@ -161,10 +161,7 @@ func TestGoClassLayout(t *testing.T) {
 
 func TestGoClassDiagnostics(t *testing.T) {
 	for _, source := range []string{
-		`class A {age:bigint=1n;}`,
-		`class A {get age(){return 1;}}`,
 		`class A {#age:number=1;}`,
-		`class A {*f(){}}`,
 		`function base(){return 0;}class A extends base(){}`,
 		`class A extends B {}class B extends A {}`,
 	} {

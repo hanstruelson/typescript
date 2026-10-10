@@ -39,6 +39,7 @@ const (
  tsTypedArrayKind
  tsArrayBufferKind
  tsBigIntKind
+ tsSymbolKind
 )
 type tsValue struct {kind tsKind;number float64;ref unsafe.Pointer}
 var tsU=tsValue{}
@@ -64,7 +65,7 @@ func tsFunctionValue(value *tsFunction)tsValue{return tsValue{ref:unsafe.Pointer
 func tsClassValue(value *tsClass)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsClassKind}}
 func tsRegExpValue(value *tsRegExp)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsRegExpKind}}
 func tsECMAValue(value *tsECMAObject)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsECMAKind}}
-func tsErrorValue(value *tsRuntimeError)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsErrorKind}}
+func tsErrorValue(value *tsRuntimeError)tsValue{if value.stack==nil{value.stack=tsCaptureErrorStack(value.name+": "+value.message)};return tsValue{ref:unsafe.Pointer(value),kind:tsErrorKind}}
 func tsPromiseValue(value *tsPromise)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsPromiseKind}}
 func tsTaskValue(value *tsTask)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsTaskKind}}
 func tsModuleValue(value *tsModule)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsModuleKind}}

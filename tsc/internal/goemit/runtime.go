@@ -20,6 +20,7 @@ const Runtime = `import (
  "syscall"
  "golang.org/x/sys/unix"
  "sync"
+ "sync/atomic"
  "fmt"
  "math"
  "math/big"
@@ -39,13 +40,13 @@ const Runtime = `import (
 
 type tsCell struct { value tsValue; initialized, constant bool;arrayKind string;arrayNulls uint8;arrayCoerce bool }
 func tsBinding(initialized, constant bool) *tsCell { return &tsCell{value:tsU,initialized:initialized,constant:constant} }
-func (c *tsCell) get() tsValue {if !c.initialized {panic("Cannot access binding before initialization")};if c.value.kind==tsImportKind{ref:=(*tsImportRef)(c.value.ref);return ref.module.read(ref.name)};return c.value}
+func (c *tsCell) get() tsValue {if !c.initialized {panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};if c.value.kind==tsImportKind{ref:=(*tsImportRef)(c.value.ref);return ref.module.read(ref.name)};return c.value}
 func (c *tsCell) init(value tsValue) tsValue {if c.arrayKind!=""{value=tsArrayBoundary(value,c.arrayKind,c.arrayNulls,c.arrayCoerce)};c.value = value; c.initialized = true; return value }
-func (c *tsCell) set(value tsValue) tsValue { if !c.initialized { panic("Cannot access binding before initialization") }; if c.constant { panic("Assignment to constant variable") }; if c.arrayKind!=""{value=tsArrayBoundary(value,c.arrayKind,c.arrayNulls,c.arrayCoerce)};c.value = value; return value }
+func (c *tsCell) set(value tsValue) tsValue { if !c.initialized { panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})}) }; if c.constant { panic("Assignment to constant variable") }; if c.arrayKind!=""{value=tsArrayBoundary(value,c.arrayKind,c.arrayNulls,c.arrayCoerce)};c.value = value; return value }
 func tsClone(c *tsCell) *tsCell { value := *c; return &value }
-type tsFunction struct { receiverCall func(*tsLoop,tsValue,...tsValue)tsValue;properties *tsObject;call func(*tsLoop,...tsValue) tsValue}
+type tsFunction struct {generator,asyncGeneratorFunction bool;name string;length int;constructible bool;prototypeOnce,metadataOnce sync.Once;metadataRef atomic.Pointer[tsObject];prototype,internalPrototype,boundTarget,boundReceiver tsValue;boundArgs []tsValue; receiverCall func(*tsLoop,tsValue,...tsValue)tsValue;properties *tsObject;call func(*tsLoop,...tsValue) tsValue}
 func tsFunc(call func(*tsLoop,...tsValue)tsValue)*tsFunction{return &tsFunction{call:call}}
-func tsCall(loop *tsLoop,value tsValue,args ...tsValue)tsValue{if value.kind==tsClassKind{class:=(*tsClass)(value.ref);switch class.builtin{case "Date":return tsStringReference(tsStringUTF8(tsDateHuman(time.Now().In(tsDateLocal()),"toString")));case "Array","Buffer","ReadStream","WriteStream":return tsConstruct(value,args...)}};if value.kind!=tsFunctionKind{panic("Value is not callable")};function:=(*tsFunction)(value.ref);if function.receiverCall!=nil{return function.receiverCall(loop,tsU,args...)};return function.call(loop,args...)}
+func tsCall(loop *tsLoop,value tsValue,args ...tsValue)tsValue{if value.kind==tsClassKind{class:=(*tsClass)(value.ref);switch class.builtin{case "Date":return tsStringReference(tsStringUTF8(tsDateHuman(time.Now().In(tsDateLocal()),"toString")));case "Array","Buffer","ReadStream","WriteStream":return tsConstruct(value,args...)}};if value.kind!=tsFunctionKind{tsPropertyFailure("Value is not callable")};function:=(*tsFunction)(value.ref);if function.receiverCall!=nil{return function.receiverCall(loop,tsU,args...)};return function.call(loop,args...)}
 func tsArg(args []tsValue, index int) tsValue { if index < len(args) { return args[index] }; return tsU }
 // ECMAScript StringNumericLiteral conversion, independent of the regexp engine.
 func tsStringNumber(value *tsString)float64{
@@ -62,6 +63,7 @@ func tsNumberText(number float64)string{
  text:=strconv.FormatFloat(number,'e',-1,64);index:=strings.LastIndexByte(text,'e');exponent,_:=strconv.Atoi(text[index+1:]);sign:="";if exponent>=0{sign="+"};return text[:index+1]+sign+strconv.Itoa(exponent)
 }
 func tsText(value tsValue)string{switch value.kind{
+ case tsSymbolKind:return tsSymbolText((*tsSymbol)(value.ref))
  case tsBigIntKind:return (*big.Int)(value.ref).String()
  case tsUndefinedKind:return "undefined"
  case tsNullKind:return "null"
@@ -74,7 +76,7 @@ func tsText(value tsValue)string{switch value.kind{
  case tsErrorKind:return (*tsRuntimeError)(value.ref).String()
  case tsObjectKind:return fmt.Sprint((*tsObject)(value.ref))
  case tsArrayKind:return fmt.Sprint((*tsArray)(value.ref))
- case tsFunctionKind:return fmt.Sprint((*tsFunction)(value.ref))
+ case tsFunctionKind:return "function "+(*tsFunction)(value.ref).name+"() { [native code] }"
  case tsClassKind:return fmt.Sprint((*tsClass)(value.ref))
  case tsInstanceKind:return "[object Object]"
  case tsRegExpKind:return fmt.Sprint((*tsRegExp)(value.ref))
@@ -93,30 +95,30 @@ func(value tsValue)String()string{return tsText(value)}
 func tsConsoleLog(values ...tsValue) tsValue { for i, value := range values { if i != 0 { fmt.Print(" ") }; fmt.Print(tsText(value)) }; fmt.Println(); return tsU }
 func tsIsUndefined(value tsValue) bool {return value.kind==tsUndefinedKind}
 func tsNullish(value tsValue) bool {return value.kind==tsNullKind || value.kind==tsUndefinedKind}
-type tsArray struct {native unsafe.Pointer;elementKind string;elementNulls uint8;elementCoerce bool;growLength func()int;growGet func(int)tsValue;growClear func(int);growPut func(*tsLoop,int,tsValue);growResize func(int);growSplice func(*tsLoop,int,int,[]tsValue);values []tsValue;properties map[string]tsValue;holes map[int]bool }
-type tsIterator struct {pull func()(tsValue,bool);array *tsArray; text *tsString; ecma *goja.Object; index int; value tsValue}
-func tsIterate(value tsValue)*tsIterator{switch value.kind{case tsTypedArrayKind:array:=(*tsTypedArray)(value.ref);index:=0;return &tsIterator{pull:func()(tsValue,bool){if index>=array.length{return tsU,false};item:=tsNumberValue(array.read(index));index++;return item,true}};case tsCollectionKind:c:=(*tsCollection)(value.ref);mode:="entries";if c.set{mode="values"};return c.iterator(mode);case tsIteratorKind:return (*tsIterator)(value.ref);case tsArrayKind:return &tsIterator{array:(*tsArray)(value.ref)};case tsStringKind:return &tsIterator{text:(*tsString)(value.ref)};case tsECMAKind:v:=(*tsECMAObject)(value.ref);if v.object.ClassName()=="Array"{values:=[]tsValue{};for i:=int64(0);i<v.object.Get("length").ToInteger();i++{values=append(values,tsFromECMA(v.object.Get(strconv.FormatInt(i,10))))};return &tsIterator{array:&tsArray{values:values}}};return &tsIterator{ecma:v.object};default:panic("Value is not iterable")}}
-func (it *tsIterator) next() bool {if it.pull!=nil{value,ok:=it.pull();it.value=value;return ok};if it.ecma!=nil {call,_:=goja.AssertFunction(it.ecma.Get("next"));result,err:=call(it.ecma);if err!=nil {tsECMAFailure(err)};object:=result.ToObject(tsEngine());if object.Get("done").ToBoolean(){return false};it.value=tsFromECMA(object.Get("value"));return true};if it.array!=nil {if it.index>=it.array.length(){return false};it.value=it.array.at(it.index);it.index++;return true};if it.index>=len(it.text.units){return false};start:=it.index;it.index++;c:=it.text.units[start];if c>=0xd800&&c<=0xdbff&&it.index<len(it.text.units)&&it.text.units[it.index]>=0xdc00&&it.text.units[it.index]<=0xdfff {it.index++};it.value=it.text.slice(start,it.index);return true}
-func tsGet(value,key tsValue) tsValue {if value.kind==tsBigIntKind&&tsText(key)=="toString"{return tsBigIntProperty(value,"toString")};if key.kind==tsStringKind&&tsIsPrimitiveValue(value){if method:=tsConversionProperty(value,tsPropertyKey(key));!tsIsUndefined(method){return method}};switch value.kind {
+type tsArray struct {prototype tsValue;descriptors map[string]*tsDescriptor;order []string;native unsafe.Pointer;elementKind string;elementNulls uint8;elementCoerce bool;growLength func()int;growGet func(int)tsValue;growClear func(int);growPut func(*tsLoop,int,tsValue);growResize func(int);growSplice func(*tsLoop,int,int,[]tsValue);values []tsValue;properties map[string]tsValue;holes map[int]bool }
+type tsIterator struct {prototype tsValue;protocol tsValue;nextMethod tsValue;machine *tsMachine;pull func()(tsValue,bool);array *tsArray; text *tsString; ecma *goja.Object; index int; value tsValue}
+func tsIterate(value tsValue)*tsIterator{if value.kind==tsObjectKind||value.kind==tsInstanceKind{method:=tsGet(loop,value,tsWellKnownSymbol("iterator"));if !tsNullish(method){iterator:=tsCallReceiver(loop,method,value);if tsIsPrimitiveValue(iterator){tsPropertyFailure("Iterator must be an object")};if iterator.kind==tsIteratorKind{return (*tsIterator)(iterator.ref)};return &tsIterator{protocol:iterator,nextMethod:tsGet(loop,iterator,"next")}}};switch value.kind{case tsTypedArrayKind:array:=(*tsTypedArray)(value.ref);index:=0;return &tsIterator{pull:func()(tsValue,bool){if index>=array.length{return tsU,false};item:=tsNumberValue(array.read(index));index++;return item,true}};case tsCollectionKind:c:=(*tsCollection)(value.ref);mode:="entries";if c.set{mode="values"};return c.iterator(mode);case tsIteratorKind:return (*tsIterator)(value.ref);case tsArrayKind:return &tsIterator{array:(*tsArray)(value.ref)};case tsStringKind:return &tsIterator{text:(*tsString)(value.ref)};case tsECMAKind:v:=(*tsECMAObject)(value.ref);if v.object.ClassName()=="Array"{values:=[]tsValue{};for i:=int64(0);i<v.object.Get("length").ToInteger();i++{values=append(values,tsFromECMA(v.object.Get(strconv.FormatInt(i,10))))};return &tsIterator{array:&tsArray{values:values}}};return &tsIterator{ecma:v.object};default:tsPropertyFailure("Value is not iterable");return nil}}
+func (it *tsIterator) next() bool {if !tsIsUndefined(it.protocol){result:=tsCallReceiver(loop,it.nextMethod,it.protocol);if tsIsPrimitiveValue(result){tsPropertyFailure("Iterator result must be an object")};if tsTruthy(tsGet(loop,result,"done")){it.value=tsU;return false};it.value=tsGet(loop,result,"value");return true};if it.machine!=nil{result:=tsGeneratorStep(loop,it,"next",tsU);if tsTruthy(tsGet(loop,result,"done")){it.value=tsU;return false};it.value=tsGet(loop,result,"value");return true};if it.pull!=nil{value,ok:=it.pull();it.value=value;return ok};if it.ecma!=nil {call,_:=goja.AssertFunction(it.ecma.Get("next"));result,err:=call(it.ecma);if err!=nil {tsECMAFailure(err)};object:=result.ToObject(tsEngine());if object.Get("done").ToBoolean(){return false};it.value=tsFromECMA(object.Get("value"));return true};if it.array!=nil {if it.index>=it.array.length(){return false};it.value=it.array.at(it.index);it.index++;return true};if it.index>=len(it.text.units){return false};start:=it.index;it.index++;c:=it.text.units[start];if c>=0xd800&&c<=0xdbff&&it.index<len(it.text.units)&&it.text.units[it.index]>=0xdc00&&it.text.units[it.index]<=0xdfff {it.index++};it.value=it.text.slice(start,it.index);return true}
+func tsGet(value,key tsValue) tsValue {if tsNullish(value){tsPropertyFailure("Cannot read properties of null or undefined")};if key.kind==tsSymbolKind{if property:=tsIteratorSymbolProperty(loop,value,key);!tsIsUndefined(property){return property}};if value.kind==tsBigIntKind&&tsText(key)=="toString"{return tsBigIntProperty(value,"toString")};if key.kind==tsStringKind&&tsIsPrimitiveValue(value)&&value.kind!=tsSymbolKind{if method:=tsConversionProperty(value,tsPropertyKey(key));!tsIsUndefined(method){return method}};switch value.kind {
  case tsBigIntKind:return tsBigIntProperty(value,tsPropertyKey(key))
  case tsFunctionKind:return tsFunctionGet(loop,value,tsPropertyKey(key))
  case tsArrayBufferKind:return tsArrayBufferGet(value,tsPropertyKey(key))
  case tsTypedArrayKind:return tsTypedArrayGet(value,tsPropertyKey(key))
  case tsCollectionKind:return tsCollectionGet(value,tsPropertyKey(key))
  case tsIteratorKind:return tsIteratorGet((*tsIterator)(value.ref),tsPropertyKey(key))
- case tsClassKind:v:=(*tsClass)(value.ref);if v.builtin!=""{if tsPropertyKey(key)=="name"{return tsStringReference(tsStringUTF8(v.builtin))};if tsPropertyKey(key)=="BYTES_PER_ELEMENT"&&(v.nativePrototype==nil||v.builtin=="Buffer")&&v.builtin!="Map"&&v.builtin!="Set"&&v.builtin!="Array"{size:=1;switch v.builtin{case "Float64Array":size=8;case "Float32Array","Int32Array","Uint32Array":size=4;case "Int16Array","Uint16Array":size=2};return tsNumberValue(float64(size))}};return tsInstanceProperties(v.static).get(tsPropertyKey(key))
- case tsInstanceKind:v:=(*tsProperties)(value.ref);return v.get(tsPropertyKey(key))
+ case tsClassKind:v:=(*tsClass)(value.ref);if tsPropertyKey(key)=="prototype"{return tsClassPrototype(v)};if v.builtin!=""{if tsPropertyKey(key)=="name"{return tsStringReference(tsStringUTF8(v.builtin))};if tsPropertyKey(key)=="BYTES_PER_ELEMENT"&&(v.nativePrototype==nil||v.builtin=="Buffer")&&v.builtin!="Map"&&v.builtin!="Set"&&v.builtin!="Array"{size:=1;switch v.builtin{case "Float64Array":size=8;case "Float32Array","Int32Array","Uint32Array":size=4;case "Int16Array","Uint16Array":size=2};return tsNumberValue(float64(size))}};return tsClassRead(loop,value,tsPropertyKey(key))
+ case tsSymbolKind:tsInitSymbols();return tsPrototypeLookup(loop,value,tsObjectValue(tsSymbols.prototype),tsPropertyKey(key))
+ case tsInstanceKind:return tsInstanceRead(loop,value,tsPropertyKey(key))
  case tsObjectKind:return tsObjectRead(loop,value,tsPropertyKey(key))
  case tsArrayKind:v:=(*tsArray)(value.ref);
   if index,ok:=tsGrowableIndex(key);ok {if index>=v.length(){if v.native!=nil{tsArrayRangeFailure("Dense array index out of bounds")};return tsU};return v.at(index)}
   if value,ok:=v.properties[tsPropertyKey(key)];ok {return value}
   if tsText(key)=="length" {return float64(v.length())}
-  if tsText(key)=="push" {return tsFunc(func(args ...tsValue) tsValue {v.appendItems(args...);return float64(v.length())})}
-  index,err:=strconv.Atoi(tsPropertyKey(key));if err!=nil||strconv.Itoa(index)!=tsPropertyKey(key){return tsSequenceMethod(value,tsPropertyKey(key))};if index<0||index>=v.length(){return tsU};return v.at(index)
+  index,err:=strconv.Atoi(tsPropertyKey(key));if err!=nil||strconv.Itoa(index)!=tsPropertyKey(key){return tsPrototypeLookup(loop,value,tsPrototypeOf(value),tsPropertyKey(key))};if index<0||index>=v.length(){return tsU};return v.at(index)
  case tsStringKind:v:=(*tsString)(value.ref);return tsStringGet(v,key)
  case tsRegExpKind:v:=(*tsRegExp)(value.ref);return tsECMAGet(v.object,key)
  case tsECMAKind:v:=(*tsECMAObject)(value.ref);return tsECMAGet(v.object,key)
- case tsErrorKind:v:=(*tsRuntimeError)(value.ref);if tsText(key)=="message" {return tsStringUTF8(v.message)};if tsText(key)=="name" {return tsStringUTF8(v.name)};if result,ok:=v.fields[tsText(key)];ok{return result};return tsU
+ case tsErrorKind:v:=(*tsRuntimeError)(value.ref);if v.object!=nil{return tsObjectRead(loop,tsObjectValue(v.object),tsPropertyKey(key))};if tsText(key)=="message" {return tsStringUTF8(v.message)};if tsText(key)=="name" {return tsStringUTF8(v.name)};if result,ok:=v.fields[tsText(key)];ok{return result};return tsPrototypeLookup(loop,value,tsErrorPrototype(v.name),tsPropertyKey(key))
  case tsNamespaceKind:v:=(*tsNamespace)(value.ref);return v.module.read(tsPropertyKey(key))
  case tsPromiseKind:v:=(*tsPromise)(value.ref);
   if tsText(key)=="then" || tsText(key)=="catch" {return tsFunc(func(args ...tsValue) tsValue {
@@ -126,8 +128,8 @@ func tsGet(value,key tsValue) tsValue {if value.kind==tsBigIntKind&&tsText(key)=
  }
  panic("Unsupported property access")
 }
-func tsSet(value,key,item tsValue)tsValue{switch value.kind{case tsFunctionKind:function:=(*tsFunction)(value.ref);if function.properties==nil{function.properties=tsNewObject()};return function.properties.set(tsPropertyKey(key),item);case tsTypedArrayKind:return tsTypedArraySet(value,key,item);case tsCollectionKind:c:=(*tsCollection)(value.ref);if c.properties==nil{c.properties=map[string]tsValue{}};name:=tsPropertyKey(key);if name=="size"{panic("Collection size is read-only")};if _,ok:=c.properties[name];!ok{c.order=append(c.order,name)};c.properties[name]=item;return item;case tsClassKind:return tsInstanceProperties((*tsClass)(value.ref).static).set(tsPropertyKey(key),item);case tsInstanceKind:return (*tsProperties)(value.ref).set(tsPropertyKey(key),item);case tsObjectKind:return tsObjectWrite(loop,value,tsPropertyKey(key),item);case tsRegExpKind:return tsECMASet((*tsRegExp)(value.ref).object,key,item);case tsECMAKind:return tsECMASet((*tsECMAObject)(value.ref).object,key,item)};if value.kind!=tsArrayKind{panic("Expected an array")};array:=(*tsArray)(value.ref);if index,ok:=tsGrowableIndex(key);ok {if index==array.length(){array.appendItems(item);return item};if index<array.length(){array.put(index,item);return item};if array.native!=nil{tsArrayRangeFailure("Dense array writes cannot create holes")};for array.length()<=index{tsArrayHole(array)};array.put(index,item);return item};name:=tsPropertyKey(key);if name=="length"{length:=tsNumber(item);if length<0||length>4294967295||math.Trunc(length)!=length{panic("Invalid array length")};for array.length()<int(length){tsArrayHole(array)};array.resize(int(length));for index:=range array.holes{if index>=int(length){delete(array.holes,index)}};return item};index,err:=strconv.Atoi(name);if err!=nil||index<0||uint64(index)>=4294967295||strconv.Itoa(index)!=name{if array.properties==nil{array.properties=map[string]tsValue{}};array.properties[name]=item;return item};if array.native!=nil&&index==array.length(){array.appendItems(item);return item};for array.length()<=index{tsArrayHole(array)};array.put(index,item);return item}
-func tsNumber(value tsValue) float64 {switch value.kind {case tsBigIntKind:panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert BigInt to number implicitly"})});case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return float64(int64(math.Float64bits(value.number)));case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return float64(math.Float64bits(value.number));case tsFloat32Kind,tsNumberKind,tsBooleanKind:return value.number;case tsNullKind:return 0;case tsUndefinedKind:return math.NaN();case tsStringKind:return tsStringNumber((*tsString)(value.ref));default:panic("Expected a number")}}
+func tsSet(value,key,item tsValue)tsValue{switch value.kind{case tsErrorKind:return tsObjectWrite(loop,tsObjectValue(tsErrorObject(loop,(*tsRuntimeError)(value.ref))),tsPropertyKey(key),item);case tsFunctionKind:return tsFunctionWrite(loop,value,tsPropertyKey(key),item);case tsTypedArrayKind:return tsTypedArraySet(value,key,item);case tsCollectionKind:c:=(*tsCollection)(value.ref);if c.properties==nil{c.properties=map[string]tsValue{}};name:=tsPropertyKey(key);if name=="size"{panic("Collection size is read-only")};if _,ok:=c.properties[name];!ok{c.order=append(c.order,name)};c.properties[name]=item;return item;case tsClassKind:return tsInstanceWrite(loop,value,tsPropertyKey(key),item);case tsInstanceKind:return tsInstanceWrite(loop,value,tsPropertyKey(key),item);case tsObjectKind:return tsObjectWrite(loop,value,tsPropertyKey(key),item);case tsRegExpKind:return tsECMASet((*tsRegExp)(value.ref).object,key,item);case tsECMAKind:return tsECMASet((*tsECMAObject)(value.ref).object,key,item)};if value.kind!=tsArrayKind{panic("Expected an array")};array:=(*tsArray)(value.ref);if index,ok:=tsGrowableIndex(key);ok {if index==array.length(){array.appendItems(item);return item};if index<array.length(){array.put(index,item);return item};if array.native!=nil{tsArrayRangeFailure("Dense array writes cannot create holes")};for array.length()<=index{tsArrayHole(array)};array.put(index,item);return item};name:=tsPropertyKey(key);if name=="length"{length:=tsNumber(item);if length<0||length>4294967295||math.Trunc(length)!=length{panic("Invalid array length")};for array.length()<int(length){tsArrayHole(array)};array.resize(int(length));for index:=range array.holes{if index>=int(length){delete(array.holes,index)}};return item};index,err:=strconv.Atoi(name);if err!=nil||index<0||uint64(index)>=4294967295||strconv.Itoa(index)!=name{if array.properties==nil{array.properties=map[string]tsValue{}};if _,exists:=array.properties[name];!exists{array.order=append(array.order,name)};array.properties[name]=item;return item};if array.native!=nil&&index==array.length(){array.appendItems(item);return item};for array.length()<=index{tsArrayHole(array)};array.put(index,item);return item}
+func tsNumber(value tsValue) float64 {switch value.kind {case tsSymbolKind:tsPropertyFailure("Cannot convert Symbol to number");return 0;case tsBigIntKind:panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert BigInt to number implicitly"})});case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return float64(int64(math.Float64bits(value.number)));case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return float64(math.Float64bits(value.number));case tsFloat32Kind,tsNumberKind,tsBooleanKind:return value.number;case tsNullKind:return 0;case tsUndefinedKind:return math.NaN();case tsStringKind:return tsStringNumber((*tsString)(value.ref));default:panic("Expected a number")}}
 func tsTruthy(value tsValue) bool {switch value.kind {case tsBigIntKind:return (*big.Int)(value.ref).Sign()!=0;case tsUndefinedKind,tsNullKind:return false;case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return math.Float64bits(value.number)!=0;case tsFloat32Kind,tsNumberKind:return value.number!=0 && !math.IsNaN(value.number);case tsBooleanKind:return value.number!=0;case tsStringKind:return len((*tsString)(value.ref).units)!=0;default:return true}}
 func tsBinary(op string, left, right tsValue) tsValue {
  switch op{case "+","-","*","/","%","**","&","|","^","<<",">>",">>>","<","<=",">",">=":
@@ -300,11 +302,12 @@ func (l *tsLoop) run() error {
 // Protected regions and pending abrupt completions mirror ES5's trys/ops stacks.
 type tsHandler struct { catch, finally, end int; phase int }
 type tsAbrupt struct { kind string; value tsValue; target, depth int;nativeSlot int }
-type tsMachine struct { loop *tsLoop; pc int; step func(); output *tsPromise; async, done, suspended bool; result tsValue; handlers []tsHandler; abrupt []tsAbrupt; thrown tsValue; module *tsModule; blocked bool;nativeSlot int }
+type tsMachine struct {generatorPrototype tsValue;asyncDelegate *tsAsyncIterator;asyncGenerator *tsAsyncGenerator;generator,started,running bool;yielded,delegatedResult tsValue;delegate *tsIterator; loop *tsLoop; pc int; step func(); output *tsPromise; async, done, suspended bool; result tsValue; handlers []tsHandler; abrupt []tsAbrupt; thrown tsValue; module *tsModule; blocked bool;nativeSlot int }
 func (m *tsMachine) resume() {
  for !m.done && !m.suspended {
   func(){ defer func(){if err:=recover(); err!=nil {m.raise(tsUnwrap(err))}}(); m.step() }()
  }
+ if m.asyncGenerator!=nil{m.asyncGenerator.notify(loop)}
 }
 func (m *tsMachine) await(value tsValue, next int) {
  m.suspended=true;m.blocked=true
@@ -323,11 +326,11 @@ func (m *tsMachine) transfer(op tsAbrupt) {
  switch op.kind {
  case "jump": m.pc=op.target
  case "return": m.nativeSlot=op.nativeSlot;m.complete(op.value)
- case "throw": m.done=true; if m.module!=nil {m.module.finish(tsResult{op.value,true})} else if m.async {m.output.settle(tsResult{op.value,true})} else {panic(tsThrown{op.value})}
+ case "throw": m.done=true; if m.asyncGenerator!=nil{m.asyncGenerator.rejected=true;m.asyncGenerator.failure=op.value;return};if m.module!=nil {m.module.finish(tsResult{op.value,true})} else if m.async {m.output.settle(tsResult{op.value,true})} else {panic(tsThrown{op.value})}
  }
 }
 func (m *tsMachine) endFinally() { index:=len(m.handlers)-1; m.handlers=m.handlers[:index]; last:=len(m.abrupt)-1; op:=m.abrupt[last]; m.abrupt=m.abrupt[:last]; m.transfer(op) }
-func tsPow(base,exponent float64)float64{if math.IsInf(exponent,0)&&math.Abs(base)==1{return math.NaN()};return math.Pow(base,exponent)}
+func tsPow(base,exponent float64)float64{if math.IsNaN(exponent){return math.NaN()};if exponent==0{return 1};if math.IsInf(exponent,0)&&math.Abs(base)==1{return math.NaN()};return math.Pow(base,exponent)}
 func tsNumberUint32(number float64)uint32{if number==0||math.IsNaN(number)||math.IsInf(number,0){return 0};number=math.Mod(math.Trunc(number),4294967296);if number<0{number+=4294967296};return uint32(number)}
 func tsToUint32(value tsValue)uint32{return tsNumberUint32(tsNumber(tsToPrimitive(value)))}
 func tsNumberBitwise(op string,left,right float64)float64{return tsUint32Bitwise(op,tsNumberUint32(left),tsNumberUint32(right))}
@@ -338,11 +341,14 @@ func tsBitwiseNot(value tsValue)tsValue{
  if tsIsSigned(value)||tsIsUnsigned(value){bits:=^math.Float64bits(value.number);return tsIntegerBits(value.kind,bits)}
  return tsNumberValue(float64(^int32(tsToUint32(value))))
 }
-func tsIsPrimitiveValue(value tsValue)bool{return value.kind==tsBigIntKind||tsIsNumeric(value)||value.kind==tsStringKind||value.kind==tsBooleanKind||tsNullish(value)}
+func tsIsPrimitiveValue(value tsValue)bool{return value.kind==tsSymbolKind||value.kind==tsBigIntKind||tsIsNumeric(value)||value.kind==tsStringKind||value.kind==tsBooleanKind||tsNullish(value)}
 func tsToPrimitive(value tsValue)tsValue{return tsPrimitiveHint(loop,value,false)}
-func tsDefaultPrimitive(loop *tsLoop,value tsValue)tsValue{stringHint:=value.kind==tsObjectKind&&(*tsObject)(value.ref).nativeDate;return tsPrimitiveHint(loop,value,stringHint)}
-func tsPrimitiveHint(loop *tsLoop,value tsValue,stringHint bool)tsValue{
+func tsDefaultPrimitive(loop *tsLoop,value tsValue)tsValue{return tsPrimitiveHintName(loop,value,"default")}
+func tsPrimitiveHint(loop *tsLoop,value tsValue,stringHint bool)tsValue{hint:="number";if stringHint{hint="string"};return tsPrimitiveHintName(loop,value,hint)}
+func tsPrimitiveHintName(loop *tsLoop,value tsValue,hint string)tsValue{
+ stringHint:=hint=="string"||hint=="default"&&value.kind==tsObjectKind&&(*tsObject)(value.ref).nativeDate
  if tsIsPrimitiveValue(value){return value}
+ hook:=tsGet(loop,value,tsWellKnownSymbol("toPrimitive"));if !tsNullish(hook){if hook.kind!=tsFunctionKind{tsPropertyFailure("Symbol.toPrimitive is not callable")};result:=tsCallReceiver(loop,hook,value,tsStringReference(tsStringUTF8(hint)));if !tsIsPrimitiveValue(result){tsPropertyFailure("Symbol.toPrimitive must return a primitive")};return result}
  names:=[]string{"valueOf","toString"};if stringHint{names=[]string{"toString","valueOf"}};called:=false
  for _,name:=range names{method:=tsGet(value,tsStringReference(tsStringUTF8(name)));if method.kind==tsFunctionKind{called=true;result:=tsCallReceiver(method,value);if tsIsPrimitiveValue(result){return result}}}
  if called||value.kind==tsObjectKind&&(*tsObject)(value.ref).prototype.kind==tsNullKind{tsPropertyFailure("Cannot convert object to primitive value")}
@@ -358,14 +364,14 @@ func tsLooseEqual(a,b tsValue)bool{
  return false
 }
 func tsHas(value,key tsValue)bool{
+ if value.kind==tsErrorKind{return tsHas(tsObjectValue(tsErrorObject(loop,(*tsRuntimeError)(value.ref))),key)}
  name:=tsPropertyKey(key)
  switch value.kind{
  case tsArrayBufferKind:return !tsIsUndefined(tsArrayBufferGet(value,name))
  case tsTypedArrayKind:return !tsIsUndefined(tsTypedArrayGet(value,name))
  case tsCollectionKind:return !tsIsUndefined(tsCollectionGet(value,name))
- case tsObjectKind:for cursor:=value;cursor.kind==tsObjectKind;cursor=(*tsObject)(cursor.ref).prototype{object:=(*tsObject)(cursor.ref);if tsOwnObjectProperty(object,name){return true};if object.nativeClass!=nil&&tsOwnObjectProperty(object.nativeClass.nativePrototype,name){return true}};return false
- case tsClassKind:return tsHas(tsInstanceValue(tsInstanceProperties((*tsClass)(value.ref).static)),key)
- case tsInstanceKind:for p:=(*tsProperties)(value.ref);p!=nil;p=p.prototype{if _,ok:=p.declared[name];ok{return true};if _,ok:=p.extra[name];ok{return true};if _,ok:=p.methods[name];ok{return true}};return false
+ case tsObjectKind,tsFunctionKind,tsInstanceKind:return tsPrototypeHas(value,name)
+ case tsClassKind:return tsPrototypeOwn(value,name)||tsPrototypeHas(tsPrototypeOf(value),name)
  case tsArrayKind:array:=(*tsArray)(value.ref);if name=="length"||name=="push"{return true};if _,ok:=array.properties[name];ok{return true};if !tsIsUndefined(tsSequenceMethod(value,name)){return true};index,err:=strconv.Atoi(name);return err==nil&&index>=0&&index<array.length()&&strconv.Itoa(index)==name&&!array.holes[index]
  case tsECMAKind,tsRegExpKind:var object *goja.Object;if value.kind==tsECMAKind{object=(*tsECMAObject)(value.ref).object}else{object=(*tsRegExp)(value.ref).object};for ;object!=nil;object=object.Prototype(){for _,property:=range object.GetOwnPropertyNames(){if property==name{return true}}};return false
  }
@@ -374,6 +380,6 @@ func tsHas(value,key tsValue)bool{
 `
 
 const EqualityRuntime = `
-func tsStrictEqual(a,b tsValue)bool {if tsIsNumeric(a)&&tsIsNumeric(b){return tsNumericEqual(a,b)};if a.kind!=b.kind{return false};switch a.kind {case tsBigIntKind:return (*big.Int)(a.ref).Cmp((*big.Int)(b.ref))==0;case tsUndefinedKind,tsNullKind:return true;case tsNumberKind,tsBooleanKind:return a.number==b.number;case tsStringKind:return tsStringEqual((*tsString)(a.ref),(*tsString)(b.ref));case tsRegExpKind:return (*tsRegExp)(a.ref).object==(*tsRegExp)(b.ref).object;case tsECMAKind:return (*tsECMAObject)(a.ref).object==(*tsECMAObject)(b.ref).object;case tsFunctionKind,tsObjectKind,tsArrayKind,tsClassKind,tsPromiseKind,tsInstanceKind,tsCollectionKind,tsIteratorKind,tsTypedArrayKind,tsArrayBufferKind:return a.ref==b.ref;default:return false}}
+func tsStrictEqual(a,b tsValue)bool {if tsIsNumeric(a)&&tsIsNumeric(b){return tsNumericEqual(a,b)};if a.kind!=b.kind{return false};switch a.kind {case tsBigIntKind:return (*big.Int)(a.ref).Cmp((*big.Int)(b.ref))==0;case tsUndefinedKind,tsNullKind:return true;case tsNumberKind,tsBooleanKind:return a.number==b.number;case tsStringKind:return tsStringEqual((*tsString)(a.ref),(*tsString)(b.ref));case tsRegExpKind:return (*tsRegExp)(a.ref).object==(*tsRegExp)(b.ref).object;case tsECMAKind:return (*tsECMAObject)(a.ref).object==(*tsECMAObject)(b.ref).object;case tsSymbolKind,tsErrorKind,tsFunctionKind,tsObjectKind,tsArrayKind,tsClassKind,tsPromiseKind,tsInstanceKind,tsCollectionKind,tsIteratorKind,tsTypedArrayKind,tsArrayBufferKind:return a.ref==b.ref;default:return false}}
 
 `

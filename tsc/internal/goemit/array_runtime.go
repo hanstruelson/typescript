@@ -41,9 +41,11 @@ func tsArrayMutate(array *tsArray,name string,args []tsValue)tsValue{length:=arr
 `
 
 const ArrayBuiltinRuntime = `
-var tsBuiltinClasses=tsMakeBuiltinClasses()
+var tsBuiltinClasses=map[string]*tsClass{}
+var tsBuiltinClassOnce sync.Once
+func tsEnsureBuiltinClasses(loop *tsLoop){tsBuiltinClassOnce.Do(func(){tsBuiltinClasses=tsMakeBuiltinClasses()})}
 func tsMakeBuiltinClasses()map[string]*tsClass{out:=map[string]*tsClass{};for _,name:=range []string{"Map","Set","Array","ArrayBuffer","Float64Array","Float32Array","Int8Array","Uint8Array","Uint8ClampedArray","Int16Array","Uint16Array","Int32Array","Uint32Array"}{class:=&tsClass{builtin:name,static:tsInstanceValue(tsNewProperties())};class.construct=func(loop *tsLoop,args ...tsValue)tsValue{switch name{case "Map","Set":return tsNewCollection(name=="Set",args...);case "Array":return tsNewArray(args...);case "ArrayBuffer":return tsNewArrayBuffer(args...);default:return tsNewTypedArray(name,args...)}};out[name]=class};return out}
-func tsBuiltinClass(name string)tsValue{return tsClassValue(tsBuiltinClasses[name])}
+func tsBuiltinClass(name string)tsValue{tsEnsureBuiltinClasses(loop);class:=tsBuiltinClasses[name];if name=="Array"{tsInitArrayStatics(loop,class)};return tsClassValue(class)}
 func tsCanonicalNumericKey(name string)bool{if name=="-0"{return true};n,err:=strconv.ParseFloat(name,64);return err==nil&&tsNumberText(n)==name}
 func tsArrayBuiltin(name string,args []tsValue)tsValue{switch name{case "isArray":return tsBooleanValue(tsArg(args,0).kind==tsArrayKind);case "of":return tsArrayValue(&tsArray{values:append([]tsValue{},args...)});case "from":source:=tsArg(args,0);out:=&tsArray{};mapper:=tsArg(args,1);if !tsIsUndefined(mapper)&&mapper.kind!=tsFunctionKind{panic("Array.from mapper must be callable")};it:=tsArrayLikeIterator(source);for it.next(){item:=it.value;if mapper.kind==tsFunctionKind{item=tsCall(mapper,item,tsNumberValue(float64(len(out.values))))};out.values=append(out.values,item)};return tsArrayValue(out)};panic("Unsupported Array builtin")}
 func tsNewArray(args ...tsValue)tsValue{array:=&tsArray{};if len(args)==1&&tsIsNumeric(args[0]){n:=tsNumber(args[0]);if n<0||math.IsInf(n,0)||math.IsNaN(n)||n>4294967295||math.Trunc(n)!=n{tsArrayRangeFailure("Invalid array length")};for len(array.values)<int(n){tsArrayHole(array)}}else{array.values=append(array.values,args...)};return tsArrayValue(array)}

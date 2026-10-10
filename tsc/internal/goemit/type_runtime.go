@@ -18,20 +18,20 @@ type tsTypedCell[T tsPrimitive] struct {value T;tag uint8;initialized,constant b
 func tsTypedBinding[T tsPrimitive](initialized,constant bool,kind string,nulls uint8,coerce bool)*tsTypedCell[T]{return &tsTypedCell[T]{tag:2,initialized:initialized,constant:constant,kind:kind,nulls:nulls,coerce:coerce}}
 func(c *tsTypedCell[T])raw() tsValue {if c.tag==1{return tsNull};if c.tag==2{return tsU};return tsPrimitiveValue(c.value)}
 func(c *tsTypedCell[T])initializedState()bool{return c.initialized}
-func(c *tsTypedCell[T])get()tsValue{if !c.initialized {panic("Cannot access binding before initialization")};return c.raw()}
-func(c *tsTypedCell[T])read()T{if !c.initialized {panic("Cannot access binding before initialization")};if c.tag!=0 {panic("Non-nullable binding contains a nullish value")};return c.value}
-func(c *tsTypedCell[T])optional()tsOptional[T]{if !c.initialized {panic("Cannot access binding before initialization")};return tsOptional[T]{c.value,c.tag}}
+func(c *tsTypedCell[T])get()tsValue{if !c.initialized {panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};return c.raw()}
+func(c *tsTypedCell[T])read()T{if !c.initialized {panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};if c.tag!=0 {panic("Non-nullable binding contains a nullish value")};return c.value}
+func(c *tsTypedCell[T])optional()tsOptional[T]{if !c.initialized {panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};return tsOptional[T]{c.value,c.tag}}
 func(c *tsTypedCell[T])init(value tsValue)tsValue{c.initialized=true;if value.kind==tsUndefinedKind{c.tag=2;return value};if value.kind==tsNullKind {c.tag=1;return value};checked:=tsBoundary(value,c.kind,c.nulls,c.coerce);c.value=tsNative[T](checked);c.tag=0;return checked}
 func(c *tsTypedCell[T])initNative(value T)T{c.value=value;c.tag=0;c.initialized=true;return value}
-func(c *tsTypedCell[T])setNative(value T)T{if !c.initialized {panic("Cannot access binding before initialization")};if c.constant {panic("Assignment to constant variable")};return c.initNative(value)}
-func(c *tsTypedCell[T])set(value tsValue)tsValue{if !c.initialized{panic("Cannot access binding before initialization")};if c.constant {panic("Assignment to constant variable")};checked:=tsBoundary(value,c.kind,c.nulls,c.coerce);return c.init(checked)}
+func(c *tsTypedCell[T])setNative(value T)T{if !c.initialized {panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};if c.constant {panic("Assignment to constant variable")};return c.initNative(value)}
+func(c *tsTypedCell[T])set(value tsValue)tsValue{if !c.initialized{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};if c.constant {panic("Assignment to constant variable")};checked:=tsBoundary(value,c.kind,c.nulls,c.coerce);return c.init(checked)}
 func(c *tsTypedCell[T])require(){c.init(tsBoundary(c.raw(),c.kind,c.nulls,c.coerce))}
 func tsCloneTyped[T tsPrimitive](cell *tsTypedCell[T])*tsTypedCell[T]{copy:=*cell;return &copy}
-type tsRuntimeError struct {name,message string;fields map[string]tsValue}
+type tsRuntimeError struct {stack *tsNativeErrorStack;object *tsObject;name,message string;fields map[string]tsValue}
 func(e *tsRuntimeError)String()string{return e.name+": "+e.message}
 func tsTypeFailure(kind string){panic(tsThrown{&tsRuntimeError{name:"TypeError",message:"This value only accepts a "+kind+". Set coerceAny to true to enable automatic conversion."}})}
 func tsRestArgs(args []tsValue,index int)*tsArray {if index>=len(args){return &tsArray{}};return &tsArray{values:append([]tsValue{},args[index:]...)}}
-func tsTypeOf(value tsValue)*tsString {name:="object";switch value.kind{case tsBigIntKind:name="bigint";case tsUndefinedKind:name="undefined";case tsStringKind:name="string";case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:name="number";case tsBooleanKind:name="boolean";case tsFunctionKind,tsClassKind:name="function"};return tsStringUTF8(name)}
+func tsTypeOf(value tsValue)*tsString {name:="object";switch value.kind{case tsSymbolKind:name="symbol";case tsBigIntKind:name="bigint";case tsUndefinedKind:name="undefined";case tsStringKind:name="string";case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:name="number";case tsBooleanKind:name="boolean";case tsFunctionKind,tsClassKind:name="function"};return tsStringUTF8(name)}
 func tsBoundary(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsNullKind&&nulls&1!=0{return value};if value.kind==tsUndefinedKind&&nulls&2!=0{return value};return tsConvertValue(value,kind,coerce)}
 func tsIsSigned(value tsValue)bool {switch value.kind {case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return true};return false}
 func tsIsUnsigned(value tsValue)bool {switch value.kind {case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return true};return false}

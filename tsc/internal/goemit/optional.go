@@ -11,6 +11,9 @@ import (
 // One chain shares a short-circuit destination. Parentheses terminate the chain,
 // so (value?.field).next still performs an ordinary access on its result.
 func (b *machineBuilder) optionalChain(node *ast.Node) string {
+	return b.optionalChainMode(node, false)
+}
+func (b *machineBuilder) optionalChainMode(node *ast.Node, deleting bool) string {
 	var links []*ast.Node
 	base := node
 	for ast.IsOptionalChain(base) {
@@ -19,6 +22,9 @@ func (b *machineBuilder) optionalChain(node *ast.Node) string {
 	}
 	value := b.expression(base)
 	result := b.temp("tsU")
+	if deleting {
+		b.emit(result + "=true")
+	}
 	end := 0
 	opens := 0
 	if !b.direct {
@@ -47,10 +53,18 @@ func (b *machineBuilder) optionalChain(node *ast.Node) string {
 		}
 		switch link.Kind {
 		case ast.KindPropertyAccessExpression:
-			value = b.temp("tsGet(" + value + "," + strconv.Quote(link.Name().Text()) + ")")
+			if deleting && i == 0 {
+				value = b.temp("tsDelete(" + value + "," + strconv.Quote(link.Name().Text()) + "," + fmt.Sprint(strictFunction(node)) + ")")
+			} else {
+				value = b.temp("tsGet(" + value + "," + strconv.Quote(link.Name().Text()) + ")")
+			}
 		case ast.KindElementAccessExpression:
 			key := b.expression(link.AsElementAccessExpression().ArgumentExpression)
-			value = b.temp("tsGet(" + value + "," + key + ")")
+			if deleting && i == 0 {
+				value = b.temp("tsDelete(" + value + "," + key + "," + fmt.Sprint(strictFunction(node)) + ")")
+			} else {
+				value = b.temp("tsGet(" + value + "," + key + ")")
+			}
 		case ast.KindCallExpression:
 			call := link.AsCallExpression()
 			spread := false
@@ -69,6 +83,9 @@ func (b *machineBuilder) optionalChain(node *ast.Node) string {
 				value = b.temp("tsCall(" + strings.Join(args, ",") + ")")
 			}
 		}
+	}
+	if deleting && node.Kind == ast.KindCallExpression {
+		value = "true"
 	}
 	b.emit(result + "=" + value)
 	if b.direct {

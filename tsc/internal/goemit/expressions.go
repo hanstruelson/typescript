@@ -13,7 +13,8 @@ import (
 	"github.com/microsoft/TypeScript/tsc/internal/scanner"
 )
 
-func (b *machineBuilder) identifier(node *ast.Node) string {
+func (b *machineBuilder) identifier(node *ast.Node) string { return b.identifierValue(node, true) }
+func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 	if member := b.e.reference(node); member != nil && member.Kind == ast.KindEnumMember {
 		if cell := b.e.bindings[member.Parent]; cell != nil {
 			return "tsGet(" + cell.name + ".get()," + strconv.Quote(member.Name().Text()) + ")"
@@ -25,14 +26,38 @@ func (b *machineBuilder) identifier(node *ast.Node) string {
 	if imported := b.e.imports[b.e.reference(node)]; imported != "" {
 		return b.builtin(imported)
 	}
+	if node.Text() == "arguments" {
+		for at := b; at != nil; at = at.parent {
+			if at.argumentsCell != "" {
+				return at.argumentsCell + ".get()"
+			}
+			if at.owner != nil && ast.IsFunctionLike(at.owner) && at.owner.Kind != ast.KindArrowFunction {
+				break
+			}
+		}
+	}
 	if node.Text() == "Map" || node.Text() == "Set" || node.Text() == "Array" || node.Text() == "ArrayBuffer" || isTypedArrayName(node.Text()) {
 		return "tsBuiltinClass(" + strconv.Quote(node.Text()) + ")"
 	}
 	switch node.Text() {
 	case "Blob", "ReadableStream", "ReadableStreamDefaultReader", "ReadableStreamBYOBReader":
 		return "tsClassValue(tsNativeClass(" + strconv.Quote(node.Text()) + "))"
+	case "Object":
+		return "tsObjectConstructor()"
+	case "Function":
+		return "tsFunctionConstructor()"
 	case "JSON":
 		return "tsJSONModule()"
+	case "Math":
+		return "tsMathModule()"
+	case "Symbol":
+		return "tsSymbolFunction()"
+	case "Reflect":
+		return "tsReflectModule()"
+	case "globalThis":
+		return "tsGlobalObject()"
+	case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError":
+		return "tsErrorConstructor(" + strconv.Quote(node.Text()) + ")"
 	case "Date":
 		return "tsClassValue(tsNativeClass(\"Date\"))"
 	case "Number":
@@ -44,7 +69,7 @@ func (b *machineBuilder) identifier(node *ast.Node) string {
 	case "Buffer":
 		return "tsNodeBufferModule()"
 	case "String":
-		return "tsFunc(func(args ...tsValue)tsValue {if len(args)==0 {return tsStringUnits(nil)};return tsStringValue(args[0])})"
+		return "tsFunc(func(args ...tsValue)tsValue {if len(args)==0 {return tsStringUnits(nil)};if args[0].kind==tsSymbolKind{return tsStringReference(tsStringUTF8(tsSymbolText((*tsSymbol)(args[0].ref))))};return tsStringValue(args[0])})"
 	case "RegExp":
 		return "tsFunc(tsNewRegExp)"
 	case "NaN":
@@ -58,7 +83,9 @@ func (b *machineBuilder) identifier(node *ast.Node) string {
 		// always take precedence through the compiler reference resolver above.
 		return b.builtin(node.Text())
 	}
-	b.e.fail(node, "unsupported or unresolved identifier "+node.Text())
+	if report {
+		b.e.fail(node, "unsupported or unresolved identifier "+node.Text())
+	}
 	return "tsU"
 }
 func (b *machineBuilder) builtin(name string) string {
@@ -121,7 +148,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		}
 		return b.typedTemp("tsStringConcat("+strings.Join(parts, ",")+")", "*tsString")
 	case ast.KindTypeOfExpression:
-		value := b.expression(node.AsTypeOfExpression().Expression)
+		operand := node.AsTypeOfExpression().Expression
+		if operand.Kind == ast.KindIdentifier {
+			return b.typedTemp("tsTypeOf("+b.temp(b.identifierValue(operand, false))+")", "*tsString")
+		}
+		value := b.expression(operand)
 		return b.typedTemp("tsTypeOf("+value+")", "*tsString")
 	case ast.KindBigIntLiteral:
 		return b.temp("tsBigIntLiteral(" + strconv.Quote(node.Text()) + ")")
@@ -135,8 +166,10 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp("nil")
 	case ast.KindThisKeyword:
 		if b.receiver == "" {
-			b.e.fail(node, "this is supported only in class methods and their arrow closures")
-			return "tsU"
+			if b.module {
+				return "tsU"
+			}
+			return b.temp("tsGlobalObject()")
 		}
 		if b.concrete == nil {
 			return b.temp(b.receiver)
@@ -218,6 +251,25 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return result
 	case ast.KindArrowFunction, ast.KindFunctionExpression:
 		return b.temp(b.function(node))
+	case ast.KindYieldExpression:
+		if !b.generator {
+			b.e.fail(node, "yield requires a generator")
+			return "tsU"
+		}
+		n := node.AsYieldExpression()
+		value := b.expression(n.Expression)
+		next := b.block()
+		if n.AsteriskToken != nil {
+			if b.async {
+				b.emit(fmt.Sprintf("m.yieldAsyncDelegate(loop,tsAsyncIterate(%s),%d);return", value, next))
+			} else {
+				b.emit(fmt.Sprintf("m.yieldDelegate(tsIterate(%s),%d);return", value, next))
+			}
+		} else {
+			b.emit(fmt.Sprintf("m.yielded=%s;m.suspended=true;m.pc=%d;return", value, next))
+		}
+		b.current = next
+		return b.temp("m.result")
 	case ast.KindNewExpression:
 		n := node.AsNewExpression()
 		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "AbortController" && b.e.binding(n.Expression) == nil {
@@ -401,9 +453,16 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			}
 		}
 		if call.Expression.Kind == ast.KindSuperKeyword {
-			if !b.constructor || b.declaring == nil || b.declaring.parent == nil {
+			if !b.constructor || b.declaring == nil || b.declaring.parent == nil && b.declaring.baseError == "" {
 				b.e.fail(node, "super() requires a derived constructor")
 				return "tsU"
+			}
+			if b.declaring.baseError != "" {
+				values := b.spreadArguments(call.Arguments.Nodes)
+				b.emit("tsErrorSuper(loop," + b.receiver + ".properties," + strconv.Quote(b.declaring.baseError) + "," + values + ")")
+				b.initializeFields()
+				b.initializeParameterProperties()
+				return b.receiver
 			}
 			args := []string{}
 			if hasSpread {
@@ -427,7 +486,10 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if value, ok := b.denseArrayCall(call); ok {
 			return value
 		}
-		if call.Expression.Kind == ast.KindPropertyAccessExpression && !hasSpread {
+		if value, ok := b.nativeMathCall(call); ok {
+			return value
+		}
+		if call.Expression.Kind == ast.KindPropertyAccessExpression && !hasSpread && !b.e.dynamicPrototypes {
 			property := call.Expression.AsPropertyAccessExpression()
 			name := property.Name().Text()
 
@@ -437,7 +499,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				if method != nil {
 					target = b.receiver + "." + implName(b.declaring.parent.ownerOf(method), name)
 				}
-			} else if c := b.classOf(property.Expression); c != nil && c.methods[name] != nil {
+			} else if c := b.classOf(property.Expression); c != nil && !b.e.dynamicPrototypes && c.methods[name] != nil {
 				receiver := b.expression(property.Expression)
 				target = b.classTarget(property.Expression, receiver, c) + ".Call" + memberName(name)
 				if property.Expression.Kind == ast.KindThisKeyword {
@@ -456,7 +518,10 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		callee := ""
 		if call.Expression.Kind == ast.KindPropertyAccessExpression {
 			property := call.Expression.AsPropertyAccessExpression()
-			if b.classOf(property.Expression) == nil && b.e.primitive(property.Expression).kind == "" {
+			if property.Expression.Kind == ast.KindSuperKeyword && b.e.dynamicPrototypes {
+				receiver = b.expression(property.Expression)
+				callee = b.expression(call.Expression)
+			} else if b.classOf(property.Expression) == nil && b.e.primitive(property.Expression).kind == "" {
 				special := false
 				if property.Expression.Kind == ast.KindIdentifier {
 					switch property.Expression.Text() {
@@ -511,8 +576,8 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			if n.Expression.Text() == "ArrayBuffer" && name == "isView" {
 				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsBooleanValue(tsArg(args,0).kind==tsTypedArrayKind)})")
 			}
-			if n.Expression.Text() == "Array" {
-				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsArrayBuiltin(" + strconv.Quote(name) + ",args)})")
+			if n.Expression.Text() == "Object" && name == "prototype" {
+				return b.temp("tsObjectPrototype()")
 			}
 			if n.Expression.Text() == "Object" {
 				return b.temp(b.objectBuiltin(name))
@@ -536,6 +601,12 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return b.typedTemp("float64(len("+storage+".values))", "float64")
 		}
 		receiver := b.expression(n.Expression)
+		if c, ok := b.directOwnField(n.Expression, name); ok {
+			target := b.classTarget(n.Expression, receiver, c)
+			if !strings.HasPrefix(target, "tsView_") {
+				return b.typedTemp(target+"."+memberName(name), b.e.primitive(c.fields[name]).goType())
+			}
+		}
 		if p := b.e.arrayElementPrimitive(n.Expression); name == "length" && p.kind != "" {
 			return b.typedTemp("tsGrowableArrayLength["+p.goType()+"]("+receiver+","+strconv.Quote(p.kind)+")", "float64")
 		}
@@ -545,7 +616,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp("tsGet(" + receiver + "," + strconv.Quote(name) + ")")
 	case ast.KindElementAccessExpression:
 		n := node.AsElementAccessExpression()
-		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.e.primitive(n.ArgumentExpression).numeric() {
+		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.nativeNumericIndex(n.ArgumentExpression) {
 			storage := b.denseStorage(n.Expression, p)
 			index := b.expression(n.ArgumentExpression)
 			return b.typedTemp(b.denseRead(storage, index, p), p.elementGoType())
@@ -639,6 +710,43 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindVoidExpression:
 		b.expression(node.AsVoidExpression().Expression)
 		return "tsU"
+	case ast.KindClassExpression:
+		b.allocate(b.e.bindings[node])
+		b.classDeclaration(node)
+		return b.temp(b.e.bindings[node].name + ".get()")
+	case ast.KindDeleteExpression:
+		operand := node.AsDeleteExpression().Expression
+		for operand.Kind == ast.KindParenthesizedExpression {
+			operand = operand.AsParenthesizedExpression().Expression
+		}
+		if ast.IsOptionalChain(operand) {
+			return b.optionalChainMode(operand, true)
+		}
+		if operand.Kind == ast.KindPropertyAccessExpression {
+			p := operand.AsPropertyAccessExpression()
+			receiver := b.expression(p.Expression)
+			return b.temp("tsDelete(" + receiver + "," + strconv.Quote(p.Name().Text()) + "," + fmt.Sprint(strictFunction(node)) + ")")
+		}
+		if operand.Kind == ast.KindElementAccessExpression {
+			p := operand.AsElementAccessExpression()
+			receiver := b.expression(p.Expression)
+			key := b.expression(p.ArgumentExpression)
+			return b.temp("tsDelete(" + receiver + "," + key + "," + fmt.Sprint(strictFunction(node)) + ")")
+		}
+		if operand.Kind == ast.KindIdentifier && operand.Text() == "arguments" {
+			for at := b; at != nil; at = at.parent {
+				if at.argumentsCell != "" {
+					return b.typedTemp("false", "bool")
+				}
+			}
+		}
+		if operand.Kind == ast.KindIdentifier && b.e.binding(operand) != nil {
+			return b.typedTemp("false", "bool")
+		}
+		if operand.Kind != ast.KindIdentifier {
+			b.expression(operand)
+		}
+		return b.typedTemp("true", "bool")
 	}
 	b.e.fail(node, "unsupported expression "+node.Kind.String())
 	return "tsU"
@@ -647,6 +755,17 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 // lvalue snapshots the receiver/key before an RHS or await can mutate them.
 func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 	if node.Kind == ast.KindIdentifier {
+		if node.Text() == "arguments" && b.e.binding(node) == nil {
+			for at := b; at != nil; at = at.parent {
+				if at.argumentsCell != "" {
+					cell := at.argumentsCell
+					return cell + ".get()", func(value string) string { return cell + ".set(" + value + ")" }
+				}
+				if at.owner != nil && ast.IsFunctionLike(at.owner) && at.owner.Kind != ast.KindArrowFunction {
+					break
+				}
+			}
+		}
 		if cell := b.e.binding(node); cell != nil {
 			pointer := b.typedTemp(cell.name, cell.pointerType())
 			return pointer + ".get()", func(value string) string {
@@ -664,6 +783,9 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 			if b.declaring != nil && b.declaring.static && b.declaring.parent != nil && b.declaring.parent.fields[n.Name().Text()] != nil {
 				read, _ := b.classProperty(n.Expression, b.receiver, n.Name().Text())
 				return read, func(value string) string {
+					if b.e.dynamicPrototypes {
+						return "tsSet(" + b.receiver + "," + strconv.Quote(n.Name().Text()) + "," + value + ")"
+					}
 					return b.receiver + ".Set" + memberName(n.Name().Text()) + "(" + value + ")"
 				}
 			}
@@ -691,7 +813,7 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 	}
 	if node.Kind == ast.KindElementAccessExpression {
 		n := node.AsElementAccessExpression()
-		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.e.primitive(n.ArgumentExpression).numeric() {
+		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.nativeNumericIndex(n.ArgumentExpression) {
 			storage := b.denseStorage(n.Expression, p)
 			key := b.expression(n.ArgumentExpression)
 			return b.denseRead(storage, key, p), func(value string) string {
@@ -723,7 +845,7 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 		old := ""
 		if node.Kind == ast.KindIdentifier && b.e.binding(node) != nil {
 			old = b.typedTemp(strings.TrimSuffix(read, ".get()")+".read()", p.goType())
-		} else if node.Kind == ast.KindElementAccessExpression && b.e.arrayElementPrimitive(node.AsElementAccessExpression().Expression).kind != "" && b.e.primitive(node.AsElementAccessExpression().ArgumentExpression).numeric() {
+		} else if node.Kind == ast.KindElementAccessExpression && b.e.arrayElementPrimitive(node.AsElementAccessExpression().Expression).kind != "" && b.nativeNumericIndex(node.AsElementAccessExpression().ArgumentExpression) {
 			old = b.typedTemp(read, p.goType())
 		} else {
 			old = b.comparisonBoundary(b.temp(read), p)
@@ -734,7 +856,7 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 		}
 		next := b.typedTemp(old+op+p.goType()+"(1)", p.goType())
 		value := ""
-		if node.Kind != ast.KindIdentifier && (node.Kind != ast.KindElementAccessExpression || !b.e.primitive(node.AsElementAccessExpression().ArgumentExpression).numeric() || b.e.arrayElementPrimitive(node.AsElementAccessExpression().Expression).kind == "") {
+		if node.Kind != ast.KindIdentifier && (node.Kind != ast.KindElementAccessExpression || !b.nativeNumericIndex(node.AsElementAccessExpression().ArgumentExpression) || b.e.arrayElementPrimitive(node.AsElementAccessExpression().Expression).kind == "") {
 			value = b.comparisonBoundary(b.temp(write(next)), p)
 		} else {
 			value = b.typedTemp(write(next), p.goType())
@@ -818,7 +940,7 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		}
 		if n.Left.Kind == ast.KindElementAccessExpression {
 			p := b.e.arrayElementPrimitive(n.Left.AsElementAccessExpression().Expression)
-			if p.kind != "" && b.e.primitive(n.Left.AsElementAccessExpression().ArgumentExpression).numeric() {
+			if p.kind != "" && b.nativeNumericIndex(n.Left.AsElementAccessExpression().ArgumentExpression) {
 				return b.typedTemp(write(value), p.elementGoType())
 			}
 		}
@@ -931,6 +1053,10 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 			}
 			return b.typedTemp(condition, "bool")
 		}
+	}
+	// Strict equality never coerces a dynamic operand to a literal's type.
+	if (op == "===" || op == "!==") && (b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue") {
+		return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
 	}
 	// Operands have already been saved in left-to-right order. A dynamic value
 	// compared with a typed primitive uses the same policy as typed assignments.
@@ -1303,4 +1429,18 @@ func isTypedArrayName(name string) bool {
 		return true
 	}
 	return false
+}
+
+func (b *machineBuilder) nativeNumericIndex(node *ast.Node) bool {
+	for node.Kind == ast.KindParenthesizedExpression {
+		node = node.AsParenthesizedExpression().Expression
+	}
+	p := b.e.primitive(node)
+	if !p.numeric() || p.nulls != 0 {
+		return false
+	}
+	if cell := b.e.binding(node); cell != nil && cell.maybeUndefined && !b.definitelyInitialized(cell, node) {
+		return false
+	}
+	return true
 }

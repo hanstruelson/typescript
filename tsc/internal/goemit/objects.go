@@ -21,15 +21,19 @@ func (b *machineBuilder) objectLiteral(node *ast.Node) string {
 		case ast.KindPropertyAssignment:
 			key := b.propertyKey(property.Name())
 			value := b.expression(property.AsPropertyAssignment().Initializer)
-			b.emit("tsSet(" + object + "," + key + "," + value + ")")
+			if property.Name().Kind != ast.KindComputedPropertyName && property.Name().Text() == "__proto__" {
+				b.emit("tsObjectLiteralPrototype(" + object + "," + value + ")")
+			} else {
+				b.emit(object + ".set(tsPropertyKey(" + key + ")," + value + ")")
+			}
 		case ast.KindShorthandPropertyAssignment:
 			key := b.propertyKey(property.Name())
 			value := b.expression(property.Name())
-			b.emit("tsSet(" + object + "," + key + "," + value + ")")
+			b.emit(object + ".set(tsPropertyKey(" + key + ")," + value + ")")
 		case ast.KindMethodDeclaration:
 			key := b.propertyKey(property.Name())
 			value := b.function(property)
-			b.emit("tsSet(" + object + "," + key + "," + value + ")")
+			b.emit(object + ".set(tsPropertyKey(" + key + ")," + value + ")")
 		case ast.KindGetAccessor, ast.KindSetAccessor:
 			key := b.propertyKey(property.Name())
 			value := b.function(property)

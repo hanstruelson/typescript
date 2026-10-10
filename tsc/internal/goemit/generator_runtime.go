@@ -1,0 +1,61 @@
+package goemit
+
+const generatorRuntime = `
+var tsGeneratorIntrinsics struct{sync.Once;syncPrototype,asyncPrototype,iteratorPrototype,asyncIteratorPrototype,syncFunctionPrototype,asyncFunctionPrototype *tsObject}
+func tsInitGenerators(){tsGeneratorIntrinsics.Do(func(){tsInitPrototypes();
+ tsGeneratorIntrinsics.iteratorPrototype=tsNewObject();tsGeneratorIntrinsics.asyncIteratorPrototype=tsNewObject();tsGeneratorIntrinsics.syncPrototype=tsNewObject();tsGeneratorIntrinsics.asyncPrototype=tsNewObject();tsGeneratorIntrinsics.syncPrototype.prototype=tsObjectValue(tsGeneratorIntrinsics.iteratorPrototype);tsGeneratorIntrinsics.asyncPrototype.prototype=tsObjectValue(tsGeneratorIntrinsics.asyncIteratorPrototype)
+ for _,entry:=range []struct{object *tsObject;symbol string}{{tsGeneratorIntrinsics.iteratorPrototype,"iterator"},{tsGeneratorIntrinsics.asyncIteratorPrototype,"asyncIterator"}}{object:=entry.object;key:=tsPropertyKey(tsWellKnownSymbol(entry.symbol));object.set(key,tsNamedNativeMethod("[Symbol."+entry.symbol+"]",0,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return receiver}));object.descriptors=map[string]*tsDescriptor{key:{writable:true,configurable:true}}}
+ for _,async:=range []bool{false,true}{prototype:=tsGeneratorIntrinsics.syncPrototype;if async{prototype=tsGeneratorIntrinsics.asyncPrototype}
+ for _,action:=range []string{"next","return","throw"}{operation:=action;method:=tsNamedNativeMethod(action,1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{valid:=receiver.kind==tsIteratorKind&&(*tsIterator)(receiver.ref).machine!=nil;if valid{valid=((*tsIterator)(receiver.ref).machine.asyncGenerator!=nil)==async};if !valid{if async{return tsPromiseValue(loop.resolved(tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Invalid generator receiver"}),true))};tsPropertyFailure("Invalid generator receiver")};iterator:=(*tsIterator)(receiver.ref);if async{return tsPromiseValue(iterator.machine.asyncGenerator.request(loop,operation,tsArg(args,0)))};return tsGeneratorStep(loop,iterator,operation,tsArg(args,0))});prototype.set(action,method);if prototype.descriptors==nil{prototype.descriptors=map[string]*tsDescriptor{}};prototype.descriptors[action]=&tsDescriptor{writable:true,configurable:true}}
+ }
+ for _,async:=range []bool{false,true}{root:=tsNewObject();root.prototype=tsFunctionValue(tsIntrinsics.function);prototype:=tsGeneratorIntrinsics.syncPrototype;name:="GeneratorFunction";if async{prototype=tsGeneratorIntrinsics.asyncPrototype;name="AsyncGeneratorFunction";tsGeneratorIntrinsics.asyncFunctionPrototype=root}else{tsGeneratorIntrinsics.syncFunctionPrototype=root}
+ constructor:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{tsPropertyFailure("Dynamic generator compilation is not supported");return tsU});constructor.name=name;constructor.length=1;constructor.constructible=true;constructor.internalPrototype=tsFunctionValue(tsIntrinsics.functionConstructor);constructor.properties=tsNewObject();constructor.properties.set("prototype",tsObjectValue(root));constructor.properties.descriptors=map[string]*tsDescriptor{"prototype":{}}
+ root.set("prototype",tsObjectValue(prototype));root.set("constructor",tsFunctionValue(constructor));key:=tsPropertyKey(tsWellKnownSymbol("toStringTag"));root.set(key,tsStringReference(tsStringUTF8(name)));root.descriptors=map[string]*tsDescriptor{"prototype":{configurable:true},"constructor":{configurable:true},key:{configurable:true}}
+ prototype.set("constructor",tsObjectValue(root));prototype.descriptors["constructor"]=&tsDescriptor{configurable:true}
+ }
+ for _,entry:=range []struct{object *tsObject;tag string}{{tsGeneratorIntrinsics.syncPrototype,"Generator"},{tsGeneratorIntrinsics.asyncPrototype,"AsyncGenerator"}}{key:=tsPropertyKey(tsWellKnownSymbol("toStringTag"));entry.object.set(key,tsStringReference(tsStringUTF8(entry.tag)));entry.object.descriptors[key]=&tsDescriptor{configurable:true}}
+ })}
+func tsGeneratorFunctionPrototype(async bool)tsValue{tsInitGenerators();if async{return tsObjectValue(tsGeneratorIntrinsics.asyncFunctionPrototype)};return tsObjectValue(tsGeneratorIntrinsics.syncFunctionPrototype)}
+func tsGeneratorPrototype(async bool)tsValue{tsInitGenerators();if async{return tsObjectValue(tsGeneratorIntrinsics.asyncPrototype)};return tsObjectValue(tsGeneratorIntrinsics.syncPrototype)}
+func tsAsyncIteratorPromise(loop *tsLoop,value tsValue)*tsPromise{if value.kind==tsPromiseKind{return (*tsPromise)(value.ref)};return loop.resolved(value,false)}
+func(m *tsMachine)yieldAsyncDelegate(loop *tsLoop,iterator *tsAsyncIterator,next int){m.asyncDelegate=iterator;m.pc=next;m.resumeAsyncDelegate(loop,"next",tsU)}
+func(m *tsMachine)resumeAsyncDelegate(loop *tsLoop,action string,value tsValue){iterator:=m.asyncDelegate;m.suspended=true;m.blocked=true
+ var promise *tsPromise
+ func(){defer func(){if failure:=recover();failure!=nil{promise=loop.resolved(tsUnwrap(failure),true)}}();if iterator.resume!=nil{promise=iterator.resume(loop,action,value)}else if action=="next"{promise=iterator.next(loop)}else if action=="return"{promise=iterator.close(loop)}else{promise=loop.resolved(tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Delegated iterator has no throw method"}),true)}}()
+
+ loop.await(tsPromiseValue(promise),func(result tsResult){m.blocked=false;defer func(){if failure:=recover();failure!=nil{m.suspended=false;m.asyncDelegate=nil;m.raise(tsUnwrap(failure));m.resume()}}();if result.rejected{m.suspended=false;m.asyncDelegate=nil;m.raise(result.value);m.resume();return};if tsIsPrimitiveValue(result.value){m.suspended=false;m.asyncDelegate=nil;m.raise(tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Iterator result must be an object"}));m.resume();return};if tsTruthy(tsGet(loop,result.value,"done")){m.asyncDelegate=nil;m.suspended=false;m.result=tsGet(loop,result.value,"value");if action=="return"{m.transfer(tsAbrupt{kind:"return",value:m.result})};m.resume()}else{m.yielded=tsGet(loop,result.value,"value");m.suspended=true;m.asyncGenerator.notify(loop)}})
+}
+func tsIteratorSymbolProperty(loop *tsLoop,value,key tsValue)tsValue{
+ if key.kind!=tsSymbolKind{return tsU};name:=(*tsSymbol)(key.ref).key
+ if value.kind==tsIteratorKind{iterator:=(*tsIterator)(value.ref);async:=iterator.machine!=nil&&iterator.machine.asyncGenerator!=nil;expected:="iterator";if async{expected="asyncIterator"};if name==(*tsSymbol)(tsWellKnownSymbol(expected).ref).key{return tsPrototypeLookup(loop,value,tsPrototypeOf(value),name)};return tsU}
+ if name==(*tsSymbol)(tsWellKnownSymbol("iterator").ref).key{if value.kind==tsArrayKind{array:=(*tsArray)(value.ref);if method,ok:=array.properties[name];ok{return method};return (*tsArray)(tsArrayPrototype(loop).ref).properties["values"]};switch value.kind{case tsStringKind,tsTypedArrayKind,tsCollectionKind:return tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsIteratorValueObject(tsIterate(loop,receiver))})}}
+ return tsU
+}
+func tsIteratorClose(loop *tsLoop,iterator *tsIterator,suppress bool){if suppress{defer func(){recover()}()};if iterator.machine!=nil{if iterator.machine.asyncGenerator!=nil{tsPropertyFailure("Cannot synchronously close an async generator")};tsGeneratorStep(loop,iterator,"return",tsU);return};if !tsIsUndefined(iterator.protocol){method:=tsGet(loop,iterator.protocol,"return");if !tsNullish(method){result:=tsCallReceiver(loop,method,iterator.protocol);if tsIsPrimitiveValue(result){tsPropertyFailure("Iterator close result must be an object")}}}}
+type tsGeneratorRequest struct{action string;value tsValue;promise *tsPromise}
+type tsAsyncGenerator struct{iterator *tsIterator;queue []tsGeneratorRequest;busy,waiting,rejected bool;failure tsValue}
+func tsNewGeneratorIterator(loop *tsLoop,machine *tsMachine,async bool)*tsIterator{iterator:=&tsIterator{machine:machine,prototype:machine.generatorPrototype};if tsIsPrimitiveValue(iterator.prototype){iterator.prototype=tsGeneratorPrototype(async)};if async{state:=&tsAsyncGenerator{iterator:iterator};machine.asyncGenerator=state};return iterator}
+func (state *tsAsyncGenerator) request(loop *tsLoop,action string,value tsValue)*tsPromise{promise:=loop.promise();state.queue=append(state.queue,tsGeneratorRequest{action,value,promise});if !state.busy{state.start(loop)};return promise}
+func(state *tsAsyncGenerator)start(loop *tsLoop){if len(state.queue)==0{state.busy=false;return};state.busy=true;request:=state.queue[0];m:=state.iterator.machine;state.waiting=true
+ run:=func(){defer func(){if failure:=recover();failure!=nil{state.rejected=true;state.failure=tsUnwrap(failure);m.done=true;state.notify(loop)}}();result:=tsGeneratorStep(loop,state.iterator,request.action,request.value);if !m.blocked&&state.waiting{if tsTruthy(tsGet(loop,result,"done")){m.result=tsGet(loop,result,"value")};state.notify(loop)}}
+ if request.action=="return"{loop.await(request.value,func(result tsResult){request.value=result.value;if result.rejected{request.action="throw"};run()})}else{run()}
+}
+func(state *tsAsyncGenerator)notify(loop *tsLoop){m:=state.iterator.machine;if !state.waiting||m.blocked{return};state.waiting=false;request:=state.queue[0];if state.rejected{state.rejected=false;request.promise.settle(tsResult{state.failure,true});state.queue=state.queue[1:];loop.post(func(){state.start(loop)});return};value:=m.yielded;done:=m.done;if done{value=m.result};loop.await(value,func(result tsResult){if result.rejected&&!done{state.waiting=true;m.suspended=false;m.raise(result.value);m.resume();return};if result.rejected{request.promise.settle(result);m.done=true}else{request.promise.settle(tsResult{tsIteratorResult(result.value,done),false})};state.queue=state.queue[1:];state.start(loop)})}
+func tsIteratorValueObject(iterator *tsIterator)tsValue{return tsValue{kind:tsIteratorKind,ref:unsafe.Pointer(iterator)}}
+func tsGeneratorStep(loop *tsLoop,iterator *tsIterator,action string,value tsValue)tsValue{
+ m:=iterator.machine;if m.running{tsPropertyFailure("Generator is already executing")}
+ if m.done {if action=="throw"{panic(tsThrown{value})};if action!="return"{value=tsU};return tsIteratorResult(value,true)}
+ m.running=true;defer func(){m.running=false}()
+ if !m.started {m.started=true;if action!="next"{m.done=true;if action=="throw"{panic(tsThrown{value})};return tsIteratorResult(value,true)}}
+ m.suspended=false;m.result=value
+ if m.asyncDelegate!=nil{m.resumeAsyncDelegate(loop,action,value);return tsIteratorResult(tsU,false)}
+ if m.delegate!=nil{if !m.resumeDelegate(action,value){return m.delegatedResult}}else if action!="next"{m.transfer(tsAbrupt{kind:action,value:value})}
+ m.resume();if m.done{return tsIteratorResult(m.result,true)};if m.delegate!=nil{return m.delegatedResult};return tsIteratorResult(m.yielded,false)
+}
+func (m *tsMachine) yieldDelegate(iterator *tsIterator,next int){m.delegate=iterator;m.pc=next;m.resumeDelegate("next",tsU)}
+func (m *tsMachine) resumeDelegate(action string,value tsValue)bool{
+ iterator:=m.delegate;result:=tsU
+ if !tsIsUndefined(iterator.protocol){method:=iterator.nextMethod;if action!="next"{method=tsGet(loop,iterator.protocol,action)};if tsNullish(method){if action=="return"{m.delegate=nil;m.transfer(tsAbrupt{kind:"return",value:value});return true};if action=="throw"{close:=tsGet(loop,iterator.protocol,"return");if !tsNullish(close){closed:=tsCallReceiver(loop,close,iterator.protocol);if tsIsPrimitiveValue(closed){tsPropertyFailure("Iterator close result must be an object")}};m.delegate=nil;tsPropertyFailure("Delegated iterator has no throw method")}};result=tsCallReceiver(loop,method,iterator.protocol,value);if tsIsPrimitiveValue(result){tsPropertyFailure("Iterator result must be an object")}}else if iterator.machine!=nil{result=tsGeneratorStep(loop,iterator,action,value)}else{switch action{case "throw":m.delegate=nil;tsPropertyFailure("Delegated iterator has no throw method");case "return":m.delegate=nil;m.transfer(tsAbrupt{kind:"return",value:value});return true;default:ok:=iterator.next();item:=iterator.value;if !ok{item=tsU};result=tsIteratorResult(item,!ok)}}
+ if tsTruthy(tsGet(loop,result,"done")){m.delegate=nil;m.result=tsGet(loop,result,"value");if action=="return"{m.transfer(tsAbrupt{kind:"return",value:m.result})};return true};m.delegatedResult=result;m.suspended=true;return false
+}
+`

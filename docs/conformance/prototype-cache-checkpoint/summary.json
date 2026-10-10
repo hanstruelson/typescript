@@ -1,0 +1,18 @@
+{
+  "suite": "Test262",
+  "revision": "2e0a56762801e275a9fdf96dc49d90ba0cddcf63",
+  "generated": "2026-10-09T15:15:58.631769+00:00",
+  "native_source_sha256": "ec6a3f5ad45c0fd68990c74776a9f80a51424a4b85b89c86d82e78b16eea879d",
+  "source_tests": 53616,
+  "excluded_dynamic_tests": 1899,
+  "selected_tests": 51717,
+  "completed_variants": 0,
+  "planned_variants": 100058,
+  "complete": false,
+  "statuses": {},
+  "reference_failures": 0,
+  "selection": "all",
+  "native_commit": "360642beadcafffac281e6fa1a799b69659532b6",
+  "node_version": "v24.19.0",
+  "go_version": "go version go1.27.1 linux/amd64"
+}

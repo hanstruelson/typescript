@@ -15,6 +15,7 @@ type classInfo struct {
 	node                         *ast.Node
 	name                         string
 	parent                       *classInfo
+	baseError                    string
 	fields                       map[string]*ast.Node
 	fieldOrder                   []string
 	methods                      map[string]*ast.Node
@@ -24,6 +25,32 @@ type classInfo struct {
 	environment                  []*binding
 	static                       bool
 	statics                      *classInfo
+	accessors                    map[string]classAccessor
+}
+type classAccessor struct{ getter, setter *ast.Node }
+
+func classMembers(node *ast.Node) *ast.NodeList {
+	if node.Kind == ast.KindClassExpression {
+		return node.AsClassExpression().Members
+	}
+	return node.AsClassDeclaration().Members
+}
+func classHeritage(node *ast.Node) *ast.NodeList {
+	if node.Kind == ast.KindClassExpression {
+		return node.AsClassExpression().HeritageClauses
+	}
+	return node.AsClassDeclaration().HeritageClauses
+}
+
+func computedFieldLayout(c *classInfo) bool {
+	for at := c; at != nil; at = at.parent {
+		for _, field := range at.fields {
+			if field.Name() != nil && field.Name().Kind == ast.KindComputedPropertyName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func memberName(name string) string { return fmt.Sprintf("P%x", []byte(name)) }
@@ -32,6 +59,12 @@ func (e *emitter) classReference(node *ast.Node) *classInfo {
 		return nil
 	}
 	if declaration := e.reference(node); declaration != nil {
+		if declaration.Kind == ast.KindVariableDeclaration {
+			initial := declaration.AsVariableDeclaration().Initializer
+			if initial != nil && initial.Kind == ast.KindClassExpression {
+				return e.classes[initial]
+			}
+		}
 		return e.classes[declaration]
 	}
 	if node.Kind == ast.KindIdentifier {
@@ -57,11 +90,12 @@ func (e *emitter) prepareClass(c *classInfo) {
 		return
 	}
 	c.preparing = true
+	c.accessors = map[string]classAccessor{}
 	// File identity keeps generated declarations distinct in a multi-file bundle.
 	h := fnv.New64a()
 	h.Write([]byte(e.file.FileName()))
 	c.name = fmt.Sprintf("%s_%x", c.name, h.Sum64())
-	if clauses := c.node.AsClassDeclaration().HeritageClauses; clauses != nil {
+	if clauses := classHeritage(c.node); clauses != nil {
 		for _, clause := range clauses.Nodes {
 			hc := clause.AsHeritageClause()
 			if hc.Token != ast.KindExtendsKeyword {
@@ -73,6 +107,14 @@ func (e *emitter) prepareClass(c *classInfo) {
 			}
 			expression := hc.Types.Nodes[0].AsExpressionWithTypeArguments().Expression
 			c.parent = e.classReference(expression)
+			if c.parent == nil && expression.Kind == ast.KindIdentifier && e.binding(expression) == nil {
+				switch expression.Text() {
+				case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError":
+					c.baseError = expression.Text()
+					e.dynamicPrototypes = true
+					continue
+				}
+			}
 			if c.parent == nil {
 				e.fail(expression, "base class must be a statically resolved class in the same source file")
 				continue
@@ -92,7 +134,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 			}
 		}
 	}
-	for _, member := range c.node.AsClassDeclaration().Members.Nodes {
+	for _, member := range classMembers(c.node).Nodes {
 		if ast.HasDecorators(member) {
 			e.fail(member, "member decorators are not supported yet")
 		}
@@ -124,35 +166,40 @@ func (e *emitter) prepareClass(c *classInfo) {
 
 			}
 		case ast.KindPropertyDeclaration:
-			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral) {
+			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
 				e.fail(member, "class fields require ordinary literal names")
 				continue
 			}
 			shape := e.primitive(member)
 
 			_ = shape
-			name := member.Name().Text()
+			name := classMemberName(member)
 			if c.fields[name] == nil {
 				c.fieldOrder = append(c.fieldOrder, name)
 			}
 			c.fields[name] = member
 		case ast.KindMethodDeclaration:
-			if ast.GetFunctionFlags(member)&ast.FunctionFlagsGenerator != 0 {
-				e.fail(member, "generator methods are not supported")
-				continue
-			}
-			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral) {
+			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
 				e.fail(member, "methods require ordinary literal names")
 				continue
 			}
 			if member.Body() == nil {
 				continue
 			}
-			name := member.Name().Text()
+			name := classMemberName(member)
 			if c.methods[name] == nil {
 				c.methodOrder = append(c.methodOrder, name)
 			}
 			c.methods[name] = member
+		case ast.KindGetAccessor, ast.KindSetAccessor:
+			name := classMemberName(member)
+			accessor := c.accessors[name]
+			if member.Kind == ast.KindGetAccessor {
+				accessor.getter = member
+			} else {
+				accessor.setter = member
+			}
+			c.accessors[name] = accessor
 		case ast.KindSemicolonClassElement:
 		default:
 			e.fail(member, "unsupported class member "+member.Kind.String())
@@ -165,6 +212,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 	}
 	c.statics = &classInfo{node: c.node, name: c.name + "Static", static: true, fields: map[string]*ast.Node{}, methods: map[string]*ast.Node{}, prepared: true}
 	st := c.statics
+	st.accessors = map[string]classAccessor{}
 	if c.parent != nil {
 		st.parent = c.parent.statics
 		for _, name := range st.parent.fieldOrder {
@@ -176,18 +224,18 @@ func (e *emitter) prepareClass(c *classInfo) {
 			st.methods[name] = st.parent.methods[name]
 		}
 	}
-	for _, member := range c.node.AsClassDeclaration().Members.Nodes {
+	for _, member := range classMembers(c.node).Nodes {
 		if member.Kind == ast.KindClassStaticBlockDeclaration {
 			continue
 		}
 		if !ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
 			continue
 		}
-		if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral) {
+		if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
 			e.fail(member, "static members require ordinary literal names")
 			continue
 		}
-		name := member.Name().Text()
+		name := classMemberName(member)
 		switch member.Kind {
 		case ast.KindPropertyDeclaration:
 			if st.fields[name] == nil {
@@ -198,14 +246,18 @@ func (e *emitter) prepareClass(c *classInfo) {
 			if member.Body() == nil {
 				continue
 			}
-			if ast.GetFunctionFlags(member)&ast.FunctionFlagsGenerator != 0 {
-				e.fail(member, "generator methods are not supported")
-				continue
-			}
 			if st.methods[name] == nil {
 				st.methodOrder = append(st.methodOrder, name)
 			}
 			st.methods[name] = member
+		case ast.KindGetAccessor, ast.KindSetAccessor:
+			accessor := st.accessors[name]
+			if member.Kind == ast.KindGetAccessor {
+				accessor.getter = member
+			} else {
+				accessor.setter = member
+			}
+			st.accessors[name] = accessor
 		default:
 			e.fail(member, "unsupported static member "+member.Kind.String())
 		}
@@ -220,7 +272,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 }
 func (c *classInfo) ownerOf(method *ast.Node) *classInfo {
 	for at := c; at != nil; at = at.parent {
-		for _, member := range at.node.AsClassDeclaration().Members.Nodes {
+		for _, member := range classMembers(at.node).Nodes {
 			if member == method {
 				return at
 			}
@@ -245,7 +297,10 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 		return
 	}
 	var make strings.Builder
-	fmt.Fprintf(&make, "func() *tsClass {class:=&tsClass{layout:&tsLayout_%s};", c.name)
+	fmt.Fprintf(&make, "func() *tsClass {class:=&tsClass{dynamic:%t,layout:&tsLayout_%s};", b.e.dynamicPrototypes, c.name)
+	if c.baseError != "" {
+		make.WriteString("class.baseConstructor=tsErrorConstructor(" + strconv.Quote(c.baseError) + ");")
+	}
 	if c.parent != nil {
 		if parent := b.e.bindings[c.parent.node]; parent != nil {
 			make.WriteString("class.parent=tsClassPointer(" + parent.name + ".get());")
@@ -255,9 +310,49 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 	for _, capture := range c.environment {
 		fmt.Fprintf(&make, ";self.%s=%s", capture.name, capture.name)
 	}
-	make.WriteString(";self.initProperties()")
+	make.WriteString(";self.initProperties();if class.dynamic{self.properties.dynamicPrototype=tsClassPrototype(class)}")
 	fmt.Fprintf(&make, ";self.%s(args...);if !self.properties.initialized {panic(\"Derived constructor did not call super\")};return self};return class}()", ctorName(c))
-	b.emit(cell.name + ".init(" + make.String() + ")")
+	classValue := b.typedTemp(make.String(), "*tsClass")
+	for _, member := range classMembers(c.node).Nodes {
+		if member.Name() != nil && member.Name().Kind == ast.KindComputedPropertyName {
+			key := b.expression(member.Name().AsComputedPropertyName().Expression)
+			b.emit("if " + classValue + ".computedKeys==nil{" + classValue + ".computedKeys=map[string]string{}}")
+			b.emit(classValue + ".computedKeys[" + strconv.Quote(classMemberName(member)) + "]=tsPropertyKey(" + key + ")")
+		}
+	}
+	b.emit(cell.name + ".init(" + classValue + ")")
+	if b.e.dynamicPrototypes {
+		var prototype strings.Builder
+		prototype.WriteString("func()*tsObject {class:=tsClassPointer(" + cell.name + ".get());object:=tsNewObject();object.set(\"constructor\",tsClassValue(class));object.descriptors=map[string]*tsDescriptor{\"constructor\":{writable:true,configurable:true}};")
+		if c.parent != nil {
+			prototype.WriteString("object.prototype=tsClassPrototype(class.parent);")
+		} else if c.baseError != "" {
+			prototype.WriteString("object.prototype=tsGet(loop,class.baseConstructor,\"prototype\");")
+		}
+		for _, name := range c.methodOrder {
+			method := c.methods[name]
+			if c.ownerOf(method) != c {
+				continue
+			}
+			key := classKeyExpression("class", name)
+			fmt.Fprintf(&prototype, "object.set(%s,tsFunctionValue(%s));object.descriptors[%s]=&tsDescriptor{writable:true,configurable:true};", key, b.prototypeMethod(c, method), key)
+		}
+		for _, member := range classMembers(c.node).Nodes {
+			if member.Kind != ast.KindGetAccessor && member.Kind != ast.KindSetAccessor || ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
+				continue
+			}
+			name := classMemberName(member)
+			key := classKeyExpression("class", name)
+			which := "getter"
+			if member.Kind == ast.KindSetAccessor {
+				which = "setter"
+			}
+			fmt.Fprintf(&prototype, "if object.descriptors[%s]==nil{object.order=append(object.order,%s);object.descriptors[%s]=&tsDescriptor{accessor:true,configurable:true,getter:tsU,setter:tsU}};object.descriptors[%s].%s=tsFunctionValue(%s);", key, key, key, key, which, b.prototypeMethod(c, member))
+		}
+		prototype.WriteString("return object}")
+		b.emit("tsClassPointer(" + cell.name + ".get()).prototypeFactory=" + prototype.String())
+	}
+
 	st := c.statics
 	singleton := b.typedTemp("&"+st.name+"{loop:loop,properties:tsNewProperties()}", "*"+st.name)
 	target := singleton
@@ -271,6 +366,31 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 		b.emit(target + "." + capture.name + "=" + capture.name)
 	}
 	b.emit(target + ".initProperties()")
+	if b.e.dynamicPrototypes {
+		for _, name := range st.methodOrder {
+			method := st.methods[name]
+			if st.ownerOf(method) != st {
+				continue
+			}
+			key := classKeyExpression(target+".properties.class", name)
+			b.emit(target + ".properties.methods[" + key + "]=tsFunctionValue(" + b.prototypeMethod(st, method) + ")")
+			b.emit(target + ".properties.define(" + key + ")")
+			b.emit("if " + target + ".properties.accessors==nil{" + target + ".properties.accessors=map[string]*tsDescriptor{}};" + target + ".properties.accessors[" + key + "]=&tsDescriptor{writable:true,configurable:true}")
+		}
+		for _, member := range classMembers(c.node).Nodes {
+			if member.Kind != ast.KindGetAccessor && member.Kind != ast.KindSetAccessor || !ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
+				continue
+			}
+			key := classKeyExpression(target+".properties.class", classMemberName(member))
+			which := "getter"
+			if member.Kind == ast.KindSetAccessor {
+				which = "setter"
+			}
+			b.emit(target + ".properties.define(" + key + ")")
+			b.emit("if " + target + ".properties.accessors==nil{" + target + ".properties.accessors=map[string]*tsDescriptor{}};if " + target + ".properties.accessors[" + key + "]==nil{" + target + ".properties.accessors[" + key + "]=&tsDescriptor{accessor:true,configurable:true,getter:tsU,setter:tsU}};" + target + ".properties.accessors[" + key + "]." + which + "=tsFunctionValue(" + b.prototypeMethod(st, member) + ");" + target + ".properties.own[" + key + "]=true")
+		}
+	}
+
 	decoration := b.applyClassDecorators(node, decorators, cell.name+".get()")
 	b.emit(target + "." + ctorName(st) + "()")
 	if decoration != "" {
@@ -303,6 +423,11 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 		node.ForEachChild(func(child *ast.Node) bool { visit(child); return false })
 	}
 	for at := c; at != nil; at = at.parent {
+		if at.parent != nil {
+			if cell := b.e.bindings[at.parent.node]; cell != nil {
+				needed[cell] = true
+			}
+		}
 		visit(at.node)
 	}
 	for _, cell := range candidates {
@@ -371,18 +496,47 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 			fallback = fmt.Sprintf("if !self.properties.own[%q] {return self.parent.Get%s()};", name, id)
 		}
 		fmt.Fprintf(&out, "func(self *%s) Get%s() tsValue {%sif !self.has%s {return tsU};return %s}\n", c.name, id, fallback, id, value)
-		fmt.Fprintf(&out, "func(self *%s) Set%s(value tsValue) tsValue {self.%s=%s;self.has%s=true;self.properties.define(%q);return self.Get%s()}\n", c.name, id, id, checked, id, name, id)
+		fmt.Fprintf(&out, "func(self *%s) Set%s(value tsValue) tsValue {self.%s=%s;self.has%s=true;self.properties.define(%s);return self.Get%s()}\n", c.name, id, id, checked, id, classKeyExpression("self.properties.class", name), id)
 
 	}
 	fmt.Fprintf(&out, "func(self *%s) initProperties() {self.properties.self=unsafe.Pointer(self);self.properties.layout=&tsLayout_%s;\n", c.name, c.name)
 	for _, name := range c.fieldOrder {
 		id := memberName(name)
-		fmt.Fprintf(&out, "self.properties.declared[%q]=tsProperty{readField:func()tsValue{return self.Get%s()},writeField:func(value tsValue)tsValue{return self.Set%s(value)}}\n", name, id, id)
+		shape := b.e.primitive(c.fields[name])
+		zero := shape.goType() + "(0)"
+		if shape.kind == "" {
+			zero = "tsU"
+		} else if shape.nulls != 0 {
+			zero = "tsOptional[" + shape.goType() + "]{}"
+		} else if shape.kind == "string" {
+			zero = "nil"
+		} else if shape.kind == "boolean" {
+			zero = "false"
+		}
+		if !computedFieldLayout(c) {
+			fmt.Fprintf(&out, "self.register%s()\n", id)
+		}
+		_ = zero
 	}
 	for _, name := range c.methodOrder {
-		fmt.Fprintf(&out, "self.properties.methods[%q]=tsFunc(self.Call%s)\n", name, memberName(name))
+		fmt.Fprintf(&out, "self.properties.methods[%s]=tsFunc(self.Call%s)\n", classKeyExpression("self.properties.class", name), memberName(name))
 	}
 	out.WriteString("}\n")
+	for _, name := range c.fieldOrder {
+		id := memberName(name)
+		shape := b.e.primitive(c.fields[name])
+		zero := shape.goType() + "(0)"
+		if shape.kind == "" {
+			zero = "tsU"
+		} else if shape.nulls != 0 {
+			zero = "tsOptional[" + shape.goType() + "]{}"
+		} else if shape.kind == "string" {
+			zero = "nil"
+		} else if shape.kind == "boolean" {
+			zero = "false"
+		}
+		fmt.Fprintf(&out, "func(self *%s) register%s(){self.properties.declared[%s]=tsProperty{readField:func()tsValue{return self.Get%s()},writeField:func(value tsValue)tsValue{return self.Set%s(value)},clearField:func(){self.%s=%s;self.has%s=false}}}\n", c.name, id, classKeyExpression("self.properties.class", name), id, id, id, zero, id)
+	}
 	fmt.Fprintf(&out, "func(self *%s) newBlank() *%s {other:=&%s{loop:self.loop,properties:tsNewProperties()};other.properties.class=self.properties.class\n", c.name, c.name, c.name)
 	for _, cell := range c.environment {
 		fmt.Fprintf(&out, "other.%s=self.%s\n", cell.name, cell.name)
@@ -394,12 +548,12 @@ func (b *machineBuilder) emitClass(c *classInfo) {
 		fmt.Fprintf(&out, "func(self *%s) Call%s(args ...tsValue) tsValue {return self.%s(args...)}\n", c.name, memberName(name), implName(owner, name))
 	}
 	for at := c; at != nil; at = at.parent {
-		for index, member := range at.node.AsClassDeclaration().Members.Nodes {
+		for index, member := range classMembers(at.node).Nodes {
 			if c.static && member.Kind == ast.KindClassStaticBlockDeclaration {
 				fmt.Fprintf(&out, "func(self *%s) staticBlock_%s_%d(args ...tsValue) tsValue {\n%s\n}\n", c.name, at.name, index, b.classBody(c, at, member, false))
 			}
 			if member.Kind == ast.KindMethodDeclaration && member.Body() != nil && member.Name() != nil && ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) == c.static {
-				fmt.Fprintf(&out, "func(self *%s) %s(args ...tsValue) tsValue {\n%s\n}\n", c.name, implName(at, member.Name().Text()), b.classBody(c, at, member, false))
+				fmt.Fprintf(&out, "func(self *%s) %s(args ...tsValue) tsValue {\n%s\n}\n", c.name, implName(at, classMemberName(member)), b.classBody(c, at, member, false))
 			}
 		}
 		fmt.Fprintf(&out, "func(self *%s) %s(args ...tsValue) tsValue {\n%s\n}\n", c.name, ctorName(at), b.classBody(c, at, at.constructor, true))
@@ -412,6 +566,7 @@ func (b *machineBuilder) classBody(concrete, declaring *classInfo, node *ast.Nod
 		owner = declaring.node
 	}
 	child := b.e.newMachine(owner, nil, node != nil && ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync))
+	child.generator = node != nil && ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0
 	child.concrete = concrete
 	child.declaring = declaring
 	child.constructor = constructor
@@ -422,21 +577,32 @@ func (b *machineBuilder) classBody(concrete, declaring *classInfo, node *ast.Nod
 	if node == nil {
 		child.locals = nil
 	}
-	if constructor && (declaring.parent == nil || declaring.static) {
+	if constructor && (declaring.parent == nil && declaring.baseError == "" || declaring.static) {
 		child.emit("self.properties.initialized=true")
 		child.initializeFields()
 	}
 	if node != nil && node.Kind != ast.KindClassStaticBlockDeclaration {
+		child.prepareArguments(node)
 		for index, param := range node.Parameters() {
 			child.initializeParameter(param, index)
 		}
-		if constructor && (declaring.parent == nil || declaring.static) {
+		child.initializeArguments(node)
+		if constructor && (declaring.parent == nil && declaring.baseError == "" || declaring.static) {
 			child.initializeParameterProperties()
 		}
+	}
+	if constructor && node == nil && declaring.baseError != "" {
+		child.emit("tsErrorSuper(loop,self.properties," + strconv.Quote(declaring.baseError) + ",args)")
+		child.initializeFields()
 	}
 	if constructor && node == nil && declaring.parent != nil && !declaring.static {
 		child.emit("self." + ctorName(declaring.parent) + "(args...)")
 		child.initializeFields()
+	}
+	if child.generator {
+		body := child.block()
+		child.emit(fmt.Sprintf("m.suspended=true;m.pc=%d;return", body))
+		child.current = body
 	}
 	if node != nil {
 		if child.direct {
@@ -478,7 +644,7 @@ func (b *machineBuilder) initializeFields() {
 		}
 	}
 
-	for index, member := range b.declaring.node.AsClassDeclaration().Members.Nodes {
+	for index, member := range classMembers(b.declaring.node).Nodes {
 		if b.declaring.static && member.Kind == ast.KindClassStaticBlockDeclaration {
 			b.emit(fmt.Sprintf("self.staticBlock_%s_%d()", b.declaring.name, index))
 			continue
@@ -490,7 +656,7 @@ func (b *machineBuilder) initializeFields() {
 		if member.Name() == nil {
 			continue
 		}
-		id := memberName(member.Name().Text())
+		id := memberName(classMemberName(member))
 		if p.Initializer == nil {
 			b.initializeEmptyField(member)
 		} else {
@@ -501,6 +667,9 @@ func (b *machineBuilder) initializeFields() {
 			} else {
 				value = b.expression(p.Initializer)
 			}
+			if computedFieldLayout(b.concrete) {
+				b.emit("self.register" + id + "()")
+			}
 			b.emit("self.Set" + id + "(" + value + ")")
 		}
 	}
@@ -509,6 +678,9 @@ func (b *machineBuilder) initializeFields() {
 // classOf uses declaration identity and explicit annotations. Unknown receivers
 // retain dynamic bracket access; concrete class dot access bypasses lookup.
 func (b *machineBuilder) classOf(node *ast.Node) *classInfo {
+	if b.e.dynamicPrototypes {
+		return nil
+	}
 	c := b.undecoratedClassOf(node)
 	if c != nil && ast.HasDecorators(c.node) {
 		return nil
@@ -523,7 +695,7 @@ func (b *machineBuilder) undecoratedClassOf(node *ast.Node) *classInfo {
 	case ast.KindThisKeyword:
 		return b.concrete
 	case ast.KindParenthesizedExpression:
-		return b.classOf(node.AsParenthesizedExpression().Expression)
+		return b.undecoratedClassOf(node.AsParenthesizedExpression().Expression)
 	case ast.KindAsExpression:
 		return b.classType(node.AsAsExpression().Type)
 	case ast.KindNewExpression:
@@ -542,7 +714,7 @@ func (b *machineBuilder) undecoratedClassOf(node *ast.Node) *classInfo {
 				return c
 			}
 			if d.Initializer != nil && d.Initializer.Kind == ast.KindNewExpression {
-				return b.classOf(d.Initializer)
+				return b.undecoratedClassOf(d.Initializer)
 			}
 		}
 		if decl.Kind == ast.KindParameter {
@@ -573,6 +745,21 @@ func (b *machineBuilder) classType(node *ast.Node) *classInfo {
 	return nil
 }
 func (b *machineBuilder) classProperty(node *ast.Node, receiver, name string) (string, bool) {
+	if b.e.dynamicPrototypes {
+		if node.Kind == ast.KindSuperKeyword && b.declaring != nil && b.declaring.parent != nil {
+			cell := b.e.bindings[b.declaring.parent.node]
+			if cell != nil {
+				if b.declaring.static {
+					return "tsGet(" + cell.name + ".get()," + strconv.Quote(name) + ")", true
+				}
+				return "tsPrototypeLookup(loop," + receiver + ",tsClassPrototype(tsClassPointer(" + cell.name + ".get()))," + strconv.Quote(name) + ")", true
+			}
+		}
+		return "", false
+	}
+	if name == "prototype" {
+		return "", false
+	}
 	if node.Kind == ast.KindSuperKeyword {
 		if b.declaring == nil || b.declaring.parent == nil {
 			b.e.fail(node, "super requires a derived class")
@@ -626,6 +813,9 @@ func (b *machineBuilder) classTarget(node *ast.Node, receiver string, c *classIn
 		if decl := b.e.reference(node); decl != nil && decl.Kind == ast.KindVariableDeclaration {
 			d := decl.AsVariableDeclaration()
 			concrete = d.Type == nil && d.Initializer != nil && d.Initializer.Kind == ast.KindNewExpression
+			if cell := b.e.bindings[decl]; cell != nil && cell.constant && d.Initializer != nil && d.Initializer.Kind == ast.KindNewExpression && b.e.classReference(d.Initializer.AsNewExpression().Expression) == c {
+				return "(*" + c.name + ")((*tsProperties)(" + receiver + ".ref).self)"
+			}
 		}
 	}
 	if concrete {
@@ -646,7 +836,10 @@ func numericFieldInitializer(node *ast.Node) bool {
 }
 
 func (b *machineBuilder) initializeEmptyField(member *ast.Node) {
-	id := memberName(member.Name().Text())
+	id := memberName(classMemberName(member))
+	if computedFieldLayout(b.concrete) {
+		b.emit("self.register" + id + "()")
+	}
 	shape := b.e.primitive(member)
 	zero := "tsU"
 	switch {
@@ -660,7 +853,7 @@ func (b *machineBuilder) initializeEmptyField(member *ast.Node) {
 	if shape.nulls != 0 && shape.kind != "" {
 		zero = "tsOptional[" + shape.goType() + "]{tag:2}"
 	}
-	b.emit(fmt.Sprintf("self.properties.define(%q)", member.Name().Text()))
+	b.emit("self.properties.define(" + classKeyExpression("self.properties.class", classMemberName(member)) + ")")
 	b.emit("self.has" + id + "=false;self." + id + "=" + zero)
 }
 func (b *machineBuilder) initializeParameterProperties() {
@@ -687,4 +880,27 @@ func (b *machineBuilder) initializeParameterProperties() {
 			}
 		}
 	}
+}
+
+// Prototype methods are shared and take the actual JavaScript receiver. They
+// must not close over the instance that first materialized the prototype.
+func (b *machineBuilder) prototypeMethod(c *classInfo, node *ast.Node) string {
+	child := b.e.newMachine(node, b, ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync))
+	child.generator = ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0
+	child.dynamicReceiver = true
+	child.receiver = "receiver"
+	child.declaring = c
+	child.prepareArguments(node)
+	for index, param := range node.Parameters() {
+		child.initializeParameter(param, index)
+	}
+	child.initializeArguments(node)
+	if child.generator {
+		body := child.block()
+		child.emit(fmt.Sprintf("m.suspended=true;m.pc=%d;return", body))
+		child.current = body
+	}
+	child.statements(node.Body().AsBlock().Statements.Nodes)
+	child.abrupt("return", "tsU", 0, 0)
+	return child.finish()
 }

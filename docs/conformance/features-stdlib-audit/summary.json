@@ -1,0 +1,37 @@
+{
+  "suite": "Test262",
+  "revision": "2e0a56762801e275a9fdf96dc49d90ba0cddcf63",
+  "generated": "2026-10-09T21:05:55.290364+00:00",
+  "native_source_sha256": "69d742f4d703c21c71d3d9452f64465c1e8c68af57e3458b5f01da918c38cd4a",
+  "source_tests": 53616,
+  "excluded_dynamic_tests": 1899,
+  "selected_tests": 50,
+  "completed_variants": 95,
+  "planned_variants": 95,
+  "complete": true,
+  "statuses": {
+    "runner-host-unimplemented": 8,
+    "pass": 71,
+    "emit-error": 10,
+    "runtime-fail": 6
+  },
+  "reference_failures": 6,
+  "filters": [
+    "built-ins/Math/",
+    "built-ins/Error/",
+    "built-ins/NativeErrors/",
+    "built-ins/AggregateError/",
+    "built-ins/Symbol/",
+    "built-ins/GeneratorPrototype/",
+    "built-ins/AsyncGeneratorPrototype/",
+    "language/expressions/delete/",
+    "language/expressions/yield/",
+    "language/statements/generators/",
+    "language/expressions/class/",
+    "language/arguments-object/10.5"
+  ],
+  "selection": "4 stable hash-selected tests per category",
+  "native_commit": "360642beadcafffac281e6fa1a799b69659532b6",
+  "node_version": "v24.19.0",
+  "go_version": "go version go1.27.1 linux/amd64"
+}

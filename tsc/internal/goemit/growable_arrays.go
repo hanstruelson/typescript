@@ -91,10 +91,10 @@ func tsDenseArrayBinding[T tsPrimitive](initialized,constant bool,kind string,co
 func(cell *tsDenseArrayCell[T])raw()tsValue{if cell.array==nil{return tsU};return tsArrayValue(cell.array)}
 func(cell *tsDenseArrayCell[T])initializedState()bool{return cell.initialized}
 func(cell *tsDenseArrayCell[T])bindingRef()tsBindingCell{return tsBindingCell{raw:cell.raw,initializedState:cell.initializedState}}
-func(cell *tsDenseArrayCell[T])get()tsValue{if !cell.initialized{panic("Cannot access binding before initialization")};return cell.raw()}
+func(cell *tsDenseArrayCell[T])get()tsValue{if !cell.initialized{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};return cell.raw()}
 func(cell *tsDenseArrayCell[T])init(value tsValue)tsValue{value=tsArrayBoundary(value,cell.kind,cell.nulls,cell.coerce);cell.array=(*tsArray)(value.ref);cell.storage=(*tsGrowableStorage[T])(cell.array.native);cell.initialized=true;return value}
-func(cell *tsDenseArrayCell[T])set(value tsValue)tsValue{if !cell.initialized{panic("Cannot access binding before initialization")};if cell.constant{panic("Assignment to constant variable")};return cell.init(value)}
-func(cell *tsDenseArrayCell[T])readStorage()*tsGrowableStorage[T]{if !cell.initialized{panic("Cannot access binding before initialization")};if cell.storage==nil{tsArrayTypeFailure("Expected an initialized primitive array")};return cell.storage}
+func(cell *tsDenseArrayCell[T])set(value tsValue)tsValue{if !cell.initialized{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};if cell.constant{panic("Assignment to constant variable")};return cell.init(value)}
+func(cell *tsDenseArrayCell[T])readStorage()*tsGrowableStorage[T]{if !cell.initialized{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})})};if cell.storage==nil{tsArrayTypeFailure("Expected an initialized primitive array")};return cell.storage}
 
 func tsDenseArrayWrapper[T tsPrimitive](storage *tsGrowableStorage[T])*tsArray{return storage.owner}
 func tsDenseBound(index float64,length int)int{index=math.Trunc(index);if math.IsNaN(index){index=0};if index<0{index+=float64(length)};if index<0{return 0};if index>float64(length){return length};return int(index)}

@@ -9,12 +9,10 @@ func tsCallReceiver(loop *tsLoop,value,receiver tsValue,args ...tsValue)tsValue{
 }
 func tsFunctionGet(loop *tsLoop,value tsValue,name string)tsValue{
     function:=(*tsFunction)(value.ref)
-    if function.properties!=nil{if item:=function.properties.get(name);!tsIsUndefined(item){return item}}
-    switch name{
-    case "call":return tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{return tsCallReceiver(loop,value,tsArg(args,0),tsRestArgs(args,1).values...)}))
-    case "apply":return tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{values:=[]tsValue{};source:=tsArg(args,1);if !tsNullish(source){iterator:=tsArrayLikeIterator(source);for iterator.next(loop){values=append(values,iterator.value)}};return tsCallReceiver(loop,value,tsArg(args,0),values...)}))
-    case "bind":return tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{receiver:=tsArg(args,0);prefix:=append([]tsValue{},tsRestArgs(args,1).values...);return tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{values:=append(append([]tsValue{},prefix...),args...);return tsCallReceiver(loop,value,receiver,values...)}))}))
-    };return tsU
+    if object:=function.readProperties();object!=nil{if tsOwnObjectProperty(object,name){if descriptor:=object.descriptors[name];descriptor!=nil&&descriptor.accessor{if tsIsUndefined(descriptor.getter){return tsU};return tsCallReceiver(loop,descriptor.getter,value)};return object.values[name]}}
+    if function.metadataRef.Load()!=nil{return tsPrototypeLookup(loop,value,tsPrototypeOf(value),name)}
+    if name=="prototype"{return tsFunctionPrototype(value)};if name=="name"{return tsStringReference(tsStringUTF8(function.name))};if name=="length"{return tsNumberValue(float64(function.length))}
+    return tsPrototypeLookup(loop,value,tsPrototypeOf(value),name)
 }
 func tsNamedNativeMethod(name string,length int,call func(*tsLoop,tsValue,...tsValue)tsValue)tsValue{function:=&tsFunction{receiverCall:call,properties:tsNewObject()};function.properties.set("name",tsStringReference(tsStringUTF8(name)));function.properties.set("length",tsNumberValue(float64(length)));function.properties.descriptors=map[string]*tsDescriptor{"name":{configurable:true},"length":{configurable:true}};return tsFunctionValue(function)}
 func tsNativeMethod(call func(*tsLoop,tsValue,...tsValue)tsValue)tsValue{return tsFunctionValue(&tsFunction{receiverCall:call})}

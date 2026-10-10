@@ -53,7 +53,8 @@ func (b *machineBuilder) forAwaitStatement(node *ast.Node, label string) {
 	b.jump(test)
 	b.loops = b.loops[:len(b.loops)-1]
 	b.current = finished
-	b.abrupt("jump", "tsU", end, depth)
+	b.emit("m.handlers=m.handlers[:len(m.handlers)-1]")
+	b.jump(end)
 	b.current = cleanup
 	b.emit(fmt.Sprintf("m.await(%s.close(loop),%d);return", iterator, closed))
 	b.current = closed
@@ -64,6 +65,7 @@ func (b *machineBuilder) forAwaitStatement(node *ast.Node, label string) {
 
 const fsIteratorRuntime = `
 type tsAsyncIterator struct {
+    resume func(*tsLoop,string,tsValue)*tsPromise
     nextInto func(*tsLoop,tsValue)*tsPromise
     next func(*tsLoop)*tsPromise
     close func(*tsLoop)*tsPromise
@@ -73,13 +75,28 @@ func tsIteratorResult(value tsValue, done bool) tsValue {
     out:=tsNewObject();out.set("value",value);out.set("done",tsBooleanValue(done));return tsObjectValue(out)
 }
 
+func tsAsyncMissingThrow(loop *tsLoop,protocol tsValue)*tsPromise{
+ promise:=loop.promise();failure:=tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Delegated iterator has no throw method"})
+ func(){defer func(){if thrown:=recover();thrown!=nil{promise.settle(tsResult{tsUnwrap(thrown),true})}}();method:=tsGet(loop,protocol,"return");if tsNullish(method){promise.settle(tsResult{failure,true});return};closed:=tsCallReceiver(loop,method,protocol);loop.await(closed,func(result tsResult){if result.rejected{promise.settle(result)}else if tsIsPrimitiveValue(result.value){promise.settle(tsResult{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Iterator close result must be an object"}),true})}else{promise.settle(tsResult{failure,true})}})}()
+ return promise
+}
+
 func tsAsyncIterate(value tsValue) *tsAsyncIterator {
+ if value.kind==tsIteratorKind&&(*tsIterator)(value.ref).machine!=nil&&(*tsIterator)(value.ref).machine.asyncGenerator!=nil{state:=(*tsIterator)(value.ref).machine.asyncGenerator;return &tsAsyncIterator{resume:state.request,next:func(loop *tsLoop)*tsPromise{return state.request(loop,"next",tsU)},close:func(loop *tsLoop)*tsPromise{return state.request(loop,"return",tsU)}}}
     if value.kind==tsObjectKind{object:=(*tsObject)(value.ref);if object.asyncIterator!=nil{return object.asyncIterator()}}
+    if value.kind==tsObjectKind||value.kind==tsInstanceKind{method:=tsGet(loop,value,tsWellKnownSymbol("asyncIterator"));if !tsNullish(method){protocol:=tsCallReceiver(loop,method,value);if tsIsPrimitiveValue(protocol){tsPropertyFailure("Async iterator must be an object")};nextMethod:=tsGet(loop,protocol,"next");resume:=func(loop *tsLoop,action string,value tsValue)*tsPromise{method:=nextMethod;if action!="next"{method=tsGet(loop,protocol,action)};if tsNullish(method){if action=="return"{return loop.resolved(tsIteratorResult(value,true),false)};if action=="throw"{return tsAsyncMissingThrow(loop,protocol)};tsPropertyFailure("Async iterator method is missing")};return tsAsyncIteratorPromise(loop,tsCallReceiver(loop,method,protocol,value))};return &tsAsyncIterator{resume:resume,next:func(loop *tsLoop)*tsPromise{return resume(loop,"next",tsU)},close:func(loop *tsLoop)*tsPromise{return resume(loop,"return",tsU)}}}}
     it:=tsIterate(value)
-    return &tsAsyncIterator{
-        next:func(loop *tsLoop)*tsPromise{ok:=it.next(loop);item:=tsU;if ok{item=it.value};return loop.resolved(tsIteratorResult(item,!ok),false)},
-        close:func(loop *tsLoop)*tsPromise{return loop.resolved(tsIteratorResult(tsU,true),false)},
+    resume:=func(loop *tsLoop,action string,value tsValue)*tsPromise{
+      promise:=loop.promise()
+      func(){defer func(){if failure:=recover();failure!=nil{promise.settle(tsResult{tsUnwrap(failure),true})}}()
+        result:=tsU
+        if it.machine!=nil{result=tsGeneratorStep(loop,it,action,value)}else if !tsIsUndefined(it.protocol){method:=it.nextMethod;if action!="next"{method=tsGet(loop,it.protocol,action)};if tsNullish(method){if action=="return"{result=tsIteratorResult(value,true)}else if action=="throw"{tsIteratorClose(loop,it,false);tsPropertyFailure("Iterator has no throw method")}else{tsPropertyFailure("Iterator has no next method")}}else{result=tsCallReceiver(loop,method,it.protocol,value)}}else if action=="return"{result=tsIteratorResult(value,true)}else if action=="throw"{tsPropertyFailure("Iterator has no throw method")}else{ok:=it.next(loop);item:=tsU;if ok{item=it.value};result=tsIteratorResult(item,!ok)}
+        if tsIsPrimitiveValue(result){tsPropertyFailure("Iterator result must be an object")};done:=tsTruthy(tsGet(loop,result,"done"));item:=tsGet(loop,result,"value")
+        loop.await(item,func(settled tsResult){if settled.rejected{promise.settle(settled)}else{promise.settle(tsResult{tsIteratorResult(settled.value,done),false})}})
+      }()
+      return promise
     }
+    return &tsAsyncIterator{resume:resume,next:func(loop *tsLoop)*tsPromise{return resume(loop,"next",tsU)},close:func(loop *tsLoop)*tsPromise{return resume(loop,"return",tsU)}}
 }
 
 func tsAsyncIteratorObject(iterator *tsAsyncIterator) tsValue {

@@ -153,7 +153,7 @@ func (b *machineBuilder) nativeFunction(node *ast.Node, fn *nativeFunction) stri
 		body = child.finishNativeMachine()
 	}
 	b.emit(fn.name + "=func(" + strings.Join(parameters, ",") + ") " + fn.result.goType() + " {\n" + body + "\n}")
-	return "tsFunc(func(args ...tsValue)tsValue{return " + fn.name + "(" + strings.Join(arguments, ",") + ")})"
+	return fmt.Sprintf("func()*tsFunction{function:=tsFunc(func(args ...tsValue)tsValue{return %s(%s)});function.constructible=%t;function.name=%q;function.length=%d;return function}()", fn.name, strings.Join(arguments, ","), node.Kind == ast.KindFunctionDeclaration || node.Kind == ast.KindFunctionExpression, functionName(node), functionLength(node))
 }
 func (b *machineBuilder) nativeCall(node *ast.Node, fn *nativeFunction) string {
 	call := node.AsCallExpression()

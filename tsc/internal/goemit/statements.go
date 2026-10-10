@@ -289,11 +289,30 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 	iterable := b.expression(n.Expression)
 	iterator := b.typedTemp("tsIterate("+iterable+")", "*tsIterator")
 	test, body, end := b.block(), b.block(), b.block()
+	depth := b.depth
+	needsClose := b.e.arrayElementPrimitive(n.Expression).kind == ""
+	finished, cleanup := -1, -1
+	active := ""
+	if needsClose {
+		finished = b.block()
+		cleanup = b.block()
+		active = b.typedTemp("false", "bool")
+		b.emit(fmt.Sprintf("m.handlers=append(m.handlers,tsHandler{catch:-1,finally:%d,end:%d})", cleanup, end))
+		b.depth++
+	}
 	b.jump(test)
-	b.loops = append(b.loops, loopTarget{end, test, b.depth, b.depth, label})
+	b.loops = append(b.loops, loopTarget{end, test, depth, b.depth, label})
 	b.current = test
-	b.emit(fmt.Sprintf("if %s.next() {m.pc=%d} else {m.pc=%d}; return", iterator, body, end))
+	done := end
+	if needsClose {
+		done = finished
+		b.emit(active + "=false")
+	}
+	b.emit(fmt.Sprintf("if %s.next() {m.pc=%d} else {m.pc=%d}; return", iterator, body, done))
 	b.current = body
+	if needsClose {
+		b.emit(active + "=true")
+	}
 	if pattern {
 		if lexical {
 			b.declarePatternCells(decl.Name())
@@ -308,6 +327,14 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 	b.statement(n.Statement)
 	b.jump(test)
 	b.loops = b.loops[:len(b.loops)-1]
+	if needsClose {
+		b.current = finished
+		b.emit("m.handlers=m.handlers[:len(m.handlers)-1]")
+		b.jump(end)
+		b.current = cleanup
+		b.emit("if " + active + "{tsIteratorClose(" + iterator + ",len(m.abrupt)>0&&m.abrupt[len(m.abrupt)-1].kind==\"throw\")};m.endFinally();return")
+		b.depth = depth
+	}
 	b.current = end
 }
 func (b *machineBuilder) tryStatement(node *ast.Node) {

@@ -29,6 +29,7 @@ type emitter struct {
 	file                *ast.SourceFile
 	resolver            ReferenceResolver
 	bindings            map[*ast.Node]*binding
+	globalBindings      map[string]*ast.Node
 	imports             map[*ast.Node]string
 	diags               []*ast.Diagnostic
 	next                int
@@ -36,6 +37,10 @@ type emitter struct {
 	classes             map[*ast.Node]*classInfo
 	classOrder          []*classInfo
 	classText           strings.Builder
+	dynamicPrototypes   bool
+	reflectiveFields    bool
+	deleteEffects       map[*classInfo]map[string]bool
+	directMath          bool
 	coerce              bool
 	strictNulls         bool
 	legacyDecorators    bool
@@ -59,7 +64,13 @@ func (e *emitter) reference(node *ast.Node) *ast.Node {
 	if imported := e.resolver.GetReferencedImportDeclaration(node); imported != nil {
 		return imported
 	}
-	return e.resolver.GetReferencedValueDeclarationUnsafe(node)
+	declaration := e.resolver.GetReferencedValueDeclarationUnsafe(node)
+	if e.bindings[declaration] == nil && node.Kind == ast.KindIdentifier {
+		if local := e.globalBindings[node.Text()]; local != nil {
+			return local
+		}
+	}
+	return declaration
 }
 func (e *emitter) binding(node *ast.Node) *binding { return e.bindings[e.reference(node)] }
 func (e *emitter) declare(node, owner *ast.Node, lexical, constant bool) {
@@ -91,6 +102,18 @@ func (e *emitter) declare(node, owner *ast.Node, lexical, constant bool) {
 			return
 		}
 	}
+	if owner != nil && owner.Kind == ast.KindSourceFile {
+		global := node.Parent != nil && node.Parent.Kind == ast.KindSourceFile
+		if node.Kind == ast.KindVariableDeclaration {
+			global = !lexical || node.Parent != nil && node.Parent.Parent != nil && node.Parent.Parent.Parent != nil && node.Parent.Parent.Parent.Kind == ast.KindSourceFile
+		}
+		if global {
+			if e.globalBindings == nil {
+				e.globalBindings = map[string]*ast.Node{}
+			}
+			e.globalBindings[node.Name().Text()] = node
+		}
+	}
 	p := primitive{}
 	if node.Kind == ast.KindVariableDeclaration || node.Kind == ast.KindParameter || node.Kind == ast.KindBindingElement {
 		p = e.primitive(node)
@@ -111,16 +134,23 @@ func (e *emitter) collect(node, owner *ast.Node) {
 			}
 		}
 		return
-	case ast.KindClassDeclaration:
-		e.declare(node, owner, true, true)
+	case ast.KindClassDeclaration, ast.KindClassExpression:
+		if node.Name() != nil {
+			e.declare(node, owner, true, true)
+		} else {
+			e.bindings[node] = &binding{name: e.unique("Binding"), declaration: node, owner: owner, lexical: true, constant: true}
+		}
 		if e.classes == nil {
 			e.classes = map[*ast.Node]*classInfo{}
 		}
 		c := &classInfo{node: node, name: e.unique("Class"), methods: map[string]*ast.Node{}, fields: map[string]*ast.Node{}}
 		e.classes[node] = c
 		e.classOrder = append(e.classOrder, c)
-		for _, member := range node.AsClassDeclaration().Members.Nodes {
-			if member.Kind == ast.KindMethodDeclaration || member.Kind == ast.KindConstructor {
+		for _, member := range classMembers(node).Nodes {
+			if member.Name() != nil && member.Name().Kind == ast.KindComputedPropertyName {
+				e.collect(member.Name().AsComputedPropertyName().Expression, owner)
+			}
+			if member.Kind == ast.KindMethodDeclaration || member.Kind == ast.KindConstructor || member.Kind == ast.KindGetAccessor || member.Kind == ast.KindSetAccessor {
 				for _, param := range member.Parameters() {
 					e.declare(param, member, false, false)
 					if init := param.AsParameterDeclaration().Initializer; init != nil {
@@ -168,9 +198,6 @@ func (e *emitter) collect(node, owner *ast.Node) {
 			return
 		}
 		e.declare(node, owner, true, false)
-		if ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0 {
-			e.fail(node, "generator functions are not supported")
-		}
 		for _, param := range node.Parameters() {
 			e.declare(param, node, false, false)
 			if init := param.AsParameterDeclaration().Initializer; init != nil {
@@ -180,9 +207,6 @@ func (e *emitter) collect(node, owner *ast.Node) {
 		e.collect(node.Body(), node)
 		return
 	case ast.KindArrowFunction, ast.KindFunctionExpression, ast.KindMethodDeclaration, ast.KindGetAccessor, ast.KindSetAccessor:
-		if ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0 {
-			e.fail(node, "generator functions are not supported")
-		}
 		if node.Kind == ast.KindFunctionExpression && node.Name() != nil {
 			e.declare(node, owner, true, true)
 		}
@@ -235,9 +259,12 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 		return "", file.Diagnostics()
 	}
 	e.collect(file.AsNode(), file.AsNode())
+	e.analyzePrototypes()
 	e.planNativeFunctions()
 	e.planGenericFunctions()
 	e.prepareClasses()
+	e.analyzeDeleteEffects()
+	e.planMathEffects()
 	if len(e.diags) != 0 {
 		return "", e.diags
 	}
@@ -291,6 +318,9 @@ type machineBuilder struct {
 	constructor         bool
 	receiver            string
 	dynamicReceiver     bool
+	argumentsObject     string
+	argumentsCell       string
+	generator           bool
 }
 
 func (e *emitter) newMachine(owner *ast.Node, parent *machineBuilder, async bool) *machineBuilder {
@@ -396,6 +426,7 @@ func (b *machineBuilder) function(node *ast.Node) string {
 		return b.nativeFunction(node, fn)
 	}
 	child := b.e.newMachine(node, b, ast.HasSyntacticModifier(node, ast.ModifierFlagsAsync))
+	child.generator = ast.GetFunctionFlags(node)&ast.FunctionFlagsGenerator != 0
 	if node.Kind != ast.KindArrowFunction {
 		child.receiver = "receiver"
 		child.dynamicReceiver = true
@@ -405,8 +436,15 @@ func (b *machineBuilder) function(node *ast.Node) string {
 		child.declaring = b.declaring
 		child.receiver = b.receiver
 	}
+	child.prepareArguments(node)
 	for index, param := range node.Parameters() {
 		child.initializeParameter(param, index)
+	}
+	child.initializeArguments(node)
+	if child.generator {
+		body := child.block()
+		child.emit(fmt.Sprintf("m.suspended=true;m.pc=%d;return", body))
+		child.current = body
 	}
 	if node.Body().Kind == ast.KindBlock {
 		child.statements(node.Body().AsBlock().Statements.Nodes)
@@ -434,9 +472,12 @@ func (b *machineBuilder) finish() string {
 	if b.module {
 		out.WriteString("func(module *tsModule) {\n")
 	} else if b.dynamicReceiver {
-		fmt.Fprintf(&out, "func(%s) *tsFunction { return &tsFunction{receiverCall:func(loop *tsLoop,receiver tsValue,args ...tsValue) tsValue {\n", strings.Join(captures, ","))
+		fmt.Fprintf(&out, "func(%s) *tsFunction { var function *tsFunction;function = &tsFunction{name:%q,length:%d,constructible:%t,generator:%t,asyncGeneratorFunction:%t,receiverCall:func(loop *tsLoop,receiver tsValue,args ...tsValue) tsValue {\n", strings.Join(captures, ","), functionName(b.owner), functionLength(b.owner), !b.async && !b.generator && b.owner != nil && (b.owner.Kind == ast.KindFunctionDeclaration || b.owner.Kind == ast.KindFunctionExpression), b.generator, b.async && b.generator)
 	} else {
 		fmt.Fprintf(&out, "func(%s) *tsFunction { return tsFunc(func(args ...tsValue) tsValue {\n", strings.Join(captures, ","))
+	}
+	if b.dynamicReceiver && observesThis(b.owner) {
+		fmt.Fprintf(&out, "receiver=tsFunctionReceiver(receiver,%t)\n", strictFunction(b.owner))
 	}
 	for _, cell := range b.locals {
 		fmt.Fprintf(&out, "var %s %s\n_ = %s\n", cell.name, cell.pointerType(), cell.name)
@@ -448,11 +489,14 @@ func (b *machineBuilder) finish() string {
 	for _, temp := range b.temps {
 		fmt.Fprintf(&out, "var %s %s\n_ = %s\n", temp, b.tempType(temp), temp)
 	}
-	fmt.Fprintf(&out, "m := &tsMachine{loop:loop, async:%t}\n", b.async && !b.module)
+	fmt.Fprintf(&out, "m := &tsMachine{loop:loop, async:%t,generator:%t}\n", b.async && !b.module && !b.generator, b.generator)
+	if b.generator && b.dynamicReceiver {
+		out.WriteString("m.generatorPrototype=tsFunctionPrototype(tsFunctionValue(function))\n")
+	}
 	if b.module {
 		out.WriteString("m.module = module\nmodule.machine = m\n")
 	}
-	if b.async && !b.module {
+	if b.async && !b.module && !b.generator {
 		out.WriteString("m.output = loop.promise()\n")
 	}
 	out.WriteString("m.step = func() { switch m.pc {\n")
@@ -465,15 +509,41 @@ func (b *machineBuilder) finish() string {
 		return out.String()
 	}
 	out.WriteString("m.resume()\n")
-	if b.async {
+	if b.generator {
+		fmt.Fprintf(&out, "return tsIteratorValueObject(tsNewGeneratorIterator(loop,m,%t))\n", b.async)
+	} else if b.async {
 		out.WriteString("return m.output\n")
 	} else {
 		out.WriteString("return m.result\n")
 	}
 	if b.dynamicReceiver {
-		fmt.Fprintf(&out, "}} }(%s)", strings.Join(args, ","))
+		fmt.Fprintf(&out, "}};return function }(%s)", strings.Join(args, ","))
 	} else {
 		fmt.Fprintf(&out, "}) }(%s)", strings.Join(args, ","))
 	}
 	return out.String()
+}
+
+func functionName(node *ast.Node) string {
+	if node != nil && node.Name() != nil {
+		if node.Name().Kind == ast.KindComputedPropertyName {
+			return ""
+		}
+		return node.Name().Text()
+	}
+	return ""
+}
+func functionLength(node *ast.Node) int {
+	if node == nil {
+		return 0
+	}
+	length := 0
+	for _, param := range node.Parameters() {
+		p := param.AsParameterDeclaration()
+		if p.Initializer != nil || p.DotDotDotToken != nil {
+			break
+		}
+		length++
+	}
+	return length
 }

@@ -19,6 +19,9 @@ func nativeCallbackBody(node *ast.Node) bool {
 		if n.Kind == ast.KindAwaitExpression || n.Kind == ast.KindYieldExpression || n.Kind == ast.KindThisKeyword {
 			valid = false
 		}
+		if n.Kind == ast.KindIdentifier && n.Text() == "arguments" {
+			valid = false
+		}
 		n.ForEachChild(func(child *ast.Node) bool { visit(child); return false })
 	}
 	visit(node)
