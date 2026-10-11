@@ -295,10 +295,17 @@ one whose slot was set, or match empty if none participated. The compiled
 program exposes `GroupCaptureIndices` for all such slots while keeping
 `GroupIndices` as a stable first-index view. Tests cover each participating
 branch, an unmatched duplicate name, and sequential/co-occurring duplicates
-that must still be rejected. The remaining parser work includes exact V8
-syntax/error parity, complete versioned Unicode property and string-property
-tables, and unresolved grammar cases; this change does not complete the file's
-semantic port.
+that must still be rejected. Unicode property names now use exact,
+case-sensitive aliases generated from UCD 15.1 `PropertyAliases.txt` and
+`PropertyValueAliases.txt`; loose case and separator normalization is rejected.
+`Script_Extensions` now checks Unicode 15.1 override ranges before consulting
+the default Script property. UCD 15.1 range tables now back the V8 binary
+property allowlist, general categories, Script values, and Script_Extensions.
+Emoji 15.1 data backs the emoji character properties and the `Basic_Emoji`,
+keycap, RGI flag, modifier, tag, ZWJ, and aggregate `RGI_Emoji` string
+properties in `/v` mode. Case-folding still uses Go Unicode 17 tables. Exact
+V8 syntax/error parity and unresolved grammar cases remain open; this does not
+complete the parser's semantic port.
 
 `regexp-parser.h` is the public parser boundary rather than another parser
 algorithm: its heap-string entry point and no-GC syntax-verification template

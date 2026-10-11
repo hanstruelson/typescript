@@ -411,6 +411,125 @@ func TestUnicodePropertyIgnoreCaseAndNegativeEscapeOrder(t *testing.T) {
 	}
 }
 
+func TestUnicodePropertyAliasesAreExact(t *testing.T) {
+	for _, test := range []struct {
+		pattern, input string
+		want           bool
+	}{
+		{`\p{Letter}`, "α", true},
+		{`\p{General_Category=Uppercase_Letter}`, "A", true},
+		{`\p{gc=Lu}`, "A", true},
+		{`\p{Script=Greek}`, "α", true},
+		{`\p{sc=Grek}`, "α", true},
+		{`\p{Script=Hiragana}`, "ー", false},
+		{`\p{Script_Extensions=Hiragana}`, "ー", true},
+		{`\p{scx=Kana}`, "ー", true},
+		{`\p{scx=Greek}`, "α", true},
+		{`\p{Emoji}`, "©", true},
+		{`\p{Emoji_Presentation}`, "©", false},
+		{`\p{EPres}`, "😀", true},
+		{`\p{Emoji_Component}`, "️", true},
+		{`\p{Emoji_Modifier}`, "🏽", true},
+		{`\p{Emoji_Modifier_Base}`, "👍", true},
+		{`\p{Extended_Pictographic}`, "©", true},
+		{`\p{White_Space}`, " ", true},
+		{`\p{White_Space}`, "\ufeff", false},
+		{`\s`, "\ufeff", true},
+		{`\p{Assigned}`, "\x00", true},
+		{`\p{Assigned}`, "\U0010ffff", false},
+		{`\p{General_Category=Unassigned}`, "\u0378", true},
+		{`\p{Script=Unknown}`, "\u0378", true},
+		{`\p{ID_Start}`, "_", false},
+		{`\p{ID_Continue}`, "_", true},
+	} {
+		program, err := Compile(test.pattern, "u")
+		if err != nil {
+			t.Fatalf("Compile(%q): %v", test.pattern, err)
+		}
+		_, matched := program.Find(test.input, 0)
+		if matched != test.want {
+			t.Errorf("/%s/u on %q matched %v; want %v", test.pattern, test.input, matched, test.want)
+		}
+	}
+
+	for _, pattern := range []string{
+		`\p{letter}`,
+		`\p{general_category=Lu}`,
+		`\p{GeneralCategory=Lu}`,
+		`\p{white_space}`,
+		`\p{sc=grek}`,
+		`\p{Script=Greek-Script}`,
+	} {
+		if _, err := Compile(pattern, "u"); err == nil {
+			t.Errorf("Compile(%q) accepted a non-alias spelling", pattern)
+		}
+	}
+}
+
+func TestUnicodePropertiesOfStrings(t *testing.T) {
+	family := "👨‍👩‍👧‍👦"
+	for _, test := range []struct {
+		pattern, input string
+		want           bool
+	}{
+		{`^\p{Basic_Emoji}$`, "😀", true},
+		{`^\p{Basic_Emoji}$`, "©️", true},
+		{`^\p{Emoji_Keycap_Sequence}$`, "1️⃣", true},
+		{`^\p{RGI_Emoji_Flag_Sequence}$`, "🇺🇸", true},
+		{`^\p{RGI_Emoji_ZWJ_Sequence}$`, family, true},
+		{`^\p{RGI_Emoji}$`, family, true},
+		{`^\p{RGI_Emoji}$`, "x", false},
+		{`\p{RGI_Emoji}X`, family + "X", true},
+	} {
+		program, err := Compile(test.pattern, "v")
+		if err != nil {
+			t.Fatalf("Compile(%q, v): %v", test.pattern, err)
+		}
+		_, matched := program.Find(test.input, 0)
+		if matched != test.want {
+			t.Errorf("/%s/v on %q matched %v; want %v", test.pattern, test.input, matched, test.want)
+		}
+	}
+
+	for _, pattern := range []struct{ source, flags string }{
+		{`\p{RGI_Emoji}`, "u"},
+		{`\P{RGI_Emoji}`, "v"},
+		{`[^\p{RGI_Emoji}]`, "v"},
+	} {
+		if _, err := Compile(pattern.source, pattern.flags); err == nil {
+			t.Errorf("Compile(%q, %q) accepted an invalid string-property use", pattern.source, pattern.flags)
+		}
+	}
+}
+
+func TestV8BinaryUnicodePropertyAllowlistParses(t *testing.T) {
+	properties := []string{
+		"Alphabetic", "ASCII_Hex_Digit", "Bidi_Control", "Bidi_Mirrored",
+		"Case_Ignorable", "Cased", "Changes_When_Casefolded", "Changes_When_Casemapped",
+		"Changes_When_Lowercased", "Changes_When_NFKC_Casefolded", "Changes_When_Titlecased",
+		"Changes_When_Uppercased", "Dash", "Default_Ignorable_Code_Point", "Deprecated",
+		"Diacritic", "Emoji", "Emoji_Component", "Emoji_Modifier_Base", "Emoji_Modifier",
+		"Emoji_Presentation", "Extended_Pictographic", "Extender", "Grapheme_Base",
+		"Grapheme_Extend", "Hex_Digit", "ID_Continue", "ID_Start", "Ideographic",
+		"IDS_Binary_Operator", "IDS_Trinary_Operator", "Join_Control",
+		"Logical_Order_Exception", "Lowercase", "Math", "Noncharacter_Code_Point",
+		"Pattern_Syntax", "Pattern_White_Space", "Quotation_Mark", "Radical",
+		"Regional_Indicator", "Sentence_Terminal", "Soft_Dotted", "Terminal_Punctuation",
+		"Unified_Ideograph", "Uppercase", "Variation_Selector", "White_Space",
+		"XID_Continue", "XID_Start",
+	}
+	for _, property := range properties {
+		if _, err := Compile(`\p{`+property+`}`, "u"); err != nil {
+			t.Errorf("V8 binary property %q was rejected: %v", property, err)
+		}
+	}
+	for _, property := range []string{`\p{Bidi_Class=R}`, `\p{Script}`, `\p{Greek}`} {
+		if _, err := Compile(property, "u"); err == nil {
+			t.Errorf("unsupported Unicode property %q was accepted", property)
+		}
+	}
+}
+
 func TestV8CaseFoldingModesAndUnicode18SupplementaryPair(t *testing.T) {
 	for _, test := range []struct {
 		pattern, flags, input string

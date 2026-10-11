@@ -765,6 +765,24 @@ func (p *parser) escape(inClass bool) (*node, error) {
 		if !ok {
 			return nil, p.errorf("unsupported Unicode property %q", name)
 		}
+		if strings.HasPrefix(prop, "string-property:") {
+			if !p.flags.UnicodeSets || c == 'P' {
+				return nil, p.errorf("Unicode property of strings requires a non-negated Unicode set")
+			}
+			property := strings.TrimPrefix(prop, "string-property:")
+			data, ok := regexpUnicodeStringProperties[property]
+			if !ok {
+				return nil, p.errorf("unsupported Unicode property %q", name)
+			}
+			children := make([]*classExpr, 0, 2)
+			if len(data.ranges) != 0 {
+				children = append(children, &classExpr{kind: classExprTerm, term: classTerm{ranges: append([]classRange(nil), data.ranges...)}})
+			}
+			if len(data.strings) != 0 {
+				children = append(children, &classExpr{kind: classExprStringSet, strings: data.strings})
+			}
+			return &node{kind: nodeClass, set: &classExpr{kind: classExprUnion, children: children}, ignoreCase: p.flags.IgnoreCase}, nil
+		}
 		return class(classTerm{property: prop, negated: c == 'P'}), nil
 	case 'k':
 		if p.peek() == '<' && (p.flags.Unicode || p.hasNamedCaptures) {
@@ -891,40 +909,43 @@ func (p *parser) classStringDisjunction() (*node, error) {
 func ecmaWhitespaceRanges() []classRange {
 	return []classRange{{'\t', '\r'}, {' ', ' '}, {0xa0, 0xa0}, {0x1680, 0x1680}, {0x2000, 0x200a}, {0x2028, 0x2029}, {0x202f, 0x202f}, {0x205f, 0x205f}, {0x3000, 0x3000}, {0xfeff, 0xfeff}}
 }
-func normalizePropertyName(s string) string {
-	s = strings.ToLower(s)
-	s = strings.ReplaceAll(s, "_", "")
-	s = strings.ReplaceAll(s, "-", "")
-	s = strings.ReplaceAll(s, " ", "")
-	return s
-}
 func canonicalUnicodeProperty(s string) (string, bool) {
 	parts := strings.SplitN(s, "=", 2)
 	if len(parts) == 1 {
-		v := normalizePropertyName(parts[0])
-		cats := map[string]string{"l": "L", "letter": "L", "lu": "Lu", "uppercaseletter": "Lu", "ll": "Ll", "lowercaseletter": "Ll", "lt": "Lt", "lm": "Lm", "lo": "Lo", "m": "M", "n": "N", "nd": "Nd", "decimalnumber": "Nd", "p": "P", "s": "S", "z": "Z", "c": "C", "white_space": "White_Space", "whitespace": "White_Space", "alphabetic": "Alphabetic", "ascii": "ASCII", "any": "Any", "assigned": "Assigned", "idstart": "ID_Start", "idcontinue": "ID_Continue"}
-		if c, ok := cats[v]; ok {
-			if _, exists := unicode.Categories[c]; exists {
-				return "gc:" + c, true
-			}
-			return "binary:" + c, true
+		name := parts[0]
+		if property, ok := regexpUnicodeStringPropertyAliases[name]; ok {
+			return "string-property:" + property, true
 		}
-		for name := range unicode.Properties {
-			if normalizePropertyName(name) == v {
-				return "binary:" + name, true
-			}
+		if category, ok := regexpUnicodeGeneralCategoryAliases[name]; ok {
+			return "gc:" + category, true
+		}
+		if name == "Any" || name == "ASCII" || name == "Assigned" {
+			return "binary:" + name, true
+		}
+		if property, ok := regexpUnicodeBinaryAliases[name]; ok {
+			return "binary:" + property, true
 		}
 		return "", false
 	}
-	key, value := normalizePropertyName(parts[0]), normalizePropertyName(parts[1])
-	if key == "gc" || key == "generalcategory" {
-		return canonicalUnicodeProperty(value)
+	key, ok := regexpUnicodePropertyAliases[parts[0]]
+	if !ok {
+		return "", false
 	}
-	if key == "sc" || key == "script" || key == "scx" || key == "scriptextensions" {
-		for name := range unicode.Scripts {
-			if normalizePropertyName(name) == value {
-				return "script:" + name, true
+	value := parts[1]
+	switch key {
+	case "gc":
+		if category, ok := regexpUnicodeGeneralCategoryAliases[value]; ok {
+			return "gc:" + category, true
+		}
+	case "sc", "scx":
+		if script, ok := regexpUnicodeScriptAliases[value]; ok {
+			if key == "scx" {
+				if code, ok := regexpUnicodeScriptCodeByName[script]; ok {
+					return "script-extension:" + code + "|" + script, true
+				}
+				return "", false
 			}
+			return "script:" + script, true
 		}
 	}
 	return "", false
@@ -936,35 +957,42 @@ func unicodePropertyContains(c rune, property string) bool {
 	}
 	switch parts[0] {
 	case "gc":
-		return unicode.Is(unicode.Categories[parts[1]], c)
+		return unicodeRangeContains(regexpUnicodeGeneralCategoryRanges[parts[1]], c)
 	case "script":
-		return unicode.Is(unicode.Scripts[parts[1]], c)
+		return unicodeRangeContains(regexpUnicodeScriptRanges[parts[1]], c)
+	case "script-extension":
+		values := strings.SplitN(parts[1], "|", 2)
+		if len(values) != 2 {
+			return false
+		}
+		return unicodeScriptExtensionContains(c, values[0], values[1])
 	case "binary":
 		switch parts[1] {
-		case "White_Space":
-			for _, r := range ecmaWhitespaceRanges() {
-				if c >= r.lo && c <= r.hi {
-					return true
-				}
-			}
-			return false
 		case "ASCII":
 			return c <= 0x7f
 		case "Any":
 			return c >= 0 && c <= unicode.MaxRune
 		case "Assigned":
-			return !unicode.Is(unicode.Categories["C"], c)
-		case "Alphabetic":
-			return unicode.IsLetter(c) || unicode.Is(unicode.Categories["Nl"], c)
-		case "ID_Start":
-			return isIdentifierStart(c)
-		case "ID_Continue":
-			return isIdentifierContinue(c)
-		default:
-			return unicode.Is(unicode.Properties[parts[1]], c)
+			return !unicodeRangeContains(regexpUnicodeUnassignedRanges, c)
 		}
+		return unicodeRangeContains(regexpUnicodeBinaryPropertyRanges[parts[1]], c)
 	}
 	return false
+}
+
+func unicodeRangeContains(ranges []classRange, c rune) bool {
+	index := sort.Search(len(ranges), func(i int) bool { return ranges[i].hi >= c })
+	return index < len(ranges) && ranges[index].lo <= c
+}
+
+func unicodeScriptExtensionContains(c rune, code, script string) bool {
+	index := sort.Search(len(regexpScriptExtensionOverrides), func(i int) bool {
+		return regexpScriptExtensionOverrides[i].hi >= c
+	})
+	if index < len(regexpScriptExtensionOverrides) && regexpScriptExtensionOverrides[index].lo <= c {
+		return strings.Contains(regexpScriptExtensionOverrides[index].values, "|"+code+"|")
+	}
+	return unicodeRangeContains(regexpUnicodeScriptRanges[script], c)
 }
 
 func (p *parser) characterClass() (*node, error) {
