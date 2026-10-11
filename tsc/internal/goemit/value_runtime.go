@@ -38,6 +38,7 @@ const (
  tsCollectionKind
  tsTypedArrayKind
  tsArrayBufferKind
+ tsDataViewKind
  tsBigIntKind
  tsSymbolKind
 )
@@ -61,6 +62,7 @@ func tsUint64Value(value uint64)tsValue{return tsValue{kind:tsUint64Kind,number:
 // Reference constructors retain GC-visible pointers without Go interface boxes.
 func tsObjectValue(value *tsObject)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsObjectKind}}
 func tsArrayValue(value *tsArray)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsArrayKind}}
+func tsDataViewValue(value *tsDataView)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsDataViewKind}}
 func tsFunctionValue(value *tsFunction)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsFunctionKind}}
 func tsClassValue(value *tsClass)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsClassKind}}
 func tsRegExpValue(value *tsRegExp)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsRegExpKind}}

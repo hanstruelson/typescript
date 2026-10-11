@@ -110,6 +110,19 @@ func TestGoECMAScriptRegex(t *testing.T) {
 	}
 }
 
+func TestGoRegExpSymbolProtocols(t *testing.T) {
+	source := `const r=/a/g;const custom:any={lastIndex:0,[Symbol.match](s:string){return ["custom",s]},[Symbol.replace](s:string,replacement:string){return s+replacement}};console.log("ba".match(custom).join("|"),"x".replace(custom,"!"));r.lastIndex=1;console.log(r.test("ba"),r.lastIndex);const sticky=/a/y;sticky.lastIndex=1;console.log(sticky.exec("ba")[0],sticky.lastIndex);try{"x".match({[Symbol.match]:1} as any);}catch(e){console.log(e.name)};`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	want := javascriptOutput(t, source)
+	if got != want {
+		t.Fatalf("Go:\n%s\nJavaScript:\n%s", got, want)
+	}
+}
+
 func TestGoSyntaxLowering(t *testing.T) {
 	source := `const original={z:3,a:1,"2":2,"1":1};const {a:renamed=10,z,...rest}=original;const [first,,third=30,...tail]=[1,2,undefined,4,5];console.log(renamed,z,rest["1"],first,third,tail[0],tail[1]);const copy={...original,z:9};for(const key in copy){console.log(key,copy[key]);}function unpack({value=10},{nested:{x}}={nested:{x:3}},...items){console.log(value,x,items.length,items[0]);}unpack({},undefined,4,5);function sum(a:number,b:number):number{return a+b;}console.log(sum(...[2,3]));console.log([..."A😀B"].length);let result=0;for(let i=0;i<3;i++){switch(i){case 0:result+=1;break;case 1:result+=2;continue;default:result+=3;}console.log("loop",i);}console.log(result);switch(2){case 1:console.log("wrong");break;default:console.log("default");case 2:console.log("two");case 3:console.log("fallthrough");}console.log(Object.keys(copy)[0],Object.values(copy)[0],Object.entries(copy)[0][0],Object.hasOwn(copy,"a"));const weird={"\ud800":1,"\udc00":2};console.log(weird["\ud800"],weird["\udc00"],Object.keys(weird)[0].charCodeAt(0));console.log(String.raw({raw:["a","b"]}),String.raw({raw:["a","b"]},"X"));`
 	source += "console.log(String.raw`a\\nb${10}c`);"

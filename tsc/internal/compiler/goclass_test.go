@@ -161,7 +161,6 @@ func TestGoClassLayout(t *testing.T) {
 
 func TestGoClassDiagnostics(t *testing.T) {
 	for _, source := range []string{
-		`class A {#age:number=1;}`,
 		`function base(){return 0;}class A extends base(){}`,
 		`class A extends B {}class B extends A {}`,
 	} {
@@ -178,6 +177,47 @@ func TestGoClassDiagnostics(t *testing.T) {
 				t.Fatalf("expected diagnostic and no output: %+v", result)
 			}
 		})
+	}
+}
+
+func TestGoPrivateClassMembers(t *testing.T) {
+	source := `class Counter{#value:int64=1;static #instances:int64=0;#inc(){this.#value++;return this.#value;}static make(){Counter.#instances++;return new Counter();}read(){return this.#value;}next(){return this.#inc();}}const a=Counter.make(),b=Counter.make();console.log(a.read(),a.next(),b.read(),Object.hasOwn(a,"#value"));`
+	text := emitGoProgram(t, source)
+	got, err := runGoProgram(t, text, false)
+	if err != nil {
+		t.Fatalf("Go: %v\n%s", err, got)
+	}
+	if got != "1 2 1 false\n" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestGoEarlyErrors(t *testing.T) {
+	for _, source := range []string{
+		`function strict(){"use strict";arguments=1;}`,
+		`function* invalid(a=yield 1){yield a;}`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			fs := bundled.WrapFS(vfstest.FromMap(map[string]string{"/src/input.ts": source}, tspath.CaseSensitive))
+			options := core.CompilerOptions{Target: core.ScriptTargetGo, OutDir: "/out"}
+			p := compiler.NewProgram(compiler.ProgramOptions{Config: tsoptions.NewParsedCommandLine(&options, []tspath.RootedFilePath{"/src/input.ts"}, nil, "/src", fs.CaseSensitivity()), Host: compiler.NewCompilerHost(fs, bundled.LibPath(), nil, nil, nil)})
+			result := p.Emit(context.Background(), compiler.EmitOptions{WriteFile: func(path tspath.RootedFilePath, text string, data *compiler.WriteFileData) error { return nil }})
+			if !result.EmitSkipped || len(result.Diagnostics) == 0 {
+				t.Fatalf("expected early diagnostic, got %+v", result)
+			}
+		})
+	}
+}
+
+func TestGoDynamicFieldMutationPromotesStorage(t *testing.T) {
+	source := `class Box{value=1;read(){return this.value;}}function mutate(value){value.value="changed";}const box=new Box();mutate(box);console.log(box.read(),box.value);`
+	text := emitGoProgram(t, source)
+	got, err := runGoProgram(t, text, false)
+	if err != nil {
+		t.Fatalf("Go: %v\n%s", err, got)
+	}
+	if got != "changed changed\n" {
+		t.Fatalf("got %q", got)
 	}
 }
 

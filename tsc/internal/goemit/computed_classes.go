@@ -4,13 +4,23 @@ import (
 	"fmt"
 	"github.com/microsoft/TypeScript/tsc/internal/ast"
 	"strconv"
+	"strings"
 )
 
 func classMemberName(member *ast.Node) string {
 	if member.Name().Kind == ast.KindComputedPropertyName {
 		return fmt.Sprintf("@computed:%d", member.Pos())
 	}
-	return member.Name().Text()
+	return classMemberAccessName(member.Name())
+}
+func classMemberAccessName(name *ast.Node) string {
+	if name != nil && (name.Kind == ast.KindPrivateIdentifier || strings.HasPrefix(name.Text(), "#")) {
+		return "@private:" + name.Text()
+	}
+	if name == nil {
+		return ""
+	}
+	return name.Text()
 }
 func classKeyExpression(class, name string) string {
 	if len(name) > 10 && name[:10] == "@computed:" {

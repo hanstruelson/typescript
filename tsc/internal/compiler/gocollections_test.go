@@ -33,6 +33,36 @@ func TestGoArrayMethods(t *testing.T) {
 		t.Fatalf("got %q, want %q: %v", got, want, err)
 	}
 }
+
+func TestGoGenericArrayPrototypeReceivers(t *testing.T) {
+	source := `const a:any={0:3,2:1,length:3};console.log(Array.prototype.map.call(a,(x:any)=>x===undefined?"u":x*2).join(","));console.log(Array.prototype.slice.call(a,0,3).join("|"));Array.prototype.reverse.call(a);console.log(a[0],a[1],a[2],a.length);Array.prototype.fill.call(a,9,1,3);console.log(a[0],a[1],a[2]);const b:any={0:"a",2:"c",length:3};console.log(Array.prototype.includes.call(b,undefined),Array.prototype.indexOf.call(b,"c"));`
+	want := javascriptOutput(t, source)
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
+func TestGoArrayPropertyDescriptors(t *testing.T) {
+	source := `const a:any[]=[];Object.defineProperty(a,"0",{value:7,writable:false,enumerable:false,configurable:false});console.log(a.length,a[0],Object.keys(a).join(","),Object.getOwnPropertyDescriptor(a,"0").writable);try{a[0]=8;}catch(e){console.log(e.name)};Object.defineProperty(a,"1",{get(){return 9},enumerable:true,configurable:true});console.log(a.length,a[1],Object.keys(a).join(","),Object.getOwnPropertyDescriptor(a,"1").get!==undefined);delete a[1];console.log(a.length,1 in a);`
+	want := javascriptOutput(t, source)
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
+func TestGoSparseArrayReflection(t *testing.T) {
+	source := `const a:any[]=[];a[3]=4;a.extra=9;Object.defineProperty(a,"1",{value:2,enumerable:false,configurable:true});console.log(a.length,Object.keys(a).join(","),Object.getOwnPropertyNames(a).join(","),Reflect.ownKeys(a).join(","));console.log(0 in a,1 in a,2 in a,3 in a,a.extra);delete a[1];console.log(a.length,1 in a,Object.getOwnPropertyNames(a).join(","));a.length=2;console.log(a.length,3 in a,Object.keys(a).join(","));`
+	want := javascriptOutput(t, source)
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
 func TestGoTypedArrays(t *testing.T) {
 	source := `const a=new Float64Array([1,2,3]);a[1]=4.5;const view=a.subarray(1);view[0]=7.5;const copy=a.slice();copy[0]=99;console.log(a.length,a.byteLength,a.BYTES_PER_ELEMENT,a.join(","),copy[0]);a.set(a.subarray(0,2),1);console.log(a.join(","));console.log(a.map(x=>x*2).join(","),a.filter(x=>x>1).join(","),a.reduce((sum,x)=>sum+x,0));console.log(new Int8Array([128,-129,257,NaN]).join(","));console.log(new Uint8ClampedArray([-.5,.5,1.5,2.5,255.5,NaN]).join(","));console.log(new Int16Array([32768,-32769]).join(","),new Uint16Array([-1,65537]).join(","));console.log(new Int32Array([2147483648,4294967297]).join(","),new Uint32Array([-1,4294967297]).join(","));const f=new Float32Array([1/3]);console.log(f[0]);console.log([...new Uint8Array([3,1,2]).sort()].join(","));const z=new Float64Array(2);z[9]=7;console.log(z[9],z.length,z[0]);`
 	want := javascriptOutput(t, source)
@@ -53,6 +83,16 @@ func TestGoArrayConstructors(t *testing.T) {
 }
 func TestGoArrayBufferViews(t *testing.T) {
 	source := `const buffer=new ArrayBuffer(16);const a=new Uint32Array(buffer);const b=new Uint8Array(buffer);a[0]=258;console.log(buffer.byteLength,a.length,b.length,a.buffer===buffer,b.buffer===buffer,b[0],b[1]);const tail=new Uint32Array(buffer,4,2);tail[0]=7;console.log(a[1],tail.byteOffset,tail.byteLength,tail.subarray(1).byteOffset,tail.subarray(1).buffer===buffer);const copy=buffer.slice(0,4);const copied=new Uint32Array(copy);copied[0]=9;console.log(a[0],copied[0],copy===buffer,buffer instanceof ArrayBuffer);try{new Uint32Array(buffer,1);}catch(e){console.log("alignment");}try{new Float64Array(buffer,8,2);}catch(e){console.log("bounds");}const empty=new Uint8Array(buffer,16);console.log(empty.length,empty.byteOffset);`
+	want := javascriptOutput(t, source)
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
+func TestGoDataViewAndResizableArrayBuffer(t *testing.T) {
+	source := `const buffer=new ArrayBuffer(16,{maxByteLength:32});const view=new DataView(buffer,2,12);view.setUint16(0,258);view.setInt32(2,-7,true);view.setFloat64(4,1.5,true);view.setBigUint64(0,123n,true);console.log(buffer.resizable,buffer.maxByteLength,buffer.byteLength,view.byteOffset,view.byteLength,view.getBigUint64(0,true),view.getUint16(0,true),view.getInt32(2,true),view.getFloat64(4,true),view instanceof DataView,ArrayBuffer.isView(view),Object.prototype.toString.call(view));buffer.resize(24);console.log(buffer.byteLength,view.byteLength,view.getUint8(0));buffer.resize(4);console.log(buffer.byteLength);try{view.getUint8(0)}catch(e){console.log(e.name)};try{buffer.resize(33)}catch(e){console.log(e.name)};const fixed=buffer.transferToFixedLength();console.log(buffer.byteLength,fixed.byteLength,fixed.resizable,fixed.maxByteLength);const detached=new DataView(new ArrayBuffer(2));detached.buffer.transfer();try{detached.getUint8(0)}catch(e){console.log(e.name)}`
 	want := javascriptOutput(t, source)
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	got, err := runGoProgram(t, text, true)
@@ -90,6 +130,25 @@ func TestGoTypedArrayNativeAccess(t *testing.T) {
 	got, err := runGoProgram(t, text, true)
 	if err != nil || got != "7.5 1 255\n9 9\n" {
 		t.Fatalf("%q: %v", got, err)
+	}
+}
+
+func TestGoBigIntTypedArrays(t *testing.T) {
+	source := `const a=new BigInt64Array([1n,-2n,18446744073709551615n]);const b=new BigUint64Array([1n,-1n]);a[1]=-3n;b[0]=2n;console.log(a.join(","),b.join(","),typeof a[0],a.BYTES_PER_ELEMENT,a.buffer.byteLength);const view=new BigInt64Array(a.buffer,8,2);console.log(view[0].toString(),view[1].toString());try{a[0]=1;}catch(e){console.log(e.name)};console.log(a.map(x=>x+1n).join(","));const copy=new BigInt64Array(a);copy.sort();copy.fill(-4n,0,1);console.log(copy.join(","));`
+	want := javascriptOutput(t, source)
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
+func TestGoFloat16TypedArray(t *testing.T) {
+	source := `const a=new Float16Array([1.5,1/3,65504,Infinity]);const view=new Float16Array(a.buffer);console.log(a.BYTES_PER_ELEMENT,a.byteLength,a.join(","),view[0],view[1]);a[0]=2.25;console.log(view[0]);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != "2 8 1.5,0.333251953125,65504,Infinity 1.5 0.333251953125\n2.25\n" {
+		t.Fatalf("got %q: %v", got, err)
 	}
 }
 func TestGoArrayFlattenAndReplace(t *testing.T) {

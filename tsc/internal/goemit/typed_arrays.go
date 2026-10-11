@@ -46,6 +46,8 @@ func (b *machineBuilder) nativeArrayShape(node *ast.Node, depth int) (string, st
 		return name, "int32"
 	case "Uint32Array":
 		return name, "uint32"
+	case "BigInt64Array", "BigUint64Array":
+		return name, "bigint"
 	}
 	return "", ""
 }
@@ -54,6 +56,9 @@ func (b *machineBuilder) nativeArrayRead(node *ast.Node, receiver, key string) s
 		return "tsGrowableArrayRead[" + p.goType() + "](" + receiver + "," + key + "," + strconv.Quote(p.kind) + ")"
 	}
 	if name, shape := b.nativeArrayShape(node, 0); shape != "" {
+		if shape == "bigint" {
+			return "tsBigIntArrayRead(" + receiver + "," + key + "," + strconv.Quote(name) + ")"
+		}
 		return "tsNativeArrayRead[" + shape + "](" + receiver + "," + key + "," + strconv.Quote(name) + ")"
 	}
 	return "tsGet(" + receiver + "," + key + ")"
@@ -63,6 +68,9 @@ func (b *machineBuilder) nativeArrayWrite(node *ast.Node, receiver, key, value s
 		return "tsGrowableArrayWrite[" + p.goType() + "](" + receiver + "," + key + "," + value + "," + strconv.Quote(p.kind) + ")"
 	}
 	if name, shape := b.nativeArrayShape(node, 0); shape != "" {
+		if shape == "bigint" {
+			return "tsBigIntArrayWrite(" + receiver + "," + key + "," + value + "," + strconv.Quote(name) + ")"
+		}
 		return "tsNativeArrayWrite[" + shape + "](" + receiver + "," + key + "," + value + "," + strconv.Quote(name) + ")"
 	}
 	return "tsSet(" + receiver + "," + key + "," + value + ")"
@@ -70,6 +78,9 @@ func (b *machineBuilder) nativeArrayWrite(node *ast.Node, receiver, key, value s
 
 const NativeArrayAccessRuntime = `
 type tsNativeArrayStorage[T tsNativeNumber]struct {values []T}
+type tsBigIntArrayStorage struct {signed []int64;unsigned []uint64}
+func tsBigIntArrayRead(value,key tsValue,name string)tsValue{if value.kind==tsTypedArrayKind{array:=(*tsTypedArray)(value.ref);if array.name==name&&key.kind==tsNumberKind{index:=key.number;if index>=0&&index<float64(array.length)&&math.Trunc(index)==index{return array.readValue(int(index))}}};return tsGet(value,key)}
+func tsBigIntArrayWrite(value,key,item tsValue,name string)tsValue{if value.kind==tsTypedArrayKind{array:=(*tsTypedArray)(value.ref);if array.name==name&&key.kind==tsNumberKind{index:=key.number;if index>=0&&index<float64(array.length)&&math.Trunc(index)==index{array.writeValue(int(index),item);return item}}};return tsSet(value,key,item)}
 func tsNativeArrayRead[T tsNativeNumber](value,key tsValue,name string)tsValue{if value.kind==tsTypedArrayKind{array:=(*tsTypedArray)(value.ref);if array.name==name&&key.kind==tsNumberKind{index:=key.number;if index>=0&&index<float64(array.length)&&math.Trunc(index)==index{return tsNumberValue(float64((*tsNativeArrayStorage[T])(array.storage).values[int(index)]))}}};return tsGet(value,key)}
 func tsNativeArrayWrite[T tsNativeNumber](value,key,item tsValue,name string)tsValue{if value.kind==tsTypedArrayKind{array:=(*tsTypedArray)(value.ref);if array.name==name&&key.kind==tsNumberKind{index:=key.number;if index>=0&&index<float64(array.length)&&math.Trunc(index)==index{number:=tsNumber(tsToPrimitive(item));var result T;switch name{case "Float64Array","Float32Array":result=T(number);case "Uint8ClampedArray":if math.IsNaN(number)||number<=0{number=0}else if number>=255{number=255}else{number=math.RoundToEven(number)};result=T(number);default:result=T(tsNumberUint32(number))};(*tsNativeArrayStorage[T])(array.storage).values[int(index)]=result;return item}}};return tsSet(value,key,item)}
 `

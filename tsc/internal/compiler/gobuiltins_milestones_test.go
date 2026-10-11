@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/microsoft/TypeScript/tsc/internal/core"
 )
 
 func TestGoMathErrorMilestoneDifferential(t *testing.T) {
@@ -472,6 +474,26 @@ func TestGoReflectReceiverAndFailureDifferential(t *testing.T) {
 	}
 }
 
+func TestGoReflectArrayAndGlobalThis(t *testing.T) {
+	source := `const a:any=[1,2];console.log(Reflect.get(a,"0"),Reflect.set(a,"1",4),Reflect.ownKeys(a).join(","));console.log(Reflect.defineProperty(a,"2",{value:8,enumerable:true,configurable:true}),a.length,a[2]);const mapped=Reflect.apply(Array.prototype.map,{0:2,1:3,length:2},[(x:any)=>x*2]);console.log(mapped.join("|"));globalThis.answer=42;console.log(globalThis===globalThis.globalThis,Object.hasOwn(globalThis,"answer"),globalThis.answer,delete globalThis.answer,Object.hasOwn(globalThis,"answer"));`
+	want := javascriptOutput(t, source)
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
+func TestGoSloppyImplicitGlobals(t *testing.T) {
+	source := `implicitValue=7;console.log(implicitValue,globalThis.implicitValue);delete globalThis.implicitValue;console.log("implicitValue" in globalThis);`
+	want := "7 7\nfalse\n"
+	text := emitGoOptions(t, source, core.CompilerOptions{})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
 func TestGoAsyncDelegationFailuresDifferential(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -519,5 +541,48 @@ func TestGoNativeErrorStackAccessor(t *testing.T) {
 	want := "get stack 0 set stack 1 false true\nstring true false\ntrue true\ncustom true true\ntrue\ntrue\nstring true\nstring true\n"
 	if got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestGoSuppressedError(t *testing.T) {
+	source := `const first={x:1},second={x:2};const e=new SuppressedError(first,second,"cleanup",{cause:42});console.log(e instanceof Error,e instanceof SuppressedError,e.error===first,e.suppressed===second,e.message,e.name,SuppressedError.length);console.log(Object.keys(e).length,Object.hasOwn(e,"cause"));const d=Object.getOwnPropertyDescriptor(e,"error");console.log(d.writable,d.enumerable,d.configurable);const empty=SuppressedError();console.log(Object.hasOwn(empty,"message"),Object.hasOwn(empty,"error"),empty.error,empty.suppressed);class Child extends SuppressedError{}const child=new Child(1,2,"child");console.log(child instanceof Child,child instanceof SuppressedError,child.error,child.suppressed,child.message);`
+	got, err := runGoProgram(t, emitGoProgram(t, source), false)
+	want := "true true true true cleanup SuppressedError 3\n0 false\ntrue false true\nfalse true undefined undefined\ntrue true 1 2 child\n"
+	if err != nil || got != want {
+		t.Fatalf("got %q, want %q: %v", got, want, err)
+	}
+}
+
+func TestGoGeneratorDelegatedGetterFailure(t *testing.T) {
+	source := `const sentinel={};let caught;const iterator={next(){return {done:false};}};Object.defineProperty(iterator,"throw",{get(){throw sentinel;}});const iterable={[Symbol.iterator](){return iterator;}};function* worker(){try{yield* iterable;}catch(e){caught=e;}finally{console.log("finally");}}const g=worker();console.log(g.next().done,caught===undefined);const result=g.throw();console.log(result.value,result.done,caught===sentinel);`
+	got, err := runGoProgram(t, emitGoProgram(t, source), false)
+	want := "false true\nfinally\nundefined true true\n"
+	if err != nil || got != want {
+		t.Fatalf("got %q want %q: %v", got, want, err)
+	}
+}
+
+func TestGoFunctionDefaultNames(t *testing.T) {
+	source := `class Container{static method({gen=function*(){},named=function* original(){}}={}){console.log(gen.name,named.name);}}Container.method();const plain=function(){};const arrow=()=>1;const object={handler:function(){}};console.log(plain.name,arrow.name,object.handler.name);function defaults(fn=function(){}){console.log(fn.name);}defaults();`
+	got, err := runGoProgram(t, emitGoProgram(t, source), false)
+	want := "gen original\nplain arrow handler\nfn\n"
+	if err != nil || got != want {
+		t.Fatalf("got %q want %q: %v", got, want, err)
+	}
+}
+
+func TestGoClassMethodAndFieldMetadata(t *testing.T) {
+	source := `var C=class{a;b=42;m(){return 42;}};const c=new C();console.log(c.m(),c.m===C.prototype.m,Object.prototype.hasOwnProperty.call(c,"m"),Object.prototype.hasOwnProperty.call(C.prototype,"a"),Object.prototype.hasOwnProperty.call(C,"a"));const method=Object.getOwnPropertyDescriptor(C.prototype,"m");console.log(method.enumerable,method.configurable,method.writable);const field=Object.getOwnPropertyDescriptor(c,"a");console.log(field.value,field.enumerable,field.writable,field.configurable);`
+	got, err := runGoProgram(t, emitGoProgram(t, source), false)
+	want := "42 true false false false\nfalse true true\nundefined true true true\n"
+	if err != nil || got != want {
+		t.Fatalf("got %q want %q: %v", got, want, err)
+	}
+}
+
+func TestGoRuntimeErrorDiagnostic(t *testing.T) {
+	got, err := runGoProgram(t, emitGoProgram(t, `throw new Error("clear diagnostic");`), false)
+	if err == nil || !strings.Contains(got, "Error: clear diagnostic") {
+		t.Fatalf("missing readable error: %q, %v", got, err)
 	}
 }

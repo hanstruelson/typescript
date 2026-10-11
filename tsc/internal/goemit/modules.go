@@ -18,7 +18,7 @@ type ModuleInput struct {
 }
 
 func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*ast.Diagnostic) {
-	e := &emitter{file: input.File, resolver: input.Resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), targets: input.Targets}
+	e := &emitter{file: input.File, resolver: input.Resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), targets: input.Targets, implicitGlobals: make(map[string]bool)}
 	e.coerce = !options.CoerceAny.IsFalse()
 	e.strictNulls = options.GetStrictOptionValue(options.StrictNullChecks)
 	if options.SourceMap.IsTrue() || options.InlineSourceMap.IsTrue() {

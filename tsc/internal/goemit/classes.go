@@ -109,7 +109,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 			c.parent = e.classReference(expression)
 			if c.parent == nil && expression.Kind == ast.KindIdentifier && e.binding(expression) == nil {
 				switch expression.Text() {
-				case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError":
+				case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError", "SuppressedError":
 					c.baseError = expression.Text()
 					e.dynamicPrototypes = true
 					continue
@@ -166,7 +166,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 
 			}
 		case ast.KindPropertyDeclaration:
-			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
+			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindPrivateIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
 				e.fail(member, "class fields require ordinary literal names")
 				continue
 			}
@@ -179,7 +179,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 			}
 			c.fields[name] = member
 		case ast.KindMethodDeclaration:
-			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
+			if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindPrivateIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
 				e.fail(member, "methods require ordinary literal names")
 				continue
 			}
@@ -231,7 +231,7 @@ func (e *emitter) prepareClass(c *classInfo) {
 		if !ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) {
 			continue
 		}
-		if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
+		if member.Name() == nil || (member.Name().Kind != ast.KindIdentifier && member.Name().Kind != ast.KindPrivateIdentifier && member.Name().Kind != ast.KindStringLiteral && member.Name().Kind != ast.KindNumericLiteral && member.Name().Kind != ast.KindComputedPropertyName) {
 			e.fail(member, "static members require ordinary literal names")
 			continue
 		}
@@ -687,6 +687,13 @@ func (b *machineBuilder) classOf(node *ast.Node) *classInfo {
 	}
 	return c
 }
+func (b *machineBuilder) classMemberOf(node, name *ast.Node) *classInfo {
+	c := b.classOf(node)
+	if c == nil && name != nil && name.Kind == ast.KindPrivateIdentifier {
+		return b.undecoratedClassOf(node)
+	}
+	return c
+}
 func (b *machineBuilder) undecoratedClassOf(node *ast.Node) *classInfo {
 	if node == nil {
 		return nil
@@ -745,7 +752,8 @@ func (b *machineBuilder) classType(node *ast.Node) *classInfo {
 	return nil
 }
 func (b *machineBuilder) classProperty(node *ast.Node, receiver, name string) (string, bool) {
-	if b.e.dynamicPrototypes {
+	private := strings.HasPrefix(name, "@private:")
+	if b.e.dynamicPrototypes && !private {
 		if node.Kind == ast.KindSuperKeyword && b.declaring != nil && b.declaring.parent != nil {
 			cell := b.e.bindings[b.declaring.parent.node]
 			if cell != nil {
@@ -781,6 +789,9 @@ func (b *machineBuilder) classProperty(node *ast.Node, receiver, name string) (s
 		return "tsFunc(" + b.receiver + "." + implName(owner, name) + ")", true
 	}
 	c := b.classOf(node)
+	if c == nil && private {
+		c = b.undecoratedClassOf(node)
+	}
 	if c == nil {
 		return "", false
 	}

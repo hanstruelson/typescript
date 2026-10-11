@@ -124,7 +124,7 @@ func (e *emitter) closedOwnField(node *ast.Node) bool {
 		return false
 	}
 	for _, member := range classMembers(class.node).Nodes {
-		if member.Kind == ast.KindPropertyDeclaration && member.Name() != nil && classMemberName(member) == p.Name().Text() && ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) == static {
+		if member.Kind == ast.KindPropertyDeclaration && member.Name() != nil && classMemberName(member) == classMemberAccessName(p.Name()) && ast.HasSyntacticModifier(member, ast.ModifierFlagsStatic) == static {
 			return true
 		}
 	}

@@ -78,6 +78,12 @@ func syntaxPrimitive(node *ast.Node) primitive {
 	return primitive{}
 }
 func (e *emitter) primitive(node *ast.Node) primitive {
+	if e.reflectiveFields && node != nil && (node.Kind == ast.KindPropertyDeclaration || node.Kind == ast.KindParameter) {
+		// A field or parameter property reachable through unknown JavaScript
+		// writes must preserve the full value domain. Closed classes still take
+		// the typed path because reflectiveFields is false for them.
+		return primitive{}
+	}
 	if e.dynamicFieldAccess(node) {
 		return primitive{}
 	}

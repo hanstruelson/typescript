@@ -36,7 +36,10 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 			}
 		}
 	}
-	if node.Text() == "Map" || node.Text() == "Set" || node.Text() == "Array" || node.Text() == "ArrayBuffer" || isTypedArrayName(node.Text()) {
+	if b.e.implicitGlobals[node.Text()] {
+		return "tsGet(tsGlobalObject()," + strconv.Quote(node.Text()) + ")"
+	}
+	if node.Text() == "Map" || node.Text() == "Set" || node.Text() == "Array" || node.Text() == "ArrayBuffer" || node.Text() == "DataView" || isTypedArrayName(node.Text()) {
 		return "tsBuiltinClass(" + strconv.Quote(node.Text()) + ")"
 	}
 	switch node.Text() {
@@ -56,7 +59,7 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 		return "tsReflectModule()"
 	case "globalThis":
 		return "tsGlobalObject()"
-	case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError":
+	case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError", "SuppressedError":
 		return "tsErrorConstructor(" + strconv.Quote(node.Text()) + ")"
 	case "Date":
 		return "tsClassValue(tsNativeClass(\"Date\"))"
@@ -347,6 +350,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			}
 			return b.temp("tsNewArray(" + strings.Join(args, ",") + ")")
 		}
+		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil && n.Expression.Text() == "DataView" {
+			args := []string{}
+			if n.Arguments != nil { for _, arg := range n.Arguments.Nodes { args = append(args, b.expression(arg)) } }
+			return b.temp("tsNewDataView(" + strings.Join(args, ",") + ")")
+		}
 		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil && isTypedArrayName(n.Expression.Text()) {
 			args := []string{}
 			if n.Arguments != nil {
@@ -489,17 +497,29 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if value, ok := b.nativeMathCall(call); ok {
 			return value
 		}
-		if call.Expression.Kind == ast.KindPropertyAccessExpression && !hasSpread && !b.e.dynamicPrototypes {
+		if call.Expression.Kind == ast.KindPropertyAccessExpression && !hasSpread && (!b.e.dynamicPrototypes || strings.HasPrefix(classMemberAccessName(call.Expression.AsPropertyAccessExpression().Name()), "@private:")) {
 			property := call.Expression.AsPropertyAccessExpression()
-			name := property.Name().Text()
+			name := classMemberAccessName(property.Name())
 
 			var target string
+			if property.Expression.Kind == ast.KindThisKeyword && b.concrete != nil {
+				privateName := name
+				for key := range b.concrete.methods {
+					if strings.HasPrefix(key, "@private:") && (key == name || strings.HasSuffix(key, property.Name().Text())) {
+						privateName = key
+						break
+					}
+				}
+				if strings.HasPrefix(privateName, "@private:") && b.concrete.methods[privateName] != nil {
+					target = b.receiver + ".Call" + memberName(privateName)
+				}
+			}
 			if property.Expression.Kind == ast.KindSuperKeyword && b.declaring != nil && b.declaring.parent != nil {
 				method := b.declaring.parent.methods[name]
 				if method != nil {
 					target = b.receiver + "." + implName(b.declaring.parent.ownerOf(method), name)
 				}
-			} else if c := b.classOf(property.Expression); c != nil && !b.e.dynamicPrototypes && c.methods[name] != nil {
+			} else if c := b.classMemberOf(property.Expression, property.Name()); c != nil && (!b.e.dynamicPrototypes || property.Name().Kind == ast.KindPrivateIdentifier) && c.methods[name] != nil {
 				receiver := b.expression(property.Expression)
 				target = b.classTarget(property.Expression, receiver, c) + ".Call" + memberName(name)
 				if property.Expression.Kind == ast.KindThisKeyword {
@@ -525,13 +545,16 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				special := false
 				if property.Expression.Kind == ast.KindIdentifier {
 					switch property.Expression.Text() {
-					case "Math", "JSON", "Object", "console", "Promise", "String", "Array", "RegExp":
+					case "Math", "JSON", "Object", "console", "Promise", "String", "Array", "ArrayBuffer", "DataView", "RegExp":
+						special = b.e.binding(property.Expression) == nil
+					}
+					if !special && isTypedArrayName(property.Expression.Text()) {
 						special = b.e.binding(property.Expression) == nil
 					}
 				}
 				if !special {
 					receiver = b.expression(property.Expression)
-					callee = b.temp("tsGet(" + receiver + "," + strconv.Quote(property.Name().Text()) + ")")
+					callee = b.temp("tsGet(" + receiver + "," + strconv.Quote(classMemberAccessName(property.Name())) + ")")
 				}
 			}
 		}
@@ -568,13 +591,13 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if n.QuestionDotToken != nil {
 			b.e.fail(node, "optional property access is not supported")
 		}
-		name := node.Name().Text()
+		name := classMemberAccessName(node.Name())
 		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil {
 			if isTypedArrayName(n.Expression.Text()) && (name == "from" || name == "of") {
 				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsTypedArrayBuiltin(" + strconv.Quote(n.Expression.Text()) + "," + strconv.Quote(name) + ",args)})")
 			}
 			if n.Expression.Text() == "ArrayBuffer" && name == "isView" {
-				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsBooleanValue(tsArg(args,0).kind==tsTypedArrayKind)})")
+				return b.temp("tsFunc(func(args ...tsValue)tsValue{kind:=tsArg(args,0).kind;return tsBooleanValue(kind==tsTypedArrayKind||kind==tsDataViewKind)})")
 			}
 			if n.Expression.Text() == "Object" && name == "prototype" {
 				return b.temp("tsObjectPrototype()")
@@ -601,6 +624,10 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return b.typedTemp("float64(len("+storage+".values))", "float64")
 		}
 		receiver := b.expression(n.Expression)
+		if strings.HasPrefix(name, "@private:") && n.Expression.Kind == ast.KindThisKeyword && b.concrete != nil && b.concrete.fields[name] != nil {
+			target := b.receiver
+			return b.temp(target + ".Get" + memberName(name) + "()")
+		}
 		if c, ok := b.directOwnField(n.Expression, name); ok {
 			target := b.classTarget(n.Expression, receiver, c)
 			if !strings.HasPrefix(target, "tsView_") {
@@ -613,7 +640,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		if value, ok := b.classProperty(n.Expression, receiver, name); ok {
 			return b.temp(value)
 		}
-		return b.temp("tsGet(" + receiver + "," + strconv.Quote(name) + ")")
+		lookupName := name
+		if strings.HasPrefix(lookupName, "#") {
+			lookupName = "@private:" + lookupName
+		}
+		return b.temp("tsGet(" + receiver + "," + strconv.Quote(lookupName) + ")")
 	case ast.KindElementAccessExpression:
 		n := node.AsElementAccessExpression()
 		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.nativeNumericIndex(n.ArgumentExpression) {
@@ -776,25 +807,41 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 				return pointer + "." + method + "(" + value + ")"
 			}
 		}
+		if !strictFunction(b.owner) {
+			name := node.Text()
+			b.e.implicitGlobals[name] = true
+			return "tsGet(tsGlobalObject()," + strconv.Quote(name) + ")", func(value string) string {
+				return "tsSet(tsGlobalObject()," + strconv.Quote(name) + "," + value + ")"
+			}
+		}
 	}
 	if node.Kind == ast.KindPropertyAccessExpression {
 		n := node.AsPropertyAccessExpression()
 		if n.Expression.Kind == ast.KindSuperKeyword {
-			if b.declaring != nil && b.declaring.static && b.declaring.parent != nil && b.declaring.parent.fields[n.Name().Text()] != nil {
-				read, _ := b.classProperty(n.Expression, b.receiver, n.Name().Text())
+			privateName := classMemberAccessName(n.Name())
+			if b.declaring != nil && b.declaring.static && b.declaring.parent != nil && b.declaring.parent.fields[privateName] != nil {
+				read, _ := b.classProperty(n.Expression, b.receiver, privateName)
 				return read, func(value string) string {
-					if b.e.dynamicPrototypes {
-						return "tsSet(" + b.receiver + "," + strconv.Quote(n.Name().Text()) + "," + value + ")"
+					if b.e.dynamicPrototypes && n.Name().Kind != ast.KindPrivateIdentifier {
+						return "tsSet(" + b.receiver + "," + strconv.Quote(privateName) + "," + value + ")"
 					}
-					return b.receiver + ".Set" + memberName(n.Name().Text()) + "(" + value + ")"
+					return b.receiver + ".Set" + memberName(privateName) + "(" + value + ")"
 				}
 			}
 			b.e.fail(node, "super property assignment requires accessor lowering, which is not supported yet")
 			return "tsU", func(string) string { return "tsU" }
 		}
 		receiver := b.expression(n.Expression)
-		name := n.Name().Text()
+		name := classMemberAccessName(n.Name())
+		if n.Name().Kind == ast.KindPrivateIdentifier && n.Expression.Kind == ast.KindThisKeyword && b.concrete != nil && b.concrete.fields[name] != nil {
+			target := b.receiver
+			id := memberName(name)
+			return target + ".Get" + id + "()", func(value string) string { return target + ".Set" + id + "(" + value + ")" }
+		}
 		c := b.classOf(n.Expression)
+		if c == nil && strings.HasPrefix(name, "@private:") {
+			c = b.undecoratedClassOf(n.Expression)
+		}
 		if c != nil && c.fields[name] != nil {
 			target := b.classTarget(n.Expression, receiver, c)
 			if n.Expression.Kind == ast.KindThisKeyword {
@@ -809,7 +856,13 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 				return target + ".Set" + id + "(" + value + ")"
 			}
 		}
-		return "tsGet(" + receiver + "," + strconv.Quote(name) + ")", func(value string) string { return "tsSet(" + receiver + "," + strconv.Quote(name) + "," + value + ")" }
+		lookupName := name
+		if strings.HasPrefix(lookupName, "#") {
+			lookupName = "@private:" + lookupName
+		}
+		return "tsGet(" + receiver + "," + strconv.Quote(lookupName) + ")", func(value string) string {
+			return "tsSet(" + receiver + "," + strconv.Quote(lookupName) + "," + value + ")"
+		}
 	}
 	if node.Kind == ast.KindElementAccessExpression {
 		n := node.AsElementAccessExpression()
@@ -1311,7 +1364,7 @@ func (b *machineBuilder) callArgument(call *ast.CallExpression, index int) strin
 			return b.numericExpression(call.Arguments.Nodes[index], p)
 		}
 		if c := b.classOf(property.Expression); c != nil {
-			declaration = c.methods[property.Name().Text()]
+			declaration = c.methods[classMemberAccessName(property.Name())]
 		}
 	}
 	if declaration != nil && declaration.Kind == ast.KindVariableDeclaration {
@@ -1425,7 +1478,7 @@ func isBitwiseOperator(op string) bool {
 
 func isTypedArrayName(name string) bool {
 	switch name {
-	case "Float64Array", "Float32Array", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array":
+	case "Float16Array", "Float64Array", "Float32Array", "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array", "Uint32Array", "BigInt64Array", "BigUint64Array":
 		return true
 	}
 	return false

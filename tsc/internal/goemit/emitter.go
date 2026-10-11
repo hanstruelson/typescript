@@ -48,6 +48,7 @@ type emitter struct {
 	stableCallbacks     map[*ast.Node]*ast.Node
 	genericFunctions    map[*ast.Node]*genericFunction
 	specializationCalls []*ast.Node
+	implicitGlobals     map[string]bool
 }
 
 func (e *emitter) fail(node *ast.Node, message string) {
@@ -242,7 +243,7 @@ func (e *emitter) collect(node, owner *ast.Node) {
 // Emit retains normal compiler checking and output handling. Unsupported syntax
 // is diagnosed before tsValue output is written.
 func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver ReferenceResolver) (string, []*ast.Diagnostic) {
-	e := &emitter{file: file, resolver: resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string)}
+	e := &emitter{file: file, resolver: resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), implicitGlobals: make(map[string]bool)}
 	e.coerce = !options.CoerceAny.IsFalse()
 	e.legacyDecorators = options.ExperimentalDecorators.IsTrue()
 	if options.EmitDecoratorMetadata.IsTrue() {
@@ -259,7 +260,13 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 		return "", file.Diagnostics()
 	}
 	e.collect(file.AsNode(), file.AsNode())
+	e.analyzeEarlyErrors()
 	e.analyzePrototypes()
+	// Field representations are chosen while classes are prepared. Carry the
+	// reflection proof forward before that point so a class reachable through an
+	// unknown property write is represented dynamically; closed typed classes
+	// remain native and incur no check.
+	e.reflectiveFields = e.dynamicPrototypes
 	e.planNativeFunctions()
 	e.planGenericFunctions()
 	e.prepareClasses()
@@ -525,6 +532,15 @@ func (b *machineBuilder) finish() string {
 }
 
 func functionName(node *ast.Node) string {
+	if node != nil && node.Name() == nil && node.Parent != nil {
+		parent := node.Parent
+		switch parent.Kind {
+		case ast.KindBindingElement, ast.KindVariableDeclaration, ast.KindParameter, ast.KindPropertyDeclaration, ast.KindPropertyAssignment:
+			if name := parent.Name(); name != nil && (name.Kind == ast.KindIdentifier || name.Kind == ast.KindStringLiteral || name.Kind == ast.KindNumericLiteral) {
+				return name.Text()
+			}
+		}
+	}
 	if node != nil && node.Name() != nil {
 		if node.Name().Kind == ast.KindComputedPropertyName {
 			return ""
