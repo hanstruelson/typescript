@@ -35,24 +35,26 @@ func (b *machineBuilder) denseStorage(node *ast.Node, p primitive) string {
 }
 
 func (b *machineBuilder) denseRead(storage, key string, p primitive) string {
-	if p.nulls != 0 {
-		return "tsNullableRead[" + p.goType() + "](" + storage + ",float64(" + key + "))"
-	}
 	kind := b.tempType(key)
+	index := b.denseIndexValue(key)
+	if p.nulls != 0 {
+		return "tsNullableRead[" + p.goType() + "](" + storage + "," + index + ")"
+	}
 	if strings.HasPrefix(kind, "int") || strings.HasPrefix(kind, "uint") {
 		return "tsDenseReadInteger[" + p.goType() + "," + kind + "](" + storage + "," + key + ")"
 	}
-	return "tsDenseRead[" + p.goType() + "](" + storage + ",float64(" + key + "))"
+	return "tsDenseRead[" + p.goType() + "](" + storage + "," + index + ")"
 }
 func (b *machineBuilder) denseWrite(storage, key, value string, p primitive) string {
-	if p.nulls != 0 {
-		return "tsNullableWrite[" + p.goType() + "](" + storage + ",float64(" + key + ")," + value + ")"
-	}
 	kind := b.tempType(key)
+	index := b.denseIndexValue(key)
+	if p.nulls != 0 {
+		return "tsNullableWrite[" + p.goType() + "](" + storage + "," + index + "," + value + ")"
+	}
 	if strings.HasPrefix(kind, "int") || strings.HasPrefix(kind, "uint") {
 		return "tsDenseWriteInteger[" + p.goType() + "," + kind + "](" + storage + "," + key + "," + value + ")"
 	}
-	return "tsDenseWrite[" + p.goType() + "](" + storage + ",float64(" + key + ")," + value + ")"
+	return "tsDenseWrite[" + p.goType() + "](" + storage + "," + index + "," + value + ")"
 }
 
 const GrowableArrayRuntime = growableArrayBaseRuntime + NullableArrayRuntime + NativeCallbackRuntime

@@ -18,7 +18,9 @@ import (
 // pointer-based completion publication does not share mutable loop state.
 func TestRuntimeWorkers(t *testing.T) {
 	dir := t.TempDir()
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
+	regexEmitter := &emitter{}
+	regexConstructor := regexEmitter.compiledRegExp("(?<word>a)(b)", "dg", nil)
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + regexEmitter.regexText.String() + "\nfunc testGeneratedRegExp(loop *tsLoop) tsValue { return " + regexConstructor + " }\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,12 +37,22 @@ func TestNativeDateSetters(t *testing.T){
  invoke("setUTCSeconds",tsNumberValue(math.NaN()));if !math.IsNaN(tsNumber(invoke("getTime"))){t.Fatal("NaN setter")}
  invoke("setUTCFullYear",tsNumberValue(2000));if tsText(invoke("toISOString"))!="2000-01-01T00:00:00.000Z"{t.Fatal("invalid-date recovery")}
  if tsText(invoke("toGMTString"))!=tsText(invoke("toUTCString")){t.Fatal("GMT alias")}
- if loop.ecma!=nil{t.Fatal("Date initialized regexp engine")}
 }
 func TestNativeStringNumber(t *testing.T){
  cases:=[]struct{text string;want float64}{{"",0},{"\ufeff\u00a0 42 \u2029",42},{"0xFF",255},{"0o17",15},{"0b11",3},{".5",.5},{"1e309",math.Inf(1)},{"-0",math.Copysign(0,-1)},{"+Infinity",math.Inf(1)},{"1_000",math.NaN()},{"0x1p2",math.NaN()},{"Inf",math.NaN()},{"-0xff",math.NaN()},{"1e",math.NaN()},{"\u00851",math.NaN()}}
  for _,item:=range cases{got:=tsStringNumber(tsStringUTF8(item.text));if math.IsNaN(item.want){if !math.IsNaN(got){t.Errorf("%q: wanted NaN, got %v",item.text,got)}}else if got!=item.want||got==0&&math.Signbit(got)!=math.Signbit(item.want){t.Errorf("%q: wanted %v, got %v",item.text,item.want,got)}}
- loop:=tsNewLoop();if tsStringValue(loop,tsNumberValue(1e21)).String()!="1e+21"{t.Fatal("number formatting")};if loop.ecma!=nil{t.Fatal("numeric conversion initialized regexp engine")}
+ loop:=tsNewLoop();if tsStringValueWithLoop(loop,tsNumberValue(1e21)).String()!="1e+21"{t.Fatal("number formatting")}
+}
+func TestGeneratedRegExpRuntime(t *testing.T){
+	loop:=tsNewLoop();value:=testGeneratedRegExp(loop);regexp:=(*tsRegExp)(value.ref)
+ if regexp.flags!="dg"||!regexp.global||!regexp.hasIndices{t.Fatal("flags were not canonicalized")}
+ result:=tsRegExpExecValue(loop,regexp,tsStringUTF8("zab"));if result.kind!=tsArrayKind{t.Fatal("matcher did not return a result")};array:=(*tsArray)(result.ref)
+ if tsStringValue(array.at(0)).String()!="ab"||array.properties["index"].number!=1{t.Fatal("wrong full match or offset")}
+ groups:=(*tsObject)(array.properties["groups"].ref);if tsStringValue(groups.get(loop,"word")).String()!="a"{t.Fatal("named capture missing")}
+ indices:=(*tsArray)(array.properties["indices"].ref);full:=(*tsArray)(indices.at(0).ref);if full.values[0].number!=1||full.values[1].number!=3{t.Fatal("wrong index pair")}
+ indexGroups:=(*tsObject)(indices.properties["groups"].ref);named:=(*tsArray)(indexGroups.get(loop,"word").ref);if named.values[0].number!=1||named.values[1].number!=2{t.Fatal("named index pair missing")}
+ if regexp.lastIndex!=3||tsStringValue(tsRegExpGet(loop,value,"flags")).String()!="dg"{t.Fatal("global state or flags getter is wrong")}
+ if next:=tsRegExpExecValue(loop,regexp,tsStringUTF8("zab"));next!=tsNull||regexp.lastIndex!=0{t.Fatal("failed global exec did not reset lastIndex")}
 }
 func BenchmarkDenseInt64Push(b *testing.B){storage:=&tsGrowableStorage[int64]{values:make([]int64,0,1)};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{storage.values=storage.values[:0];tsDensePush(storage,int64(i))};runtime.KeepAlive(storage)}
 func BenchmarkAnyInt64Push(b *testing.B){loop:=tsNewLoop();array:=&tsArray{values:make([]tsValue,0,1)};b.ReportAllocs();b.ResetTimer();for i:=0;i<b.N;i++{array.values=array.values[:0];array.appendItems(loop,tsInt64Value(int64(i)))};runtime.KeepAlive(array)}
@@ -137,10 +149,6 @@ func TestReferenceDispatch(t *testing.T){
  if tsGet(loop,tsGet(loop,tsObjectValue(object),tsStringReference(tsStringUTF8("array"))),tsNumberValue(0)).number!=3{t.Fatal("nested reference lost")}
  tsSet(loop,tsObjectValue(object),tsStringReference(tsStringUTF8("value")),tsNumberValue(7))
  if tsGet(loop,tsObjectValue(object),tsStringReference(tsStringUTF8("value"))).number!=7{t.Fatal("object mutation lost")}
- for _,value:=range []tsValue{tsU,tsNull,tsNumberValue(1),tsBooleanValue(true),tsStringReference(tsStringUTF8("x")),tsArrayValue(array)}{
-  back:=tsFromECMA(tsToECMA(loop,value))
-  if value.kind==tsArrayKind{if tsGet(loop,back,tsNumberValue(0)).number!=3{t.Fatal("Goja array boundary")}}else if !tsStrictEqual(value,back){t.Fatal("Goja primitive boundary")}
- }
 }
 func TestWorkerContext(t *testing.T){
  parent:=tsNewLoop();shared:=&tsObject{values:map[string]tsValue{}};var workerLoop *tsLoop
@@ -213,7 +221,12 @@ func TestRuntimeInterfaceBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	allowed := map[string]bool{"tsUnwrap": true, "tsFromECMA": true, "tsECMAFailure": true, "tsNative": true, "tsPrimitiveValue": true}
+	// The sync.Pool assertion reads a value returned by Go's host API. These
+	// assertions do not unbox JavaScript values or create a TypeScript any path.
+	allowed := map[string]bool{
+		"tsNative": true, "tsPrimitiveValue": true, "tsUnwrap": true,
+		"tsRegExpResultVectorAllocate": true,
+	}
 	for _, decl := range file.Decls {
 		fn, ok := decl.(*ast.FuncDecl)
 		if !ok {
@@ -246,11 +259,18 @@ func TestRejectInterfaceValueFallback(t *testing.T) {
 }
 
 func TestMultipleReturnValueABI(t *testing.T) {
-	source, err := formatValueSource([]byte("package main\ntype tsValue struct{}\nfunc pair()(tsValue,bool){return tsValue{},false}\n"))
+	source, err := formatValueSource([]byte("package main\ntype tsValue struct{}\nfunc pair()(tsValue,tsValue){return tsValue{},tsValue{}}\nfunc pairBool()(tsValue,bool){return tsValue{},false}\nfunc consume(tsValue){}\nfunc use(m map[string]tsValue){_,groups:=pair();consume(groups);_,ok:=pairBool();consume(ok);_,exists:=m[\"x\"];consume(exists)}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(source), "tsBooleanValue") {
-		t.Fatal("native boolean return was boxed using the first result type")
+	formatted := string(source)
+	if strings.Contains(formatted, "consume(tsBooleanValue(groups))") {
+		t.Fatal("second tsValue result was inferred as bool")
+	}
+	if !strings.Contains(formatted, "consume(tsBooleanValue(ok))") {
+		t.Fatal("second bool result was not boxed at the value boundary")
+	}
+	if !strings.Contains(formatted, "consume(tsBooleanValue(exists))") {
+		t.Fatal("map comma-ok result was not inferred as bool")
 	}
 }

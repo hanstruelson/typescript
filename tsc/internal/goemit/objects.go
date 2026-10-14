@@ -1,6 +1,9 @@
 package goemit
 
 import (
+	"bytes"
+	"encoding/base64"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
@@ -221,6 +224,11 @@ func (b *machineBuilder) arrayLiteral(nodes []*ast.Node) string {
 	if len(nodes) > 0 && nodes[0].Parent != nil {
 		p = b.e.arrayElementPrimitive(nodes[0].Parent)
 	}
+	if (p.kind == "" || p.kind == "string") && p.nulls == 0 && len(nodes) >= 256 {
+		if encoded, ok := staticStringArrayData(nodes); ok {
+			return b.typedTemp("tsArrayFromStaticStringData(loop,"+strconv.Quote(encoded)+","+strconv.Quote(p.kind)+","+strconv.FormatBool(b.e.coerce)+")", "*tsArray")
+		}
+	}
 	constructor := "&tsArray{}"
 	if p.kind != "" {
 		constructor = fmt.Sprintf("tsNewGrowableArray(%q,%d,%t)", p.kind, p.nulls, b.e.coerce)
@@ -274,4 +282,26 @@ func (b *machineBuilder) arrayLiteral(nodes []*ast.Node) string {
 		}
 	}
 	return array
+}
+
+func staticStringArrayData(nodes []*ast.Node) (string, bool) {
+	var data bytes.Buffer
+	for _, node := range nodes {
+		if node == nil || (node.Kind != ast.KindStringLiteral && node.Kind != ast.KindNoSubstitutionTemplateLiteral) {
+			return "", false
+		}
+		units := stringLiteralUnits(node.Text())
+		if uint64(len(units)) > uint64(^uint32(0)) {
+			return "", false
+		}
+		var length [4]byte
+		binary.LittleEndian.PutUint32(length[:], uint32(len(units)))
+		data.Write(length[:])
+		for _, unit := range units {
+			var encoded [2]byte
+			binary.LittleEndian.PutUint16(encoded[:], unit)
+			data.Write(encoded[:])
+		}
+	}
+	return base64.RawStdEncoding.EncodeToString(data.Bytes()), true
 }

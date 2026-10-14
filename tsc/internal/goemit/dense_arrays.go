@@ -95,10 +95,31 @@ func (b *machineBuilder) denseArguments(nodes []*ast.Node, p primitive) []string
 }
 func (b *machineBuilder) denseIndex(node *ast.Node) string {
 	value := b.expression(node)
-	if (primitive{kind: b.tempType(value)}).numeric() {
+	return b.denseIndexValue(value)
+}
+
+// denseIndexValue converts a generated index expression to JavaScript's
+// numeric index representation. Statically typed numeric expressions stay
+// native; nullable native values are unboxed to their ordinary JS value first.
+func (b *machineBuilder) denseIndexValue(value string) string {
+	kind := b.tempType(value)
+	if strings.HasPrefix(kind, "tsOptional[") {
+		value += ".Raw()"
+		kind = "tsValue"
+	}
+	if (primitive{kind: kind}).numeric() {
 		return "float64(" + value + ")"
 	}
-	return b.comparisonBoundary(value, primitive{kind: "number"})
+	switch kind {
+	case "string":
+		value = "tsruntime.TsStringReference(" + value + ")"
+	case "boolean":
+		value = "tsruntime.TsBooleanValue(" + value + ")"
+	}
+	// An index expression may be statically `number` while lowering still
+	// yields a boxed TS value (for example, a string-array indexOf result plus
+	// one). Apply ToPrimitive/ToNumber at this boundary.
+	return "tsruntime.TsNumber(tsruntime.TsToPrimitive(loop," + value + "))"
 }
 func (b *machineBuilder) denseArrayCall(call *ast.CallExpression) (string, bool) {
 	if call.Expression.Kind != ast.KindPropertyAccessExpression {

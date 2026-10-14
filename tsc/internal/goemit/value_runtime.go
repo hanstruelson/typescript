@@ -16,7 +16,6 @@ const (
  tsClassKind
  tsInstanceKind
  tsRegExpKind
- tsECMAKind
  tsErrorKind
  tsPromiseKind
  tsTaskKind
@@ -66,7 +65,6 @@ func tsDataViewValue(value *tsDataView)tsValue{return tsValue{ref:unsafe.Pointer
 func tsFunctionValue(value *tsFunction)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsFunctionKind}}
 func tsClassValue(value *tsClass)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsClassKind}}
 func tsRegExpValue(value *tsRegExp)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsRegExpKind}}
-func tsECMAValue(value *tsECMAObject)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsECMAKind}}
 func tsErrorValue(value *tsRuntimeError)tsValue{if value.stack==nil{value.stack=tsCaptureErrorStack(value.name+": "+value.message)};return tsValue{ref:unsafe.Pointer(value),kind:tsErrorKind}}
 func tsPromiseValue(value *tsPromise)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsPromiseKind}}
 func tsTaskValue(value *tsTask)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsTaskKind}}

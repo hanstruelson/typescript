@@ -19,18 +19,24 @@ BSD licensed; keep its upstream LICENSE with the downloaded checkout.
 sample. Both strict and non-strict variants run unless metadata specifies one.
 Without `--all`, two deterministic tests per category provide an initial audit.
 Use `--filter built-ins/Date/` for a targeted run in a separate `--output`
-directory. Each fixture emits, builds, and executes in its own temporary directory;
-results are saved immediately and category checklists refresh every 100 variants.
-Use `--resume` with the same revisions and output directory after an interruption.
+directory. The runner emits each case separately, then combines up to eight
+generated case functions with one shared Go runtime and builds that package
+once. Each case runs in a fresh process, preserving per-test state isolation.
+If a combined build fails, the runner splits the group until it isolates the
+failing case. Preparation uses two workers by default; Go builds run one batch
+at a time. Tune `--batch-size`, `--jobs`, or select explicit `--go` and `--node`
+executables as needed. Use `--resume` only with the same source, runner, suite
+revisions, and output directory after an interruption.
 
 Reports include a compressed inventory of **all** source tests, individual result
 rows, totals and a category/failure checklist. The `complete` field stays false
 until the selected run finishes. Exclusions and adapter limitations are never
 counted as passes. Imported fixture files without metadata are not standalone tests.
 
-Dynamic compilation via direct `eval` and Function-family constructor calls is
-excluded. The initial scanner is conservative and textual: comments can match,
-and indirect aliases can escape detection. Every exclusion is listed in the
+Dynamic compilation via direct `eval`, Function-family constructor calls,
+runtime `RegExp(...)` construction, and `RegExp.prototype.compile` is excluded.
+The initial scanner is conservative and textual: comments can match, and
+indirect aliases can escape detection. Every exclusion is listed in the
 inventory for review. Ordinary Function prototype tests remain in scope.
 
 Module graphs and Test262 `$262` host operations (realms, agents, buffer detachment,
@@ -51,7 +57,7 @@ feature under test; investigate them before interpreting category totals.
 
 For long runs on a workspace with little disk space, use a dedicated cache on the
 same filesystem. Hard links reuse existing dependencies without duplicating them;
-the runner prunes only new, older objects in this private cache periodically and every 25 results:
+the runner prunes only new, older objects in this private cache at batch boundaries:
 
 ```sh
 cp -al /workspace/go-build-cache /workspace/test262-go-cache

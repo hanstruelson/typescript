@@ -64,7 +64,7 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 	case "Date":
 		return "tsClassValue(tsNativeClass(\"Date\"))"
 	case "Number":
-		return "tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{value:=tsArg(args,0);if len(args)==0{return tsNumberValue(0)};if value.kind==tsBigIntKind{number,_:=new(big.Float).SetInt((*big.Int)(value.ref)).Float64();return tsNumberValue(number)};return tsNumberValue(tsNumber(tsToPrimitive(value)))})"
+		return "tsNumberConstructor(loop)"
 	case "BigInt":
 		return "tsBigIntFunction()"
 	case "AbortSignal":
@@ -72,9 +72,9 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 	case "Buffer":
 		return "tsNodeBufferModule()"
 	case "String":
-		return "tsFunc(func(args ...tsValue)tsValue {if len(args)==0 {return tsStringUnits(nil)};if args[0].kind==tsSymbolKind{return tsStringReference(tsStringUTF8(tsSymbolText((*tsSymbol)(args[0].ref))))};return tsStringValue(args[0])})"
+		return "tsStringConstructor()"
 	case "RegExp":
-		return "tsFunc(tsNewRegExp)"
+		return "tsRegExpConstructor()"
 	case "NaN":
 		return "math.NaN()"
 	case "Infinity":
@@ -87,7 +87,10 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 		return b.builtin(node.Text())
 	}
 	if report {
-		b.e.fail(node, "unsupported or unresolved identifier "+node.Text())
+		// A free JavaScript identifier is resolved through the global object at
+		// runtime. This also preserves the normal ReferenceError when absent and
+		// permits host globals supplied by the embedding environment.
+		return "tsGlobalIdentifier(loop," + strconv.Quote(node.Text()) + ")"
 	}
 	return "tsU"
 }
@@ -113,6 +116,20 @@ func (b *machineBuilder) builtin(name string) string {
 		return "tsU"
 	}
 }
+func (b *machineBuilder) receiverValue(value string) string {
+	kind := b.tempType(value)
+	if strings.HasPrefix(kind, "tsOptional[") {
+		return value + ".raw()"
+	}
+	if kind == "*tsString" || kind == "bool" {
+		return "tsPrimitiveValue[" + kind + "](" + value + ")"
+	}
+	if (primitive{kind: kind}).goType() == kind && kind != "tsValue" {
+		return "tsPrimitiveValue[" + kind + "](" + value + ")"
+	}
+	return value
+}
+
 func (b *machineBuilder) expression(node *ast.Node) string {
 	if node == nil {
 		return "tsU"
@@ -140,7 +157,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			b.e.fail(node, "invalid regular expression literal")
 			return "tsU"
 		}
-		return b.temp("tsNewRegExp(" + stringLiteral(text[1:last]) + "," + stringLiteral(text[last+1:]) + ")")
+		return b.temp(b.e.compiledRegExp(text[1:last], text[last+1:], node))
 	case ast.KindTemplateExpression:
 		n := node.AsTemplateExpression()
 		parts := []string{stringLiteral(n.Head.Text())}
@@ -352,7 +369,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		}
 		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil && n.Expression.Text() == "DataView" {
 			args := []string{}
-			if n.Arguments != nil { for _, arg := range n.Arguments.Nodes { args = append(args, b.expression(arg)) } }
+			if n.Arguments != nil {
+				for _, arg := range n.Arguments.Nodes {
+					args = append(args, b.expression(arg))
+				}
+			}
 			return b.temp("tsNewDataView(" + strings.Join(args, ",") + ")")
 		}
 		if n.Expression.Kind == ast.KindIdentifier && b.e.binding(n.Expression) == nil && isTypedArrayName(n.Expression.Text()) {
@@ -382,13 +403,50 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			return b.temp("tsNewCollection(" + strconv.FormatBool(n.Expression.Text() == "Set") + suffix + ")")
 		}
 		if n.Expression.Kind == ast.KindIdentifier && n.Expression.Text() == "RegExp" && b.e.binding(n.Expression) == nil {
-			args := []string{}
+			args := []*ast.Node{}
 			if n.Arguments != nil {
-				for _, arg := range n.Arguments.Nodes {
-					args = append(args, b.expression(arg))
+				args = n.Arguments.Nodes
+			}
+			return b.temp(b.literalRegExpConstructor(node, args))
+		}
+		if class := b.e.classReference(n.Expression); class != nil && class.baseError == "RegExp" {
+			args := []*ast.Node{}
+			if n.Arguments != nil {
+				args = n.Arguments.Nodes
+			}
+			pattern, flags, known := "", "", len(args) <= 2
+			if len(args) > 0 {
+				if args[0].Kind == ast.KindStringLiteral || args[0].Kind == ast.KindNoSubstitutionTemplateLiteral {
+					pattern = args[0].Text()
+				} else {
+					known = false
 				}
 			}
-			return b.temp("tsNewRegExp(" + strings.Join(args, ",") + ")")
+			if len(args) > 1 {
+				if args[1].Kind == ast.KindStringLiteral || args[1].Kind == ast.KindNoSubstitutionTemplateLiteral {
+					flags = args[1].Text()
+				} else {
+					known = false
+				}
+			}
+			for _, argument := range args {
+				if argument.Kind == ast.KindSpreadElement {
+					known = false
+				}
+			}
+			if known {
+				compiled := b.e.compiledRegExp(pattern, flags, node)
+				callArgs := []string{compiled}
+				if len(args) > 1 {
+					callArgs = append(callArgs, b.expression(args[1]))
+				}
+				if len(args) > 2 {
+					for _, argument := range args[2:] {
+						callArgs = append(callArgs, b.expression(argument))
+					}
+				}
+				return b.temp("tsConstruct(" + b.expression(n.Expression) + "," + strings.Join(callArgs, ",") + ")")
+			}
 		}
 
 		if n.Expression.Kind != ast.KindIdentifier || n.Expression.Text() != "Promise" || b.e.binding(n.Expression) != nil {
@@ -424,6 +482,51 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp("loop.constructPromise(" + executor + ")")
 	case ast.KindCallExpression:
 		call := node.AsCallExpression()
+		if call.Expression.Kind == ast.KindPropertyAccessExpression && call.Expression.AsPropertyAccessExpression().Name().Text() == "compile" {
+			arguments := []*ast.Node{}
+			if call.Arguments != nil {
+				arguments = call.Arguments.Nodes
+			}
+			pattern, flags, staticallyKnown := "", "", len(arguments) <= 2
+			if len(arguments) > 0 {
+				if arguments[0].Kind == ast.KindStringLiteral || arguments[0].Kind == ast.KindNoSubstitutionTemplateLiteral {
+					pattern = arguments[0].Text()
+				} else {
+					staticallyKnown = false
+				}
+			}
+			if len(arguments) > 1 {
+				if arguments[1].Kind == ast.KindStringLiteral || arguments[1].Kind == ast.KindNoSubstitutionTemplateLiteral {
+					flags = arguments[1].Text()
+				} else {
+					staticallyKnown = false
+				}
+			}
+			spread := false
+			for _, argument := range arguments {
+				if argument.Kind == ast.KindSpreadElement {
+					spread = true
+				}
+			}
+			if staticallyKnown && !spread && call.QuestionDotToken == nil {
+				property := call.Expression.AsPropertyAccessExpression()
+				receiver := b.receiverValue(b.expression(property.Expression))
+				method := b.temp("tsGet(" + receiver + ",\"compile\")")
+				values := make([]string, 0, len(arguments))
+				for index := range arguments {
+					values = append(values, b.callArgument(call, index))
+				}
+				template := b.temp(b.e.compiledRegExp(pattern, flags, node))
+				return b.temp("tsRegExpCompileKnown(loop," + receiver + "," + method + ",[]tsValue{" + strings.Join(values, ",") + "}," + template + ")")
+			}
+		}
+		if call.Expression.Kind == ast.KindIdentifier && call.Expression.Text() == "RegExp" && b.e.binding(call.Expression) == nil {
+			arguments := []*ast.Node{}
+			if call.Arguments != nil {
+				arguments = call.Arguments.Nodes
+			}
+			return b.temp(b.literalRegExpConstructor(node, arguments))
+		}
 		if call.Expression.Kind == ast.KindPropertyAccessExpression && len(call.Arguments.Nodes) == 0 {
 			property := call.Expression.AsPropertyAccessExpression()
 			target := b.primitiveConversionTarget(node)
@@ -541,7 +644,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			if property.Expression.Kind == ast.KindSuperKeyword && b.e.dynamicPrototypes {
 				receiver = b.expression(property.Expression)
 				callee = b.expression(call.Expression)
-			} else if b.classOf(property.Expression) == nil && b.e.primitive(property.Expression).kind == "" {
+			} else if b.classOf(property.Expression) == nil {
 				special := false
 				if property.Expression.Kind == ast.KindIdentifier {
 					switch property.Expression.Text() {
@@ -552,8 +655,14 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 						special = b.e.binding(property.Expression) == nil
 					}
 				}
-				if !special {
-					receiver = b.expression(property.Expression)
+				// A call to a method on a built-in constructor still has that
+				// constructor as its JavaScript receiver. Most static built-ins
+				// ignore this, but inherited Object methods such as
+				// RegExp.hasOwnProperty depend on it.
+				name := property.Name().Text()
+				needsReceiver := name == "hasOwnProperty" || name == "propertyIsEnumerable" || name == "isPrototypeOf"
+				if !special || needsReceiver {
+					receiver = b.receiverValue(b.expression(property.Expression))
 					callee = b.temp("tsGet(" + receiver + "," + strconv.Quote(classMemberAccessName(property.Name())) + ")")
 				}
 			}
@@ -562,7 +671,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			property := call.Expression.AsElementAccessExpression()
 			receiver = b.expression(property.Expression)
 			key := b.expression(property.ArgumentExpression)
-			callee = b.temp("tsGet(" + receiver + "," + key + ")")
+			if property.Expression.Kind == ast.KindSuperKeyword && b.e.dynamicPrototypes && b.declaring != nil && b.declaring.baseError == "RegExp" && !b.declaring.static {
+				callee = b.temp("tsPrototypeLookupKey(loop," + receiver + ",tsClassBasePrototype(loop," + receiver + ")," + key + ")")
+			} else {
+				callee = b.temp("tsGet(" + receiver + "," + key + ")")
+			}
 		}
 		if callee == "" {
 			callee = b.expression(call.Expression)
@@ -605,9 +718,6 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			if n.Expression.Text() == "Object" {
 				return b.temp(b.objectBuiltin(name))
 			}
-			if n.Expression.Text() == "String" {
-				return b.temp("tsFunc(func(args ...tsValue)tsValue{return tsStringStatic(" + strconv.Quote(name) + ",args)})")
-			}
 			switch n.Expression.Text() + "." + name {
 			case "console.log":
 				return b.temp("tsFunc(tsConsoleLog)")
@@ -647,6 +757,11 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp("tsGet(" + receiver + "," + strconv.Quote(lookupName) + ")")
 	case ast.KindElementAccessExpression:
 		n := node.AsElementAccessExpression()
+		if n.Expression.Kind == ast.KindSuperKeyword && b.e.dynamicPrototypes && b.declaring != nil && b.declaring.baseError == "RegExp" && !b.declaring.static {
+			receiver := b.expression(n.Expression)
+			key := b.expression(n.ArgumentExpression)
+			return b.temp("tsPrototypeLookupKey(loop," + receiver + ",tsClassBasePrototype(loop," + receiver + ")," + key + ")")
+		}
 		if p := b.e.arrayElementPrimitive(n.Expression); p.kind != "" && b.nativeNumericIndex(n.ArgumentExpression) {
 			storage := b.denseStorage(n.Expression, p)
 			index := b.expression(n.ArgumentExpression)
@@ -894,7 +1009,16 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 }
 func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool) string {
 	read, write := b.lvalue(node)
-	if p := b.e.primitive(node); p.numeric() && p.nulls == 0 {
+	primitiveType := b.e.primitive(node)
+	nativeBinding := false
+	if node.Kind == ast.KindIdentifier {
+		if cell := b.e.binding(node); cell != nil {
+			nativeBinding = cell.primitive.kind != "" && cell.primitive.nulls == 0
+		}
+	} else {
+		nativeBinding = true
+	}
+	if p := primitiveType; p.numeric() && p.nulls == 0 && nativeBinding {
 		old := ""
 		if node.Kind == ast.KindIdentifier && b.e.binding(node) != nil {
 			old = b.typedTemp(strings.TrimSuffix(read, ".get()")+".read()", p.goType())
@@ -925,10 +1049,6 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 		op = "-"
 	}
 	operand := "tsIncrement(" + old + "," + strconv.Quote(op) + ")"
-	if p := b.e.primitive(node); p.numeric() {
-		one := b.typedTemp(p.goType()+"(1)", p.goType())
-		operand = "tsBinary(" + strconv.Quote(op) + "," + old + "," + one + ")"
-	}
 	value := b.temp(write(operand))
 	if postfix {
 		return old
@@ -1107,12 +1227,17 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 			return b.typedTemp(condition, "bool")
 		}
 	}
-	// Strict equality never coerces a dynamic operand to a literal's type.
-	if (op == "===" || op == "!==") && (b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue") {
-		return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
+	// Dynamic operands must keep JavaScript's comparison semantics. In
+	// particular, comparisons use ToPrimitive/ToNumber behavior (including NaN
+	// for non-numeric strings), not checked assignment conversions. Box the
+	// statically represented side and let the compatibility comparison handle
+	// the dynamic case. Statically typed pairs still use native comparisons.
+	if isComparisonOperator(op) && (b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue") {
+		return b.temp(fmt.Sprintf("tsBinary(%q,%s,%s)", op, b.comparisonOperand(left), b.comparisonOperand(right)))
 	}
-	// Operands have already been saved in left-to-right order. A dynamic value
-	// compared with a typed primitive uses the same policy as typed assignments.
+	// Statically known values may need numeric widening before their native
+	// comparison. Dynamic TS values were handled through JavaScript semantics
+	// above, rather than through assignment conversions.
 	switch op {
 	case "==", "!=", "===", "!==", "<", "<=", ">", ">=":
 		leftPlan, rightPlan := b.e.primitive(n.Left), b.e.primitive(n.Right)
@@ -1138,7 +1263,7 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 			left = b.comparisonBoundary(left, primitive{kind: rightType})
 		}
 		if b.tempType(left) != b.tempType(right) {
-			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, left, right, b.e.coerce))
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
 		}
 	}
 	if (op == "==" || op == "!=") && b.tempType(left) == b.tempType(right) && (primitive{kind: b.tempType(left)}).numeric() {
@@ -1146,8 +1271,11 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 	}
 	if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" {
 		if b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue" || ((primitive{kind: b.tempType(left)}).numeric() && b.tempType(right) == "*tsString") || ((primitive{kind: b.tempType(right)}).numeric() && b.tempType(left) == "*tsString") {
-			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, left, right, b.e.coerce))
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
 		}
+	}
+	if isComparisonOperator(op) && b.tempType(left) != b.tempType(right) {
+		return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
 	}
 	if op == "**" && b.tempType(left) == "float64" && b.tempType(right) == "float64" {
 		return b.typedTemp("tsPow("+left+","+right+")", "float64")
@@ -1233,6 +1361,26 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		return b.typedTemp(left+goop+right, kind)
 	}
 	return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
+}
+
+func isComparisonOperator(op string) bool {
+	switch op {
+	case "==", "!=", "===", "!==", "<", "<=", ">", ">=":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *machineBuilder) comparisonOperand(value string) string {
+	typ := b.tempType(value)
+	if typ == "tsValue" {
+		return value
+	}
+	if strings.HasPrefix(typ, "tsOptional[") {
+		return b.temp(value + ".raw()")
+	}
+	return b.temp("tsPrimitiveValue(" + value + ")")
 }
 
 func isNullishComparisonOperand(node *ast.Node) bool {
@@ -1492,8 +1640,13 @@ func (b *machineBuilder) nativeNumericIndex(node *ast.Node) bool {
 	if !p.numeric() || p.nulls != 0 {
 		return false
 	}
-	if cell := b.e.binding(node); cell != nil && cell.maybeUndefined && !b.definitelyInitialized(cell, node) {
-		return false
+	// Numeric indexes are commonly compound expressions (for example `i + 1`).
+	// Only identifier nodes can resolve to lexical bindings; asking the checker
+	// to resolve another AST shape as an identifier panics in its import resolver.
+	if node.Kind == ast.KindIdentifier {
+		if cell := b.e.binding(node); cell != nil && cell.maybeUndefined && !b.definitelyInitialized(cell, node) {
+			return false
+		}
 	}
 	return true
 }

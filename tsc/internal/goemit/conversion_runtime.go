@@ -236,15 +236,116 @@ func(value tsValue)ToUint64()uint64{switch value.kind{case tsBigIntKind:return t
 func(value tsValue)ToTSString()*tsString{switch value.kind{case tsNumberKind:return tsConvertStringFromNumber(tsNative[float64](value),true);case tsFloat32Kind:return tsConvertStringFromFloat32(tsNative[float32](value),true);case tsIntKind:return tsConvertStringFromInt(tsNative[int](value),true);case tsInt8Kind:return tsConvertStringFromInt8(tsNative[int8](value),true);case tsInt16Kind:return tsConvertStringFromInt16(tsNative[int16](value),true);case tsInt32Kind:return tsConvertStringFromInt32(tsNative[int32](value),true);case tsInt64Kind:return tsConvertStringFromInt64(tsNative[int64](value),true);case tsUintKind:return tsConvertStringFromUint(tsNative[uint](value),true);case tsUint8Kind:return tsConvertStringFromUint8(tsNative[uint8](value),true);case tsUint16Kind:return tsConvertStringFromUint16(tsNative[uint16](value),true);case tsUint32Kind:return tsConvertStringFromUint32(tsNative[uint32](value),true);case tsUint64Kind:return tsConvertStringFromUint64(tsNative[uint64](value),true);case tsStringKind:return tsConvertStringFromString(tsNative[*tsString](value),true);case tsBooleanKind:return tsConvertStringFromBoolean(tsNative[bool](value),true)};return tsStringValue(value)}
 func(value tsValue)ToBoolean()bool{switch value.kind{case tsNumberKind:return tsConvertBooleanFromNumber(tsNative[float64](value),true);case tsFloat32Kind:return tsConvertBooleanFromFloat32(tsNative[float32](value),true);case tsIntKind:return tsConvertBooleanFromInt(tsNative[int](value),true);case tsInt8Kind:return tsConvertBooleanFromInt8(tsNative[int8](value),true);case tsInt16Kind:return tsConvertBooleanFromInt16(tsNative[int16](value),true);case tsInt32Kind:return tsConvertBooleanFromInt32(tsNative[int32](value),true);case tsInt64Kind:return tsConvertBooleanFromInt64(tsNative[int64](value),true);case tsUintKind:return tsConvertBooleanFromUint(tsNative[uint](value),true);case tsUint8Kind:return tsConvertBooleanFromUint8(tsNative[uint8](value),true);case tsUint16Kind:return tsConvertBooleanFromUint16(tsNative[uint16](value),true);case tsUint32Kind:return tsConvertBooleanFromUint32(tsNative[uint32](value),true);case tsUint64Kind:return tsConvertBooleanFromUint64(tsNative[uint64](value),true);case tsStringKind:return tsConvertBooleanFromString(tsNative[*tsString](value),true);case tsBooleanKind:return tsConvertBooleanFromBoolean(tsNative[bool](value),true)};return tsTruthy(value)}
 func tsConvertValue(value tsValue,kind string,coerce bool)tsValue{if kind=="float64"{kind="number"};if !coerce&&tsValueTypeName(value)!=kind&&!tsLosslessNumericConversion(kind,tsValueTypeName(value)){tsConversionTypeFailure(kind,tsValueTypeName(value))};if value.kind==tsBigIntKind{return tsConvertBigInt(value,kind)};switch kind{case "number":return tsPrimitiveValue(value.ToNumber());case "float32":return tsPrimitiveValue(value.ToFloat32());case "int":return tsPrimitiveValue(value.ToInt());case "int8":return tsPrimitiveValue(value.ToInt8());case "int16":return tsPrimitiveValue(value.ToInt16());case "int32":return tsPrimitiveValue(value.ToInt32());case "int64":return tsPrimitiveValue(value.ToInt64());case "uint":return tsPrimitiveValue(value.ToUint());case "uint8":return tsPrimitiveValue(value.ToUint8());case "uint16":return tsPrimitiveValue(value.ToUint16());case "uint32":return tsPrimitiveValue(value.ToUint32());case "uint64":return tsPrimitiveValue(value.ToUint64());case "string":return tsPrimitiveValue(value.ToTSString());case "boolean":return tsPrimitiveValue(value.ToBoolean())};panic("Invalid conversion target")}
-func tsConversionProperty(value tsValue,name string)tsValue{switch name{case "bigint","toBigInt":return tsFunc(func(args ...tsValue)tsValue{return tsBigIntFrom(value)});case "toNumber", "number", "toFloat64", "float64":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToNumber())});case "toFloat32", "float32":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToFloat32())});case "toInt", "int":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt())});case "toInt8", "int8":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt8())});case "toInt16", "int16":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt16())});case "toInt32", "int32":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt32())});case "toInt64", "int64":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt64())});case "toUint", "uint":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint())});case "toUint8", "uint8":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint8())});case "toUint16", "uint16":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint16())});case "toUint32", "uint32":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint32())});case "toUint64", "uint64":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint64())});case "toString", "string":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToTSString())});case "toBoolean", "boolean":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToBoolean())})};return tsU}
+func tsConversionProperty(value tsValue,name string)tsValue{switch name{case "bigint","toBigInt":return tsFunc(func(args ...tsValue)tsValue{return tsBigIntFrom(value)});case "toNumber", "number", "toFloat64", "float64":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToNumber())});case "toFloat32", "float32":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToFloat32())});case "toInt", "int":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt())});case "toInt8", "int8":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt8())});case "toInt16", "int16":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt16())});case "toInt32", "int32":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt32())});case "toInt64", "int64":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToInt64())});case "toUint", "uint":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint())});case "toUint8", "uint8":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint8())});case "toUint16", "uint16":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint16())});case "toUint32", "uint32":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint32())});case "toUint64", "uint64":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToUint64())});case "toString", "string":return tsFunc(func(args ...tsValue)tsValue{if tsIsNumeric(value)&&len(args)>0&&!tsIsUndefined(args[0]){radixNumber:=tsNumber(tsToPrimitive(args[0]));radix:=10;if !math.IsNaN(radixNumber){if math.IsInf(radixNumber,0){radix=0}else{radix=int(math.Trunc(radixNumber))}};if radix<2||radix>36{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"RangeError",message:"radix must be between 2 and 36"})})};return tsStringReference(tsNumberRadixString(value,radix))};return tsPrimitiveValue(value.ToTSString())});case "toBoolean", "boolean":return tsFunc(func(args ...tsValue)tsValue{return tsPrimitiveValue(value.ToBoolean())})};return tsU}
+
+func tsNumberRadixString(value tsValue, radix int) *tsString {
+ number := tsNumber(value)
+ if math.IsNaN(number) { return tsStringUTF8("NaN") }
+ if math.IsInf(number, 1) { return tsStringUTF8("Infinity") }
+ if math.IsInf(number, -1) { return tsStringUTF8("-Infinity") }
+ if number == 0 { return tsStringUTF8("0") }
+ if radix == 10 { return tsStringUTF8(tsNumberText(number)) }
+ negative := number < 0
+ magnitude := math.Abs(number)
+ if math.Trunc(magnitude) != magnitude {
+  // The integer path is exact. Fractional radix output is generated digit by
+  // digit and capped at the precision of the source binary64 value.
+  whole := math.Floor(magnitude)
+  integer, _ := new(big.Float).SetFloat64(whole).Int(nil)
+  fraction := magnitude - whole
+  digits := "0123456789abcdefghijklmnopqrstuvwxyz"
+  text := integer.Text(radix)
+  if fraction != 0 {
+   text += "."
+   for i := 0; i < 20 && fraction != 0; i++ {
+    fraction *= float64(radix)
+    digit := int(fraction)
+    if digit >= radix { digit = radix - 1 }
+    text += string(digits[digit])
+    fraction -= float64(digit)
+   }
+  }
+  if negative { text = "-" + text }
+  return tsStringUTF8(text)
+ }
+ integer, _ := new(big.Float).SetFloat64(magnitude).Int(nil)
+ text := integer.Text(radix)
+ if negative { text = "-" + text }
+ return tsStringUTF8(text)
+}
+
+var tsNumberIntrinsics struct { sync.Once; constructor *tsFunction; prototype *tsObject }
+func tsNumberPrototype(loop *tsLoop) *tsObject {
+	tsNumberIntrinsics.Do(func() { tsInitNumberIntrinsics(loop) })
+ return tsNumberIntrinsics.prototype
+}
+func tsNumberConstructor(loop *tsLoop) tsValue {
+	tsNumberIntrinsics.Do(func() { tsInitNumberIntrinsics(loop) })
+ return tsFunctionValue(tsNumberIntrinsics.constructor)
+}
+func tsInitNumberIntrinsics() {
+ prototype := tsNewObject()
+ prototype.boxedPrimitive = tsNumberValue(0)
+ prototype.prototype = tsObjectPrototype()
+ constructor := tsFunc(func(loop *tsLoop, args ...tsValue) tsValue {
+  if len(args) == 0 || tsIsUndefined(tsArg(args, 0)) { return tsNumberValue(0) }
+  value := tsArg(args, 0)
+  if value.kind == tsBigIntKind { number, _ := new(big.Float).SetInt((*big.Int)(value.ref)).Float64(); return tsNumberValue(number) }
+  return tsNumberValue(tsNumber(tsPrimitiveHint(loop, value, false)))
+ })
+ constructor.name = "Number"
+ constructor.length = 1
+ constructor.constructible = true
+ constructor.construct = func(loop *tsLoop, args ...tsValue) tsValue {
+  number := tsCall(loop, tsFunctionValue(constructor), args...)
+  object := tsNewObject()
+  object.boxedPrimitive = number
+  object.prototype = tsObjectValue(prototype)
+  return tsObjectValue(object)
+ }
+ constructor.properties = tsNewObject()
+ constructor.properties.set("prototype", tsObjectValue(prototype))
+ constructor.properties.descriptors = map[string]*tsDescriptor{"prototype": {writable: false}}
+ constructorValue := tsFunctionValue(constructor)
+ prototype.set("constructor", constructorValue)
+ prototype.descriptors = map[string]*tsDescriptor{"constructor": {writable: true, configurable: true}}
+ numberReceiver := func(receiver tsValue) tsValue {
+  if tsIsNumeric(receiver) { return receiver }
+  if receiver.kind == tsObjectKind && tsIsNumeric((*tsObject)(receiver.ref).boxedPrimitive) { return (*tsObject)(receiver.ref).boxedPrimitive }
+  tsPropertyFailure("Number method called on incompatible receiver")
+  return tsU
+ }
+ toString := tsNamedNativeMethod("toString", 1, func(_ *tsLoop, receiver tsValue, args ...tsValue) tsValue {
+  value := numberReceiver(receiver)
+  if len(args) == 0 || tsIsUndefined(tsArg(args, 0)) { return tsPrimitiveValue(value.ToTSString()) }
+  radixNumber := tsNumber(tsToPrimitive(tsArg(args, 0)))
+  radix := 10
+  if !math.IsNaN(radixNumber) { if math.IsInf(radixNumber, 0) { radix = 0 } else { radix = int(math.Trunc(radixNumber)) } }
+  if radix < 2 || radix > 36 { panic(tsThrown{tsErrorValue(&tsRuntimeError{name: "RangeError", message: "radix must be between 2 and 36"})}) }
+  return tsStringReference(tsNumberRadixString(value, radix))
+ })
+ prototype.set("toString", toString)
+ prototype.set("toLocaleString", tsNamedNativeMethod("toLocaleString", 0, func(_ *tsLoop, receiver tsValue, _ ...tsValue) tsValue { return tsPrimitiveValue(numberReceiver(receiver).ToTSString()) }))
+ prototype.set("valueOf", tsNamedNativeMethod("valueOf", 0, func(_ *tsLoop, receiver tsValue, _ ...tsValue) tsValue { return numberReceiver(receiver) }))
+ for _, name := range []string{"toString", "toLocaleString", "valueOf"} { prototype.descriptors[name] = &tsDescriptor{writable: true, configurable: true} }
+ constants := []struct{name string; value float64}{
+  {"EPSILON", 2.220446049250313e-16}, {"MAX_SAFE_INTEGER", 9007199254740991}, {"MIN_SAFE_INTEGER", -9007199254740991},
+  {"MAX_VALUE", math.MaxFloat64}, {"MIN_VALUE", math.SmallestNonzeroFloat64}, {"NaN", math.NaN()}, {"NEGATIVE_INFINITY", math.Inf(-1)}, {"POSITIVE_INFINITY", math.Inf(1)},
+ }
+ for _, entry := range constants { constructor.properties.set(entry.name, tsNumberValue(entry.value)); constructor.properties.descriptors[entry.name] = &tsDescriptor{} }
+ constructor.properties.set("isFinite", tsNamedNativeMethod("isFinite", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { value := tsArg(args, 0); return tsBooleanValue(tsIsNumeric(value) && !math.IsInf(tsNumber(value), 0) && !math.IsNaN(tsNumber(value))) }))
+ constructor.properties.set("isNaN", tsNamedNativeMethod("isNaN", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { value := tsArg(args, 0); return tsBooleanValue(tsIsNumeric(value) && math.IsNaN(tsNumber(value))) }))
+ constructor.properties.set("isInteger", tsNamedNativeMethod("isInteger", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { value := tsArg(args, 0); if !tsIsNumeric(value) { return tsBooleanValue(false) }; number := tsNumber(value); return tsBooleanValue(!math.IsInf(number, 0) && !math.IsNaN(number) && math.Trunc(number) == number) }))
+ constructor.properties.set("isSafeInteger", tsNamedNativeMethod("isSafeInteger", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { value := tsArg(args, 0); if !tsIsNumeric(value) { return tsBooleanValue(false) }; number := tsNumber(value); return tsBooleanValue(math.Abs(number) <= 9007199254740991 && math.Trunc(number) == number) }))
+ for _, name := range []string{"isFinite", "isNaN", "isInteger", "isSafeInteger"} { constructor.properties.descriptors[name] = &tsDescriptor{writable: true, configurable: true} }
+ tsNumberIntrinsics.constructor = constructor
+ tsNumberIntrinsics.prototype = prototype
+}
 
 // Comparison preserves numeric payloads rather than narrowing a dynamic operand.
 func tsComparisonOperand(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsObjectKind&&(*tsObject)(value.ref).nativeDate{return value};if value.kind==tsBigIntKind{return value};if tsIsNumeric(value)&&tsNumericType(kind){return value};return tsBoundary(value,kind,nulls,coerce)}
 func tsPolicyCompare(op string,left,right tsValue,coerce bool)tsValue {
  if left.kind==tsBigIntKind||right.kind==tsBigIntKind{return tsBigIntBinary(op,left,right)}
- if op=="=="||op=="!="||op=="<"||op=="<="||op==">"||op==">=" {
-  if tsIsNumeric(left)&&right.kind==tsStringKind {right=tsConvertValue(right,tsValueTypeName(left),coerce)} else if tsIsNumeric(right)&&left.kind==tsStringKind {left=tsConvertValue(left,tsValueTypeName(right),coerce)}
- }
  return tsBinary(op,left,right)
 }
 `

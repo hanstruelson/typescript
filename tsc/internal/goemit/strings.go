@@ -10,28 +10,40 @@ import (
 
 // Scanner text is WTF-8: ordinary rune iteration would corrupt lone surrogates.
 func stringLiteral(text string) string {
-	var units []string
+	units := stringLiteralUnits(text)
+	values := make([]string, len(units))
+	for index, unit := range units {
+		values[index] = fmt.Sprint(unit)
+	}
+	return "tsStringUnits([]uint16{" + strings.Join(values, ",") + "})"
+}
+
+func stringLiteralUnits(text string) []uint16 {
+	var units []uint16
 	for len(text) > 0 {
 		r, n := stringutil.DecodeJSStringRune(text)
 		text = text[n:]
 		if r > 0xffff {
 			a, b := utf16.EncodeRune(r)
-			units = append(units, fmt.Sprint(uint16(a)), fmt.Sprint(uint16(b)))
+			units = append(units, uint16(a), uint16(b))
 		} else {
-			units = append(units, fmt.Sprint(uint16(r)))
+			units = append(units, uint16(r))
 		}
 	}
-	return "tsStringUnits([]uint16{" + strings.Join(units, ",") + "})"
+	return units
 }
 
 const StringRuntime = `
 // Strings are immutable UTF-16 sequences. Native UTF-8 is used only at I/O and
 // library boundaries; indexing, comparison and slicing use code units directly.
 type tsString struct {units []uint16}
+var tsStringIntrinsics struct{sync.Once;constructor *tsFunction;prototype *tsObject}
+func tsStringConstructor()tsValue{tsStringIntrinsics.Do(func(){prototype:=tsNewObject();prototype.prototype=tsObjectPrototype();constructor:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{if len(args)==0{return tsStringReference(tsStringUnits(nil))};value:=tsArg(args,0);if value.kind==tsSymbolKind{return tsStringReference(tsStringUTF8(tsSymbolText((*tsSymbol)(value.ref))))};return tsStringReference(tsStringValueWithLoop(loop,value))});constructor.name="String";constructor.length=1;constructor.constructible=true;constructor.construct=func(loop *tsLoop,args ...tsValue)tsValue{value:=tsStringUnits(nil);if len(args)>0{argument:=tsArg(args,0);if argument.kind==tsSymbolKind{value=tsStringUTF8(tsSymbolText((*tsSymbol)(argument.ref)))}else{value=tsStringValueWithLoop(loop,argument)}};object:=tsNewObject();object.boxedPrimitive=tsStringReference(value);object.prototype=tsObjectValue(prototype);return tsObjectValue(object)};constructor.properties=tsNewObject();constructor.properties.set("prototype",tsObjectValue(prototype));constructor.properties.descriptors=map[string]*tsDescriptor{"prototype":{writable:false}};prototype.set("constructor",tsFunctionValue(constructor));prototype.descriptors=map[string]*tsDescriptor{"constructor":{writable:true,configurable:true}};methods:=[]struct{name string;length int}{ {"at",1},{"charAt",1},{"charCodeAt",1},{"codePointAt",1},{"concat",1},{"endsWith",1},{"includes",1},{"indexOf",1},{"lastIndexOf",1},{"localeCompare",1},{"match",1},{"matchAll",1},{"normalize",0},{"padEnd",1},{"padStart",1},{"repeat",1},{"replace",2},{"replaceAll",2},{"search",1},{"slice",2},{"split",2},{"startsWith",1},{"substring",2},{"substr",2},{"toLowerCase",0},{"toUpperCase",0},{"toLocaleLowerCase",0},{"toLocaleUpperCase",0},{"trim",0},{"trimStart",0},{"trimEnd",0},{"trimLeft",0},{"trimRight",0},{"toString",0},{"valueOf",0},{"isWellFormed",0},{"toWellFormed",0},{"anchor",1},{"big",0},{"blink",0},{"bold",0},{"fixed",0},{"fontcolor",1},{"fontsize",1},{"italics",0},{"link",1},{"small",0},{"strike",0},{"sub",0},{"sup",0} };for _,entry:=range methods{name:=entry.name;method:=tsNamedNativeMethod(name,entry.length,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if name=="toString"||name=="valueOf"{if receiver.kind==tsObjectKind&&(*tsObject)(receiver.ref).boxedPrimitive.kind==tsStringKind{return (*tsObject)(receiver.ref).boxedPrimitive};if receiver.kind==tsStringKind{return receiver};tsPropertyFailure("String.prototype."+name+" requires a string receiver")};if tsNullish(receiver){tsPropertyFailure("String method called on null or undefined")};switch name{case "match","matchAll","replace","replaceAll","search":return tsRegexStringValue(loop,receiver,name,args)};return tsStringMethod(loop,tsStringValueWithLoop(loop,receiver),name,args)});prototype.set(name,method);prototype.descriptors[name]=&tsDescriptor{writable:true,configurable:true}};iteratorKey:=tsPropertyKey(tsWellKnownSymbol("iterator"));prototype.set(iteratorKey,tsNamedNativeMethod("[Symbol.iterator]",0,func(loop *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if receiver.kind==tsObjectKind&&(*tsObject)(receiver.ref).boxedPrimitive.kind==tsStringKind{receiver=(*tsObject)(receiver.ref).boxedPrimitive};if receiver.kind!=tsStringKind{tsPropertyFailure("String iterator called on incompatible receiver")};return tsIteratorValueReference(tsIterate(receiver))}));prototype.descriptors[iteratorKey]=&tsDescriptor{writable:true,configurable:true};tag:=tsPropertyKey(tsWellKnownSymbol("toStringTag"));prototype.set(tag,tsStringReference(tsStringUTF8("String")));prototype.descriptors[tag]=&tsDescriptor{configurable:true};for _,entry:=range []struct{name string;length int}{{"fromCharCode",1},{"fromCodePoint",1},{"raw",1}}{name:=entry.name;constructor.properties.set(name,tsNamedNativeMethod(name,entry.length,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsStringStatic(name,args)}));constructor.properties.descriptors[name]=&tsDescriptor{writable:true,configurable:true}};tsStringIntrinsics.constructor=constructor;tsStringIntrinsics.prototype=prototype});return tsFunctionValue(tsStringIntrinsics.constructor)}
 func tsStringUnits(units []uint16) *tsString {return &tsString{units:units}}
 func tsStringUTF8(text string) *tsString {return tsStringUnits(utf16.Encode([]rune(text)))}
 func(s *tsString) String() string {return string(utf16.Decode(s.units))}
-func tsStringValue(value tsValue)*tsString{switch value.kind{case tsSymbolKind:tsPropertyFailure("Cannot convert Symbol to string");return nil;case tsStringKind:return (*tsString)(value.ref);case tsNumberKind:return tsStringUTF8(tsNumberText(value.number));case tsArrayKind:v:=(*tsArray)(value.ref);parts:=[]*tsString{};for i:=0;i<v.length();i++{item:=v.at(i);if i>0{parts=append(parts,tsStringUTF8(","))};if !tsNullish(item){parts=append(parts,tsStringValue(item))}};return tsStringConcat(parts...);case tsObjectKind:return tsStringValue(loop,tsPrimitiveHint(loop,value,true));case tsInstanceKind:return tsStringUTF8("[object Object]");case tsECMAKind:return tsStringUTF8((*tsECMAObject)(value.ref).object.String());default:return tsStringUTF8(tsText(value))}}
+func tsStringValue(value tsValue)*tsString{switch value.kind{case tsSymbolKind:tsPropertyFailure("Cannot convert Symbol to string");return nil;case tsStringKind:return (*tsString)(value.ref);case tsNumberKind:return tsStringUTF8(tsNumberText(value.number));case tsArrayKind:v:=(*tsArray)(value.ref);parts:=[]*tsString{};for i:=0;i<v.length();i++{item:=v.at(i);if i>0{parts=append(parts,tsStringUTF8(","))};if !tsNullish(item){parts=append(parts,tsStringValue(item))}};return tsStringConcat(parts...);case tsObjectKind,tsInstanceKind:return tsStringUTF8("[object Object]");default:return tsStringUTF8(tsText(value))}}
+func tsStringValueWithLoop(loop *tsLoop,value tsValue)*tsString{if value.kind==tsObjectKind{return tsStringValueWithLoop(loop,tsPrimitiveHint(loop,value,true))};if value.kind==tsArrayKind{array:=(*tsArray)(value.ref);parts:=make([]*tsString,0,array.length()*2);for i:=0;i<array.length();i++{if i>0{parts=append(parts,tsStringUTF8(","))};item:=array.at(i);if !tsNullish(item){parts=append(parts,tsStringValueWithLoop(loop,item))}};return tsStringConcat(parts...)};return tsStringValue(value)}
 func tsStringEqual(a,b *tsString) bool {if len(a.units)!=len(b.units){return false};for i,c:=range a.units {if c!=b.units[i]{return false}};return true}
 func tsStringCompare(a,b *tsString) int {for i,c:=range a.units {if i>=len(b.units){return 1};if c<b.units[i]{return -1};if c>b.units[i]{return 1}};if len(a.units)<len(b.units){return -1};return 0}
 func tsStringConcat(values ...*tsString) *tsString {size:=0;for _,s:=range values {size+=len(s.units)};result:=make([]uint16,0,size);for _,s:=range values {result=append(result,s.units...)};return tsStringUnits(result)}
@@ -43,14 +55,14 @@ func(s *tsString) slice(start,end int) *tsString {return tsStringUnits(s.units[s
 func tsStringIndex(s,search *tsString,start int) int {for i:=start;i+len(search.units)<=len(s.units);i++ {match:=true;for j,c:=range search.units {if s.units[i+j]!=c {match=false;break}};if match{return i}};return -1}
 func tsStringWhitespace(c uint16) bool {switch c {case 0x9,0xa,0xb,0xc,0xd,0x20,0xa0,0x1680,0x2028,0x2029,0x202f,0x205f,0x3000,0xfeff:return true};return c>=0x2000&&c<=0x200a}
 func tsStringWellFormed(s *tsString,replace bool) tsValue {var result []uint16;if replace {result=append([]uint16{},s.units...)};for i:=0;i<len(s.units);i++ {c:=s.units[i];if c>=0xd800&&c<=0xdbff {if i+1<len(s.units)&&s.units[i+1]>=0xdc00&&s.units[i+1]<=0xdfff {i++;continue};if !replace{return false};result[i]=0xfffd}else if c>=0xdc00&&c<=0xdfff {if !replace{return false};result[i]=0xfffd}};if replace{return tsStringUnits(result)};return true}
-func tsRejectRegExp(value tsValue){if value.kind==tsRegExpKind{panic("String search argument must not be a RegExp")}}
+func tsRejectRegExp(loop *tsLoop,value tsValue){if tsIsRegExpValue(loop,value){tsPropertyFailure("String search argument must not be a RegExp")}}
 func tsStringGet(s *tsString,key tsValue) tsValue {
  name:=tsText(key);if name=="length" {return float64(len(s.units))}
  if index,err:=strconv.Atoi(name);err==nil && strconv.Itoa(index)==name {if index<0||index>=len(s.units){return tsU};return s.slice(index,index+1)}
- switch name {case "at","charAt","charCodeAt","codePointAt","concat","endsWith","includes","indexOf","lastIndexOf","localeCompare","match","matchAll","normalize","padEnd","padStart","repeat","replace","replaceAll","search","slice","split","startsWith","substring","substr","toLowerCase","toUpperCase","toLocaleLowerCase","toLocaleUpperCase","trim","trimStart","trimEnd","trimLeft","trimRight","toString","valueOf","isWellFormed","toWellFormed","anchor","big","blink","bold","fixed","fontcolor","fontsize","italics","link","small","strike","sub","sup":return tsFunc(func(args ...tsValue)tsValue{return tsStringMethod(s,name,args)})}
+ switch name {case "at","charAt","charCodeAt","codePointAt","concat","endsWith","includes","indexOf","lastIndexOf","localeCompare","match","matchAll","normalize","padEnd","padStart","repeat","replace","replaceAll","search","slice","split","startsWith","substring","substr","toLowerCase","toUpperCase","toLocaleLowerCase","toLocaleUpperCase","trim","trimStart","trimEnd","trimLeft","trimRight","toString","valueOf","isWellFormed","toWellFormed","anchor","big","blink","bold","fixed","fontcolor","fontsize","italics","link","small","strike","sub","sup":return tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if tsNullish(receiver){tsPropertyFailure("String method called on null or undefined")};switch name{case "match","matchAll","replace","replaceAll","search":return tsRegexStringValue(loop,receiver,name,args);default:return tsStringMethod(loop,tsStringValueWithLoop(loop,receiver),name,args)}})}
  return tsU
 }
-func tsStringMethod(s *tsString,name string,args []tsValue) tsValue {
+func tsStringMethod(loop *tsLoop,s *tsString,name string,args []tsValue) tsValue {
  length:=len(s.units);a,b:=tsArg(args,0),tsArg(args,1)
  switch name {
  case "toString","valueOf":return s
@@ -65,7 +77,7 @@ func tsStringMethod(s *tsString,name string,args []tsValue) tsValue {
  case "substring":start,end:=tsPosition(a,length,0),tsPosition(b,length,length);if end<start {start,end=end,start};return s.slice(start,end)
  case "substr":start:=tsSlicePosition(a,length,0);count:=tsPosition(b,length-start,length-start);return s.slice(start,start+count)
  case "indexOf","includes","startsWith","endsWith","lastIndexOf":
-  if name=="includes"||name=="startsWith"||name=="endsWith" {tsRejectRegExp(a)}
+  if name=="includes"||name=="startsWith"||name=="endsWith" {tsRejectRegExp(loop,a)}
   search:=tsStringValue(a);start:=tsPosition(b,length,0)
   if name=="lastIndexOf" {if tsIsUndefined(b)||math.IsNaN(tsNumber(b)){start=length};if start>length-len(search.units){start=length-len(search.units)};for i:=start;i>=0;i-- {if tsStringIndex(s.slice(i,i+len(search.units)),search,0)==0 {return float64(i)}};return float64(-1)}
   if name=="endsWith" {end:=tsPosition(b,length,length);start=end-len(search.units);return start>=0&&tsStringIndex(s.slice(start,end),search,0)==0}
@@ -75,13 +87,18 @@ func tsStringMethod(s *tsString,name string,args []tsValue) tsValue {
  case "trim","trimStart","trimEnd","trimLeft","trimRight":start,end:=0,length;if name!="trimEnd"&&name!="trimRight" {for start<end&&tsStringWhitespace(s.units[start]){start++}};if name!="trimStart"&&name!="trimLeft" {for end>start&&tsStringWhitespace(s.units[end-1]){end--}};return s.slice(start,end)
  case "isWellFormed":return tsStringWellFormed(s,false)
  case "toWellFormed":return tsStringWellFormed(s,true)
- case "split":if a.kind==tsRegExpKind{return tsRegexString(s,name,args)};limit:=uint32(0xffffffff);if !tsIsUndefined(b){limit=tsUint32(b)};out:= &tsArray{};if limit==0{return out};if tsIsUndefined(a){out.values=[]tsValue{s};return out};separator:=tsStringValue(a);if len(separator.units)==0 {for i:=0;i<length&&uint32(len(out.values))<limit;i++ {out.values=append(out.values,s.slice(i,i+1))};return out};start:=0;for uint32(len(out.values))<limit {index:=tsStringIndex(s,separator,start);if index<0 {out.values=append(out.values,s.slice(start,length));break};out.values=append(out.values,s.slice(start,index));start=index+len(separator.units)};return out
+ case "split":
+  if !tsNullish(a) && !tsIsPrimitiveValue(a) {
+   splitter:=tsGet(a,tsWellKnownSymbol("split"))
+   if !tsNullish(splitter) {if splitter.kind!=tsFunctionKind{tsPropertyFailure("String split method is not callable")};return tsCallReceiver(loop,splitter,a,tsStringReference(s),b)}
+  }
+  limit:=uint32(0xffffffff);if !tsIsUndefined(b){limit=tsToUint32(b)};out:= &tsArray{};if limit==0{return out};if tsIsUndefined(a){out.values=[]tsValue{s};return out};separator:=tsStringValueWithLoop(loop,a);if len(separator.units)==0 {for i:=0;i<length&&uint32(len(out.values))<limit;i++ {out.values=append(out.values,s.slice(i,i+1))};return out};start:=0;for uint32(len(out.values))<limit {index:=tsStringIndex(s,separator,start);if index<0 {out.values=append(out.values,s.slice(start,length));break};out.values=append(out.values,s.slice(start,index));start=index+len(separator.units)};return out
  case "localeCompare","normalize","toLowerCase","toUpperCase","toLocaleLowerCase","toLocaleUpperCase":return tsUnicodeString(s,name,args)
- case "match","matchAll","replace","replaceAll","search":return tsRegexString(s,name,args)
+ case "match","matchAll","replace","replaceAll","search":return tsRegexStringValue(loop,tsStringReference(s),name,args)
  }
  tags:=map[string]string{"anchor":"a","big":"big","blink":"blink","bold":"b","fixed":"tt","fontcolor":"font","fontsize":"font","italics":"i","link":"a","small":"small","strike":"strike","sub":"sub","sup":"sup"};tag,ok:=tags[name];if !ok {panic("Unsupported String method")};prefix:="<"+tag;attribute:="";switch name {case "anchor":attribute="name";case "link":attribute="href";case "fontcolor":attribute="color";case "fontsize":attribute="size"};if attribute!="" {value:=tsStringValue(a);escaped:=[]uint16{};for _,c:=range value.units {if c==34 {escaped=append(escaped,[]uint16{'&','q','u','o','t',';'}...)}else {escaped=append(escaped,c)}};return tsStringConcat(tsStringUTF8(prefix+" "+attribute+"=\""),tsStringUnits(escaped),tsStringUTF8("\">"),s,tsStringUTF8("</"+tag+">"))};return tsStringConcat(tsStringUTF8(prefix+">"),s,tsStringUTF8("</"+tag+">"))
 }
-func tsStringStatic(name string,args []tsValue) tsValue {units:=[]uint16{};switch name {case "fromCharCode":for _,value:=range args {units=append(units,uint16(tsUint32(value)))};case "fromCodePoint":for _,value:=range args {number:=tsNumber(value);if math.IsNaN(number)||number<0||number>0x10ffff||math.Trunc(number)!=number {panic("Invalid code point")};if number<=0xffff {units=append(units,uint16(number))}else {a,b:=utf16.EncodeRune(rune(number));units=append(units,uint16(a),uint16(b))}};case "raw":raw:=tsGet(tsArg(args,0),tsStringUTF8("raw"));length:=int(tsNumber(tsGet(raw,tsStringUTF8("length"))));values:=[]*tsString{};for i:=0;i<length;i++ {values=append(values,tsStringValue(tsGet(raw,float64(i))));if i+1<length && i+1<len(args) {values=append(values,tsStringValue(args[i+1]))}};return tsStringConcat(values...);default:panic("Unknown String static method")};return tsStringUnits(units)}
+func tsStringStatic(name string,args []tsValue) tsValue {units:=[]uint16{};switch name {case "fromCharCode":for _,value:=range args {units=append(units,uint16(tsToUint32(value)))};case "fromCodePoint":for _,value:=range args {number:=tsNumber(tsToPrimitive(value));if math.IsNaN(number)||number<0||number>0x10ffff||math.Trunc(number)!=number {panic("Invalid code point")};if number<=0xffff {units=append(units,uint16(number))}else {a,b:=utf16.EncodeRune(rune(number));units=append(units,uint16(a),uint16(b))}};case "raw":raw:=tsGet(tsArg(args,0),tsStringUTF8("raw"));length:=int(tsNumber(tsGet(raw,tsStringUTF8("length"))));values:=[]*tsString{};for i:=0;i<length;i++ {values=append(values,tsStringValue(tsGet(raw,float64(i))));if i+1<len(args) {values=append(values,tsStringValue(args[i+1]))}};return tsStringConcat(values...);default:panic("Unknown String static method")};return tsStringUnits(units)}
 
 // Transform valid scalar segments while preserving isolated UTF-16 surrogates.
 func tsStringTransform(s *tsString, transform func(string)string)*tsString {

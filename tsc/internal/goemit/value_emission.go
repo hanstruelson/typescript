@@ -76,6 +76,7 @@ type valueSignature struct {
 	parameters     []string
 	variadic       bool
 	result         string
+	results        []string
 }
 type valueEmission struct {
 	scope     string
@@ -118,8 +119,19 @@ func valueFunctionSignature(fn *ast.FuncType) valueSignature {
 			}
 		}
 	}
-	if fn.Results != nil && len(fn.Results.List) > 0 {
-		sig.result = valueType(fn.Results.List[0].Type)
+	if fn.Results != nil {
+		for _, field := range fn.Results.List {
+			count := len(field.Names)
+			if count == 0 {
+				count = 1
+			}
+			for range count {
+				sig.results = append(sig.results, valueType(field.Type))
+			}
+		}
+	}
+	if len(sig.results) > 0 {
+		sig.result = sig.results[0]
 	}
 	return sig
 }
@@ -215,7 +227,15 @@ func (p *valueEmission) signature(call *ast.CallExpr, env map[string]string) val
 				for i, typ := range sig.parameters {
 					sig.parameters[i] = replace(typ)
 				}
-				sig.result = replace(sig.result)
+				sig.results = append([]string(nil), sig.results...)
+				for i, typ := range sig.results {
+					sig.results[i] = replace(typ)
+				}
+				if len(sig.results) > 0 {
+					sig.result = sig.results[0]
+				} else {
+					sig.result = replace(sig.result)
+				}
 			}
 			return sig
 		}
@@ -371,7 +391,7 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 	case "T":
 		return valueWrapper("tsPrimitiveValue", expr)
 	}
-	constructors := map[string]string{"*tsObject": "tsObjectValue", "*tsArray": "tsArrayValue", "*tsFunction": "tsFunctionValue", "*tsClass": "tsClassValue", "*tsProperties": "tsInstanceValue", "*tsRegExp": "tsRegExpValue", "*tsECMAObject": "tsECMAValue", "*tsRuntimeError": "tsErrorValue", "*tsPromise": "tsPromiseValue", "*tsTask": "tsTaskValue", "*tsModule": "tsModuleValue", "*tsIterator": "tsIteratorValueReference", "tsNamespace": "tsNamespaceValue", "tsImportRef": "tsImportValue"}
+	constructors := map[string]string{"*tsObject": "tsObjectValue", "*tsArray": "tsArrayValue", "*tsFunction": "tsFunctionValue", "*tsClass": "tsClassValue", "*tsProperties": "tsInstanceValue", "*tsRegExp": "tsRegExpValue", "*tsRuntimeError": "tsErrorValue", "*tsPromise": "tsPromiseValue", "*tsTask": "tsTaskValue", "*tsModule": "tsModuleValue", "*tsIterator": "tsIteratorValueReference", "tsNamespace": "tsNamespaceValue", "tsImportRef": "tsImportValue"}
 	if constructor := constructors[kind]; constructor != "" {
 		return valueWrapper(constructor, expr)
 	}
@@ -512,6 +532,26 @@ func (p *valueEmission) fieldOrder(kind string) []string {
 	}
 	return nil
 }
+func (p *valueEmission) multipleAssignmentResults(expr ast.Expr, env map[string]string) []string {
+	switch value := expr.(type) {
+	case *ast.CallExpr:
+		return p.signature(value, env).results
+	case *ast.IndexExpr:
+		if mapType := p.kind(value.X, env); strings.HasPrefix(mapType, "map[") {
+			return []string{p.kind(value, env), "bool"}
+		}
+	case *ast.TypeAssertExpr:
+		return []string{valueType(value.Type), "bool"}
+	case *ast.UnaryExpr:
+		if value.Op == token.ARROW {
+			channelType := p.kind(value.X, env)
+			channelType = strings.TrimPrefix(channelType, "<-chan ")
+			channelType = strings.TrimPrefix(channelType, "chan ")
+			return []string{channelType, "bool"}
+		}
+	}
+	return nil
+}
 func (p *valueEmission) declaration(decl *ast.GenDecl, env map[string]string) {
 	for _, spec := range decl.Specs {
 		if v, ok := spec.(*ast.ValueSpec); ok {
@@ -552,12 +592,20 @@ func (p *valueEmission) statement(stmt ast.Stmt, env map[string]string, result s
 		for i, expr := range s.Rhs {
 			s.Rhs[i] = p.expression(expr, env)
 		}
+		var tupleResults []string
+		if len(s.Rhs) == 1 {
+			tupleResults = p.multipleAssignmentResults(s.Rhs[0], env)
+		}
 		for i, left := range s.Lhs {
 			left = p.expression(left, env)
 			s.Lhs[i] = left
 			if i >= len(s.Rhs) {
-				if name, ok := left.(*ast.Ident); ok {
-					env[name.Name] = "bool"
+				if name, ok := left.(*ast.Ident); ok && s.Tok == token.DEFINE {
+					kind := ""
+					if i < len(tupleResults) {
+						kind = tupleResults[i]
+					}
+					env[name.Name] = kind
 				}
 				continue
 			}

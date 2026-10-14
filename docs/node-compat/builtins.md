@@ -1,6 +1,6 @@
 # Native JavaScript built-ins
 
-Node module expansion is paused while the shared JavaScript built-ins are implemented and checked against Node. Goja is permitted at the regular-expression boundary, including regex-dependent string operations; ordinary built-ins and primitive conversions must be native.
+Node module expansion is paused while the shared JavaScript built-ins are implemented and checked against Node. The TypeScript emitter compiles supported regular-expression literals into Go matcher functions; Goja and regexp2 are not runtime dependencies. Dynamic RegExp construction and unsupported graph forms remain compatibility gaps.
 
 The [API inventory](builtins-api.json) records the Node reference surface, including symbol-named entries. Presence in this inventory does not imply implementation or conformance. The behavioral references are [ECMA-262](https://tc39.es/ecma262/) and, for locale formatting, [ECMA-402](https://tc39.es/ecma402/). RFC date formats alone do not define JavaScript Date behavior.
 
@@ -14,7 +14,7 @@ The [API inventory](builtins-api.json) records the Node reference surface, inclu
 | Symbol | Missing | Identity, registry, symbol keys, well-known symbols |
 | Math | Incomplete | Native full standard API with numeric edge cases |
 | Errors | Native runtime errors | Standard constructors, inheritance, cause, AggregateError and stacks |
-| RegExp | Goja-backed | Confine engine use to regex behavior and test full regex results |
+| RegExp | V8-shaped parser/graph with Go-source matcher generation for a subset | Expand graph support and differentially check RegExp and String behavior |
 | Byte APIs | Native Buffer, ArrayBuffer and typed arrays | DataView, detachment/alias conformance and full overload validation |
 | Other built-ins | Inventory recorded | Weak collections, WeakRef/FinalizationRegistry, Reflect/Proxy, shared memory/Atomics, Intl, iterator helpers, and remaining standard global functions |
 

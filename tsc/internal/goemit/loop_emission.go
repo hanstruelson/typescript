@@ -9,7 +9,11 @@ import (
 // threadLoopContext gives every JavaScript call an explicit execution context.
 // Native adapters and Go host callbacks retain their own ABI and close over it.
 func threadLoopContext(file *ast.File) {
-	required := map[string]bool{"tsCall": true, "tsEngine": true, "call": true, "construct": true, "pull": true, "growPut": true, "growSplice": true, "writeField": true}
+	// Keep the runtime ABI independent of the generated program. These roots are
+	// the loop-aware entry points shared by every emitted program. Console.log is
+	// also passed as a named callback by generated code, so include it here even
+	// though the runtime template itself does not take its address.
+	required := map[string]bool{"tsCall": true, "tsEngine": true, "call": true, "construct": true, "pull": true, "growPut": true, "growSplice": true, "writeField": true, "tsConsoleLog": true}
 	functions := []*ast.FuncDecl{}
 	addParam := func(fn *ast.FuncType) {
 		if fn.Params == nil {

@@ -1100,7 +1100,7 @@ func (s *Scanner) ReScanSlashToken(reportErrors ...bool) ast.Kind {
 				s.tokenFlags |= ast.TokenFlagsUnterminated
 				break loop
 			}
-			ch := rune(s.text[p])
+			ch, size := utf8.DecodeRuneInString(s.text[p:])
 			switch {
 			case stringutil.IsLineBreak(ch):
 				s.tokenFlags |= ast.TokenFlagsUnterminated
@@ -1125,7 +1125,7 @@ func (s *Scanner) ReScanSlashToken(reportErrors ...bool) ast.Kind {
 				(p+3 >= s.end || (s.text[p+3] != '=' && s.text[p+3] != '!')):
 				namedCaptureGroups = true
 			}
-			p++
+			p += size
 		}
 
 		endOfRegExpBody := p

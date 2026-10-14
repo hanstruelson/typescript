@@ -1,0 +1,36 @@
+{
+  "suite": "Test262",
+  "revision": "2e0a56762801e275a9fdf96dc49d90ba0cddcf63",
+  "generated": "2026-10-13T19:35:58.480892+00:00",
+  "native_source_sha256": "1d5ba7de7c6b0b68f8594ba25e57aa9fef5dd7cfe4ca5de3a6c55a5cc8a5e248",
+  "source_tests": 53616,
+  "excluded_dynamic_tests": 2321,
+  "selected_tests": 1630,
+  "completed_variants": 1782,
+  "planned_variants": 3258,
+  "complete": false,
+  "status_counts_are_raw": true,
+  "statuses": {
+    "emit-error": 240,
+    "runtime-fail": 448,
+    "pass": 1022,
+    "runner-host-unimplemented": 26,
+    "build-error": 38,
+    "build-timeout": 8
+  },
+  "reference_failures": 38,
+  "posthoc_reclassification": {
+    "expected_regexp_parse_negative_variants": 196,
+    "effective_pass_count": 1218,
+    "effective_emit_error_count": 44,
+    "reason": "Node confirmed SyntaxError and the emitter diagnostic is from the regex parser; current runner classifies these as passes."
+  },
+  "source_identity_note": "Historical checkpoint digest predates hashing tsc/internal/regexpengine and tools/test262/run.py. Keep as baseline; current runner rejects resume from it.",
+  "filters": [
+    "built-ins/RegExp/"
+  ],
+  "selection": "all",
+  "native_commit": "8952c2f7faafdfedd8ff894d264f7e3524b6f97c",
+  "node_version": "v24.19.0",
+  "go_version": "go version go1.27.1 linux/amd64"
+}

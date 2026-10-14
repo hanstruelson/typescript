@@ -17,8 +17,6 @@ require (
 )
 
 require (
-	github.com/dlclark/regexp2/v2 v2.8.1 // indirect
-	github.com/dop251/goja v0.0.0-20261004200024-481fdb442bb4 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect

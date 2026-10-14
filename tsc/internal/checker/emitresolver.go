@@ -1328,7 +1328,58 @@ func (r *EmitResolver) IsThisPropertyAssignmentDeclarationRedundant(node *ast.No
 func (r *EmitResolver) GetEmitPrimitiveType(node *ast.Node) (string, uint8) {
 	r.checkerMu.Lock()
 	defer r.checkerMu.Unlock()
+	checkedNode := node
+	if ast.IsIdentifier(node) {
+		if symbol := r.checker.getSymbolAtLocation(node, false); symbol != nil && symbol.ValueDeclaration != nil {
+			checkedNode = symbol.ValueDeclaration
+		}
+	}
+	if r.checker.arrayCallbackParameterHasDynamicElements(checkedNode) {
+		return "", 0
+	}
 	return emitPrimitiveShape(r.checker.GetTypeAtLocation(node))
+}
+
+func (c *Checker) arrayCallbackParameterHasDynamicElements(node *ast.Node) bool {
+	if !ast.IsParameterDeclaration(node) || node.Parent == nil || !ast.IsFunctionLike(node.Parent) {
+		return false
+	}
+	function := node.Parent
+	call := function.Parent
+	if call == nil || call.Kind != ast.KindCallExpression || call.AsCallExpression().Expression.Kind != ast.KindPropertyAccessExpression {
+		return false
+	}
+	parameters := function.Parameters()
+	parameterIndex := -1
+	for i, parameter := range parameters {
+		if parameter == node {
+			parameterIndex = i
+			break
+		}
+	}
+	if parameterIndex < 0 {
+		return false
+	}
+	method := call.AsCallExpression().Expression.AsPropertyAccessExpression().Name().Text()
+	switch method {
+	case "map", "forEach", "filter", "find", "findIndex", "findLast", "findLastIndex", "some", "every", "flatMap":
+		if parameterIndex != 0 {
+			return false
+		}
+	case "reduce", "reduceRight":
+		if parameterIndex > 1 {
+			return false
+		}
+	default:
+		return false
+	}
+	property := call.AsCallExpression().Expression.AsPropertyAccessExpression()
+	if !c.isArrayOrTupleType(c.GetTypeAtLocation(property.Expression)) {
+		return false
+	}
+	initializer := arrayInitializerExpression(c, property.Expression)
+	kind, nulls, found := c.arrayConcatElementShape(initializer)
+	return found && kind == "" && nulls == 0
 }
 
 func emitPrimitiveShape(t *Type) (string, uint8) {
@@ -1495,6 +1546,20 @@ func (r *EmitResolver) GetEmitArrayElementType(node *ast.Node, context []*ast.No
 	if node == nil {
 		return "", 0
 	}
+	// Array.prototype.concat creates a fresh ordinary array and copies each
+	// argument's runtime elements into it. The standard library's overloads can
+	// describe a narrower result (and erroneous-but-valid JavaScript still runs
+	// through the emitter), so do not store its output using the receiver's
+	// native element type when an argument contributes a different type.
+	// Returning no primitive shape keeps the result as a TS-value array.
+	if initializer := arrayInitializerExpression(c, node); initializer != nil {
+		if kind, nulls, found := c.arrayConcatElementShape(initializer); found {
+			return kind, nulls
+		}
+	}
+	if ast.IsFunctionLike(node) && c.functionReturnsMixedConcat(node) {
+		return "", 0
+	}
 	var t *Type
 	if ast.IsFunctionLike(node) {
 		t = c.getReturnTypeOfSignature(c.getSignatureFromDeclaration(node))
@@ -1518,6 +1583,109 @@ func (r *EmitResolver) GetEmitArrayElementType(node *ast.Node, context []*ast.No
 		}
 	}
 	return emitPrimitiveShape(c.getElementTypeOfArrayType(t))
+}
+
+func arrayInitializerExpression(c *Checker, node *ast.Node) *ast.Node {
+	if node == nil {
+		return nil
+	}
+	if ast.IsIdentifier(node) {
+		if symbol := c.getSymbolAtLocation(node, false); symbol != nil && symbol.ValueDeclaration != nil {
+			node = symbol.ValueDeclaration
+		}
+	}
+	if ast.IsVariableDeclaration(node) || ast.IsParameterDeclaration(node) || ast.IsPropertyDeclaration(node) {
+		return node.Initializer()
+	}
+	return node
+}
+
+func (c *Checker) arrayConcatElementShape(expression *ast.Node) (string, uint8, bool) {
+	if expression == nil {
+		return "", 0, false
+	}
+	for expression.Kind == ast.KindParenthesizedExpression || expression.Kind == ast.KindAsExpression || expression.Kind == ast.KindSatisfiesExpression || expression.Kind == ast.KindTypeAssertionExpression {
+		expression = expression.Expression()
+		if expression == nil {
+			return "", 0, false
+		}
+	}
+	if expression.Kind != ast.KindCallExpression {
+		return "", 0, false
+	}
+	call := expression.AsCallExpression()
+	if call.Expression.Kind != ast.KindPropertyAccessExpression || call.Expression.AsPropertyAccessExpression().Name().Text() != "concat" {
+		return "", 0, false
+	}
+	property := call.Expression.AsPropertyAccessExpression()
+	if !c.isArrayOrTupleType(c.GetTypeAtLocation(property.Expression)) {
+		return "", 0, false
+	}
+	values := []*ast.Node{property.Expression}
+	for _, argument := range call.Arguments.Nodes {
+		if argument.Kind == ast.KindSpreadElement {
+			// Spread operands contribute each yielded value and their element
+			// shape is the best static approximation available here.
+			argument = argument.AsSpreadElement().Expression
+		}
+		values = append(values, argument)
+	}
+	kind := ""
+	var nulls uint8
+	initialized := false
+	for _, value := range values {
+		if value == nil {
+			return "", 0, true
+		}
+		t := c.GetTypeAtLocation(value)
+		element := c.getElementTypeOfArrayType(t)
+		if element == nil {
+			element = t
+		}
+		candidate, candidateNulls := emitPrimitiveShape(element)
+		if candidate == "" && candidateNulls == 0 {
+			return "", 0, true
+		}
+		if !initialized {
+			kind, nulls = candidate, candidateNulls
+			initialized = true
+			continue
+		}
+		if kind != candidate || nulls != candidateNulls {
+			return "", 0, true
+		}
+	}
+	return kind, nulls, true
+}
+
+func (c *Checker) functionReturnsMixedConcat(function *ast.Node) bool {
+	body := function.Body()
+	if body == nil {
+		return false
+	}
+	if body.Kind != ast.KindBlock {
+		kind, nulls, found := c.arrayConcatElementShape(body)
+		return found && kind == "" && nulls == 0
+	}
+	var visit func(*ast.Node) bool
+	visit = func(node *ast.Node) bool {
+		if node == nil {
+			return false
+		}
+		if node != body && ast.IsFunctionLike(node) {
+			return false
+		}
+		if node.Kind == ast.KindReturnStatement {
+			if expression := node.AsReturnStatement().Expression; expression != nil {
+				kind, nulls, found := c.arrayConcatElementShape(expression)
+				if found && kind == "" && nulls == 0 {
+					return true
+				}
+			}
+		}
+		return node.ForEachChild(visit)
+	}
+	return visit(body)
 }
 
 // GetEmitFunctionReturnPrimitiveType preserves contextual callback return types.

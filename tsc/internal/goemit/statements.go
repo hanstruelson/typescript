@@ -269,21 +269,34 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 		b.forAwaitStatement(node, label)
 		return
 	}
-	if n.Initializer.Kind != ast.KindVariableDeclarationList || len(n.Initializer.AsVariableDeclarationList().Declarations.Nodes) != 1 {
-		b.e.fail(node, "for-of requires one identifier declaration")
-		return
+	assignmentTarget := n.Initializer.Kind != ast.KindVariableDeclarationList
+	var decl *ast.Node
+	var cell *binding
+	pattern := false
+	lexical := false
+	if assignmentTarget {
+		if n.Initializer.Kind != ast.KindIdentifier && n.Initializer.Kind != ast.KindPropertyAccessExpression && n.Initializer.Kind != ast.KindElementAccessExpression {
+			b.e.fail(node, "for-of assignment target is not supported")
+			return
+		}
+	} else {
+		declarations := n.Initializer.AsVariableDeclarationList().Declarations.Nodes
+		if len(declarations) != 1 {
+			b.e.fail(node, "for-of requires one variable declaration")
+			return
+		}
+		decl = declarations[0]
+		cell = b.e.bindings[decl]
+		pattern = ast.IsBindingPattern(decl.Name())
+		if cell == nil && !pattern {
+			return
+		}
+		lexical = n.Initializer.AsVariableDeclarationList().Flags&ast.NodeFlagsBlockScoped != 0
 	}
-	decl := n.Initializer.AsVariableDeclarationList().Declarations.Nodes[0]
-	cell := b.e.bindings[decl]
-	pattern := ast.IsBindingPattern(decl.Name())
-	if cell == nil && !pattern {
-		return
-	}
-	lexical := n.Initializer.AsVariableDeclarationList().Flags&ast.NodeFlagsBlockScoped != 0
 	// The loop declaration is in scope (uninitialized) while evaluating its RHS.
-	if pattern {
+	if !assignmentTarget && pattern {
 		b.declarePatternCells(decl.Name())
-	} else if cell.lexical {
+	} else if !assignmentTarget && cell.lexical {
 		b.allocate(cell)
 	}
 	iterable := b.expression(n.Expression)
@@ -313,7 +326,10 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 	if needsClose {
 		b.emit(active + "=true")
 	}
-	if pattern {
+	if assignmentTarget {
+		_, write := b.lvalue(n.Initializer)
+		b.emit(write(iterator + ".value"))
+	} else if pattern {
 		if lexical {
 			b.declarePatternCells(decl.Name())
 		}

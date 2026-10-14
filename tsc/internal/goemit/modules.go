@@ -49,7 +49,7 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 	}
 	builder.statements(input.File.Statements.Nodes)
 	builder.emit("m.complete(tsU)")
-	return e.classText.String() + builder.finish(), e.diags
+	return e.classText.String() + e.regexText.String() + builder.finish(), e.diags
 }
 
 // Bundle formats one executable containing a persistent initializer per source.

@@ -109,6 +109,10 @@ func (e *emitter) prepareClass(c *classInfo) {
 			c.parent = e.classReference(expression)
 			if c.parent == nil && expression.Kind == ast.KindIdentifier && e.binding(expression) == nil {
 				switch expression.Text() {
+				case "RegExp":
+					c.baseError = "RegExp"
+					e.dynamicPrototypes = true
+					continue
 				case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError", "SuppressedError":
 					c.baseError = expression.Text()
 					e.dynamicPrototypes = true
@@ -298,7 +302,9 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 	}
 	var make strings.Builder
 	fmt.Fprintf(&make, "func() *tsClass {class:=&tsClass{dynamic:%t,layout:&tsLayout_%s};", b.e.dynamicPrototypes, c.name)
-	if c.baseError != "" {
+	if c.baseError == "RegExp" {
+		make.WriteString("class.baseConstructor=tsRegExpConstructor();")
+	} else if c.baseError != "" {
 		make.WriteString("class.baseConstructor=tsErrorConstructor(" + strconv.Quote(c.baseError) + ");")
 	}
 	if c.parent != nil {
@@ -311,7 +317,7 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 		fmt.Fprintf(&make, ";self.%s=%s", capture.name, capture.name)
 	}
 	make.WriteString(";self.initProperties();if class.dynamic{self.properties.dynamicPrototype=tsClassPrototype(class)}")
-	fmt.Fprintf(&make, ";self.%s(args...);if !self.properties.initialized {panic(\"Derived constructor did not call super\")};return self};return class}()", ctorName(c))
+	fmt.Fprintf(&make, ";self.%s(args...);if !self.properties.initialized {panic(tsThrown{tsErrorValue(&tsRuntimeError{name:\"ReferenceError\",message:\"Derived constructor did not call super\"})})};return self};return class}()", ctorName(c))
 	classValue := b.typedTemp(make.String(), "*tsClass")
 	for _, member := range classMembers(c.node).Nodes {
 		if member.Name() != nil && member.Name().Kind == ast.KindComputedPropertyName {
@@ -762,6 +768,9 @@ func (b *machineBuilder) classProperty(node *ast.Node, receiver, name string) (s
 				}
 				return "tsPrototypeLookup(loop," + receiver + ",tsClassPrototype(tsClassPointer(" + cell.name + ".get()))," + strconv.Quote(name) + ")", true
 			}
+		}
+		if node.Kind == ast.KindSuperKeyword && b.declaring != nil && b.declaring.baseError == "RegExp" && !b.declaring.static {
+			return "tsPrototypeLookup(loop," + receiver + ",tsClassBasePrototype(loop," + receiver + ")," + strconv.Quote(name) + ")", true
 		}
 		return "", false
 	}

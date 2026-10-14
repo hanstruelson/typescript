@@ -4,6 +4,7 @@ package goemit
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/microsoft/TypeScript/tsc/internal/ast"
@@ -28,6 +29,7 @@ type binding struct {
 type emitter struct {
 	file                *ast.SourceFile
 	resolver            ReferenceResolver
+	namespace           string
 	bindings            map[*ast.Node]*binding
 	globalBindings      map[string]*ast.Node
 	imports             map[*ast.Node]string
@@ -37,6 +39,8 @@ type emitter struct {
 	classes             map[*ast.Node]*classInfo
 	classOrder          []*classInfo
 	classText           strings.Builder
+	regexText           strings.Builder
+	regexMatchers       map[string]string
 	dynamicPrototypes   bool
 	reflectiveFields    bool
 	deleteEffects       map[*classInfo]map[string]bool
@@ -56,7 +60,7 @@ func (e *emitter) fail(node *ast.Node, message string) {
 }
 func (e *emitter) unique(prefix string) string {
 	e.next++
-	return fmt.Sprintf("ts%s%d", prefix, e.next)
+	return fmt.Sprintf("ts%s%s%d", prefix, e.namespace, e.next)
 }
 func (e *emitter) reference(node *ast.Node) *ast.Node {
 	if e.resolver == nil {
@@ -243,7 +247,16 @@ func (e *emitter) collect(node, owner *ast.Node) {
 // Emit retains normal compiler checking and output handling. Unsupported syntax
 // is diagnosed before tsValue output is written.
 func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver ReferenceResolver) (string, []*ast.Diagnostic) {
-	e := &emitter{file: file, resolver: resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), implicitGlobals: make(map[string]bool)}
+	// The test262 runner can namespace generated declarations when it combines
+	// several standalone programs into one Go package. Normal compiler output
+	// leaves this unset and keeps its established names.
+	namespace := strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' {
+			return r
+		}
+		return -1
+	}, os.Getenv("TSC_GOEMIT_NAMESPACE"))
+	e := &emitter{file: file, resolver: resolver, namespace: namespace, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), implicitGlobals: make(map[string]bool)}
 	e.coerce = !options.CoerceAny.IsFalse()
 	e.legacyDecorators = options.ExperimentalDecorators.IsTrue()
 	if options.EmitDecoratorMetadata.IsTrue() {
@@ -289,12 +302,27 @@ func Emit(file *ast.SourceFile, options *core.CompilerOptions, resolver Referenc
 	if len(e.diags) != 0 {
 		return "", e.diags
 	}
-	text, err := formatValueSource([]byte("package main\n\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + e.classText.String() + "\nfunc main() {\nloop := tsNewLoop()\nloop.invoke(func(){ _ = tsCall(" + body + ") })\nif err := loop.run(); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n}\n"))
+	text, err := formatValueSource([]byte("package main\n\n" + runtimeTemplate() + "\n// TSC_GOEMIT_RUNTIME_END\n" + e.classText.String() + e.regexText.String() + "\nfunc main() {\nloop := tsNewLoop()\nloop.invoke(func(){ _ = tsCall(" + body + ") })\nif err := loop.run(); err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }\n}\n"))
 	if err != nil {
 		e.fail(file.AsNode(), "could not format output: "+err.Error())
 		return "", e.diags
 	}
-	return string(text), nil
+	plan, err := runtimeExportPlanForEmitter()
+	if err != nil {
+		e.fail(file.AsNode(), "could not prepare shared Go runtime: "+err.Error())
+		return "", e.diags
+	}
+	imports, err := runtimeImportSpecs(text)
+	if err != nil {
+		e.fail(file.AsNode(), "could not inspect shared Go runtime imports: "+err.Error())
+		return "", e.diags
+	}
+	program, err := packageMainSource(text, imports, plan)
+	if err != nil {
+		e.fail(file.AsNode(), "could not emit Go program using shared runtime: "+err.Error())
+		return "", e.diags
+	}
+	return string(program), nil
 }
 
 type resumeBlock struct{ lines []string }

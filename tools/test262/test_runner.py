@@ -34,8 +34,6 @@ class InventoryTests(unittest.TestCase):
             self.assertIsNone(cases['ordinary-function.js']['excluded'])
             self.assertEqual(cases['negative.js']['metadata']['negative']['phase'], 'parse')
 
-if __name__=='__main__': unittest.main()
-
 class OutcomeTests(unittest.TestCase):
     def run_case(self, responses, negative=None):
         from types import SimpleNamespace
@@ -58,6 +56,13 @@ class OutcomeTests(unittest.TestCase):
         negative={'phase':'parse','type':'SyntaxError'}
         self.assertEqual(self.run_case([(1,'SyntaxError',0),(3,'syntax rejected',0)],negative),'pass')
         self.assertEqual(self.run_case([(1,'SyntaxError',0),(4,'unsupported emission',0)],negative),'emit-error')
+
+    def test_expected_regex_parse_error_is_not_confused_with_codegen_failure(self):
+        negative={'phase':'parse','type':'SyntaxError'}
+        parser='{"diagnostic":"Go target: regular expression cannot be emitted as Go code: regular expression at 11: Invalid property name"}'
+        codegen='{"diagnostic":"Go target: regular expression cannot be emitted as Go code: Go regex codegen does not yet support graph node X"}'
+        self.assertEqual(self.run_case([(1,'SyntaxError',0),(4,parser,0)],negative),'pass')
+        self.assertEqual(self.run_case([(1,'SyntaxError',0),(4,codegen,0)],negative),'emit-error')
 
     def test_successful_exit_without_completion_is_not_pass(self):
         self.assertEqual(self.run_case([(0,runner.MARK,0),(0,'',0),(0,'',0),(0,'',0)]),'missing-completion')
@@ -82,3 +87,24 @@ class PrivateCacheTests(unittest.TestCase):
             self.assertFalse(fresh.exists())
             self.assertEqual((cached_seed/'archive.a').read_bytes(),b'shared cache')
             self.assertEqual((seed_entry/'archive.a').read_bytes(),b'shared cache')
+
+class BatchBuildTests(unittest.TestCase):
+    def test_combines_one_runtime_and_renames_each_case_entry_point(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            sources=[]
+            for case_id in (4,9):
+                source=root/f'case_{case_id}.go'
+                source.write_text('package main\nimport "os"\nfunc helper() {}\n// TSC_GOEMIT_RUNTIME_END\nfunc main() { helper() }\n')
+                sources.append(({},source,case_id))
+            combined=root/'combined.go'
+            runner.combine_batch(sources,combined)
+            text=combined.read_text()
+            self.assertEqual(text.count('func helper()'),1)
+            self.assertEqual(text.count('func main()'),1)
+            self.assertIn('func tsc262Case4()',text)
+            self.assertIn('func tsc262Case9()',text)
+            self.assertIn('case "4": tsc262Case4()',text)
+            self.assertIn('case "9": tsc262Case9()',text)
+
+if __name__=='__main__': unittest.main()

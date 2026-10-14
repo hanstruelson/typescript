@@ -66,10 +66,16 @@ func tsBigIntProperty(value tsValue,name string)tsValue{
     case "toString","toLocaleString":return tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{radix:=10;if name=="toString"&&!tsIsUndefined(tsArg(args,0)){radix=int(tsNumber(tsArg(args,0)));if radix<2||radix>36{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"RangeError",message:"radix must be between 2 and 36"})})}};return tsStringReference(tsStringUTF8((*big.Int)(value.ref).Text(radix)))}))
     };return tsU
 }
+var tsBigIntIntrinsics struct{sync.Once;function *tsFunction;prototype *tsObject}
 func tsBigIntFunction()tsValue{
-    function:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{return tsBigIntFrom(tsArg(args,0))});function.properties=tsNewObject()
-    for _,method:=range []string{"asIntN","asUintN"}{name:=method;function.properties.set(name,tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{width:=tsToIndex(tsArg(args,0));value:=tsArg(args,1);if tsIsNumeric(value){panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert number to BigInt"})})};number:=(*big.Int)(tsBigIntFrom(value).ref);if width==0{return tsBigIntSigned(0)};if width>1<<30{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"RangeError",message:"Maximum BigInt size exceeded"})})};modulus:=new(big.Int).Lsh(big.NewInt(1),uint(width));result:=new(big.Int).Mod(number,modulus);if name=="asIntN"&&result.Bit(width-1)!=0{result.Sub(result,modulus)};return tsBigIntValue(result)})))}
-    return tsFunctionValue(function)
+    tsBigIntIntrinsics.Do(func(){
+        prototype:=tsNewObject();prototype.prototype=tsObjectPrototype();prototype.boxedPrimitive=tsBigIntSigned(0)
+        function:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{return tsBigIntFrom(tsArg(args,0))});function.name="BigInt";function.length=1;function.properties=tsNewObject();function.properties.set("prototype",tsObjectValue(prototype));function.properties.descriptors=map[string]*tsDescriptor{"prototype":{}}
+        prototype.set("constructor",tsFunctionValue(function));prototype.descriptors=map[string]*tsDescriptor{"constructor":{writable:true,configurable:true}}
+        for _,method:=range []string{"asIntN","asUintN"}{name:=method;function.properties.set(name,tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{width:=tsToIndex(tsArg(args,0));value:=tsArg(args,1);if tsIsNumeric(value){panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert number to a BigInt"})})};number:=(*big.Int)(tsBigIntFrom(value).ref);if width==0{return tsBigIntSigned(0)};if width>1<<30{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"RangeError",message:"Maximum BigInt size exceeded"})})};modulus:=new(big.Int).Lsh(big.NewInt(1),uint(width));result:=new(big.Int).Mod(number,modulus);if name=="asIntN"&&result.Bit(width-1)!=0{result.Sub(result,modulus)};return tsBigIntValue(result)})));function.properties.descriptors[name]=&tsDescriptor{writable:true,configurable:true}}
+        tsBigIntIntrinsics.function=function;tsBigIntIntrinsics.prototype=prototype
+    })
+    return tsFunctionValue(tsBigIntIntrinsics.function)
 }
 func tsConvertBigInt(value tsValue,kind string)tsValue{
     integer:=(*big.Int)(value.ref)

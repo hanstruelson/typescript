@@ -27,7 +27,7 @@ func(m *tsMachine)resumeAsyncDelegate(loop *tsLoop,action string,value tsValue){
 }
 func tsIteratorSymbolProperty(loop *tsLoop,value,key tsValue)tsValue{
  if key.kind!=tsSymbolKind{return tsU};name:=(*tsSymbol)(key.ref).key
- if value.kind==tsIteratorKind{iterator:=(*tsIterator)(value.ref);async:=iterator.machine!=nil&&iterator.machine.asyncGenerator!=nil;expected:="iterator";if async{expected="asyncIterator"};if name==(*tsSymbol)(tsWellKnownSymbol(expected).ref).key{return tsPrototypeLookup(loop,value,tsPrototypeOf(value),name)};return tsU}
+ if value.kind==tsIteratorKind{iterator:=(*tsIterator)(value.ref);if !tsIsUndefined(iterator.prototype){return tsPrototypeLookup(loop,value,tsPrototypeOf(value),name)};async:=iterator.machine!=nil&&iterator.machine.asyncGenerator!=nil;expected:="iterator";if async{expected="asyncIterator"};if name==(*tsSymbol)(tsWellKnownSymbol(expected).ref).key{return tsPrototypeLookup(loop,value,tsPrototypeOf(value),name)};return tsU}
  if name==(*tsSymbol)(tsWellKnownSymbol("iterator").ref).key{if value.kind==tsArrayKind{array:=(*tsArray)(value.ref);if method,ok:=array.properties[name];ok{return method};return (*tsArray)(tsArrayPrototype(loop).ref).properties["values"]};switch value.kind{case tsStringKind,tsTypedArrayKind,tsCollectionKind:return tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsIteratorValueObject(tsIterate(loop,receiver))})}}
  return tsU
 }
