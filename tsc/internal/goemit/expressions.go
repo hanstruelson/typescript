@@ -97,7 +97,7 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 func (b *machineBuilder) builtin(name string) string {
 	if strings.HasPrefix(name, "node-module|") {
 		parts := strings.SplitN(name, "|", 3)
-		value := "tsNodeModule(" + strconv.Quote(parts[1]) + ")"
+		value := "tsNodeModule(loop," + strconv.Quote(parts[1]) + ")"
 		if parts[2] != "" {
 			value = "tsGet(" + value + "," + strconv.Quote(parts[2]) + ")"
 		}
@@ -105,13 +105,21 @@ func (b *machineBuilder) builtin(name string) string {
 	}
 	switch name {
 	case "readFile":
-		return "tsFunc(func(args ...tsValue) tsValue { return loop.readFile(tsArg(args,0)) })"
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue { return tsPromiseValue(loop.readFile(tsArg(args,0))) })"
 	case "setTimeout":
-		return "tsFunc(func(args ...tsValue) tsValue { extra:=[]tsValue{};if len(args)>2 {extra=args[2:]};return loop.setTimeout(tsArg(args,0),tsArg(args,1),extra...) })"
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue { extra:=[]tsValue{};if len(args)>2 {extra=args[2:]};return tsTaskValue(loop.setTimeout(tsArg(args,0),tsArg(args,1),extra...)) })"
 	case "clearTimeout":
-		return "tsFunc(func(args ...tsValue) tsValue {return loop.clearTimeout(tsArg(args,0))})"
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue {return loop.clearTimeout(tsArg(args,0))})"
+	case "setInterval":
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue { extra:=[]tsValue{};if len(args)>2 {extra=args[2:]};return tsTaskValue(tsNodeTimerSetInterval(loop,tsArg(args,0),tsArg(args,1),extra...)) })"
+	case "clearInterval":
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue {return tsNodeTimerClearInterval(loop,tsArg(args,0))})"
+	case "setImmediate":
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue { extra:=[]tsValue{};if len(args)>1 {extra=args[1:]};return tsTaskValue(loop.setTimeout(tsArg(args,0),tsNumberValue(0),extra...)) })"
+	case "clearImmediate":
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue {return loop.clearTimeout(tsArg(args,0))})"
 	case "delay":
-		return "tsFunc(func(args ...tsValue) tsValue { return loop.delay(tsArg(args,0)) })"
+		return "tsFunc(func(loop *tsLoop,args ...tsValue) tsValue { return tsPromiseValue(loop.delay(tsArg(args,0))) })"
 	default:
 		return "tsU"
 	}
@@ -802,7 +810,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 				return result
 			}
 			result := b.temp("tsU")
-			b.emit("if tsTruthy(" + condition + ") {")
+			b.emit("if " + b.truthCondition(condition) + " {")
 			value := b.expression(n.WhenTrue)
 			b.emit(result + "=" + value)
 			b.emit("} else {")
@@ -814,7 +822,7 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		yes, no, end := b.block(), b.block(), b.block()
 		result := b.e.unique("Conditional")
 		b.temps = append(b.temps, result)
-		b.emit(fmt.Sprintf("if tsTruthy(%s) {m.pc=%d} else {m.pc=%d}; return", condition, yes, no))
+		b.emit(fmt.Sprintf("if %s {m.pc=%d} else {m.pc=%d}; return", b.truthCondition(condition), yes, no))
 		b.current = yes
 		value := b.expression(n.WhenTrue)
 		b.emit(result + " = " + value)
@@ -843,12 +851,15 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 			}
 			return b.temp("tsNumber(" + operand + ")")
 		case ast.KindTildeToken:
-			if b.tempType(operand) == "float64" {
-				return b.typedTemp("tsNumberBitwiseNot("+operand+")", "float64")
+			if nativeIntegerType(b.tempType(operand)) {
+				return b.typedTemp("^"+operand, b.tempType(operand))
 			}
-			return b.temp("tsBitwiseNot(" + operand + ")")
+			if b.tempType(operand) == "float64" || b.tempType(operand) == "float32" {
+				return b.typedTemp("tsNumberBitwiseNot(float64("+operand+"))", "float64")
+			}
+			return b.temp("tsBitwiseNot(" + b.comparisonOperand(operand) + ")")
 		case ast.KindExclamationToken:
-			return b.temp("!tsTruthy(" + operand + ")")
+			return b.typedTemp("!("+b.truthCondition(operand)+")", "bool")
 		}
 	case ast.KindPostfixUnaryExpression:
 		n := node.AsPostfixUnaryExpression()
@@ -1169,12 +1180,12 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 	}
 	if operator == ast.KindAmpersandAmpersandToken || operator == ast.KindBarBarToken || operator == ast.KindQuestionQuestionToken {
 		result := b.temp(left)
-		condition := "tsTruthy(" + left + ")"
+		condition := b.truthCondition(left)
 		if operator == ast.KindBarBarToken {
-			condition = "!" + condition
+			condition = "!(" + condition + ")"
 		}
 		if operator == ast.KindQuestionQuestionToken {
-			condition = "tsNullish(" + left + ")"
+			condition = b.nullishCondition(left)
 		}
 		if b.direct {
 			b.emit("if " + condition + " {")
@@ -1227,13 +1238,89 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 			return b.typedTemp(condition, "bool")
 		}
 	}
-	// Dynamic operands must keep JavaScript's comparison semantics. In
-	// particular, comparisons use ToPrimitive/ToNumber behavior (including NaN
-	// for non-numeric strings), not checked assignment conversions. Box the
-	// statically represented side and let the compatibility comparison handle
-	// the dynamic case. Statically typed pairs still use native comparisons.
+	if isComparisonOperator(op) {
+		if value, handled := b.nativePrimitiveComparison(op, left, right); handled {
+			return value
+		}
+		if value, handled := b.nativeNumericComparison(op, left, right); handled {
+			return value
+		}
+	}
+	if op != "===" && op != "!==" && isComparisonOperator(op) {
+		leftPlan, rightPlan := b.e.primitive(n.Left), b.e.primitive(n.Right)
+		if leftPlan.kind == "string" && rightPlan.numeric() {
+			stringValue := b.comparisonOperand(left)
+			left = b.temp(fmt.Sprintf("tsComparisonOperand(%s,%q,%d,%t)", stringValue, rightPlan.kind, leftPlan.nulls, b.e.coerce))
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
+		}
+		if leftPlan.numeric() && rightPlan.kind == "string" {
+			stringValue := b.comparisonOperand(right)
+			right = b.temp(fmt.Sprintf("tsComparisonOperand(%s,%q,%d,%t)", stringValue, leftPlan.kind, rightPlan.nulls, b.e.coerce))
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
+		}
+	}
+	if op == "==" || op == "!=" || op == "===" || op == "!==" {
+		leftType, rightType := b.tempType(left), b.tempType(right)
+		// A statically represented float does not need boxing to compare with a
+		// dynamic value. The helper applies the selected conversion policy to it.
+		if leftType == "float64" && rightType == "tsValue" {
+			return b.nativeNumberAnyEquality(op, left, right)
+		}
+		if rightType == "float64" && leftType == "tsValue" {
+			return b.nativeNumberAnyEquality(op, right, left)
+		}
+		if leftType == "tsOptional[float64]" && rightType == "tsValue" {
+			return b.nativeOptionalNumberAnyEquality(op, left, right)
+		}
+		if rightType == "tsOptional[float64]" && leftType == "tsValue" {
+			return b.nativeOptionalNumberAnyEquality(op, right, left)
+		}
+	}
+	// Fully dynamic operands keep ECMAScript comparison semantics. Mixed typed
+	// and dynamic operands apply the static side's conversion policy first.
 	if isComparisonOperator(op) && (b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue") {
-		return b.temp(fmt.Sprintf("tsBinary(%q,%s,%s)", op, b.comparisonOperand(left), b.comparisonOperand(right)))
+		leftPlan, rightPlan := b.e.primitive(n.Left), b.e.primitive(n.Right)
+		if leftPlan.kind == "" && n.Left.Kind == ast.KindIdentifier {
+			if cell := b.e.binding(n.Left); cell != nil {
+				leftPlan = cell.primitive
+			}
+		}
+		if rightPlan.kind == "" && n.Right.Kind == ast.KindIdentifier {
+			if cell := b.e.binding(n.Right); cell != nil {
+				rightPlan = cell.primitive
+			}
+		}
+		if b.tempType(left) == "tsValue" && rightPlan.kind != "" && !isNullishComparisonOperand(n.Left) {
+			if value, handled := b.nativeDynamicComparison(op, right, left, rightPlan, false); handled {
+				return value
+			}
+			left = b.policyComparisonOperand(left, rightPlan)
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
+		}
+		if b.tempType(right) == "tsValue" && leftPlan.kind != "" && !isNullishComparisonOperand(n.Right) {
+			if value, handled := b.nativeDynamicComparison(op, left, right, leftPlan, true); handled {
+				return value
+			}
+			right = b.policyComparisonOperand(right, leftPlan)
+			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
+		}
+		return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
+	}
+	if b.tempType(left) == "bool" && b.tempType(right) == "bool" {
+		switch op {
+		case "==", "===":
+			return b.typedTemp(left+"=="+right, "bool")
+		case "!=", "!==":
+			return b.typedTemp(left+"!="+right, "bool")
+		case "<":
+			return b.typedTemp("(!"+left+")&&"+right, "bool")
+		case "<=":
+			return b.typedTemp("(!"+left+")||"+right, "bool")
+		case ">":
+			return b.typedTemp(left+"&&(!"+right+")", "bool")
+		case ">=":
+			return b.typedTemp(left+"||(!"+right+")", "bool")
+		}
 	}
 	// Statically known values may need numeric widening before their native
 	// comparison. Dynamic TS values were handled through JavaScript semantics
@@ -1255,20 +1342,6 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 			}
 		}
 	}
-	if (op == "==" || op == "!=" || op == "===" || op == "!==" || op == "<" || op == "<=" || op == ">" || op == ">=") && (primitive{kind: b.tempType(left)}).numeric() && (primitive{kind: b.tempType(right)}).numeric() && b.tempType(left) != b.tempType(right) {
-		leftType, rightType := b.tempType(left), b.tempType(right)
-		if core.NativeNumericLosslessConversion(leftType, rightType) {
-			right = b.comparisonBoundary(right, primitive{kind: leftType})
-		} else if core.NativeNumericLosslessConversion(rightType, leftType) {
-			left = b.comparisonBoundary(left, primitive{kind: rightType})
-		}
-		if b.tempType(left) != b.tempType(right) {
-			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
-		}
-	}
-	if (op == "==" || op == "!=") && b.tempType(left) == b.tempType(right) && (primitive{kind: b.tempType(left)}).numeric() {
-		return b.typedTemp(left+op+right, "bool")
-	}
 	if op == "==" || op == "!=" || op == "<" || op == "<=" || op == ">" || op == ">=" {
 		if b.tempType(left) == "tsValue" || b.tempType(right) == "tsValue" || ((primitive{kind: b.tempType(left)}).numeric() && b.tempType(right) == "*tsString") || ((primitive{kind: b.tempType(right)}).numeric() && b.tempType(left) == "*tsString") {
 			return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
@@ -1280,27 +1353,31 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 	if op == "**" && b.tempType(left) == "float64" && b.tempType(right) == "float64" {
 		return b.typedTemp("tsPow("+left+","+right+")", "float64")
 	}
-	if isBitwiseOperator(op) && b.tempType(left) == "float64" && b.tempType(right) == "float64" {
-		return b.typedTemp("tsNumberBitwise("+strconv.Quote(op)+","+left+","+right+")", "float64")
+	if isBitwiseOperator(op) {
+		if value, handled := b.nativeBitwiseComparison(op, left, right); handled {
+			return value
+		}
 	}
-	if op == "in" || op == "&" || op == "|" || op == "^" || op == "<<" || op == ">>" || op == ">>>" || op == "**" || op == "==" || op == "!=" {
+	if op == "in" || isBitwiseOperator(op) || op == "**" {
+		left = b.comparisonOperand(left)
+		right = b.comparisonOperand(right)
 		return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
 	}
-	if b.tempType(left) == "bool" && b.tempType(right) == "bool" && (op == "===" || op == "!==") {
+	if b.tempType(left) == "bool" && b.tempType(right) == "bool" && (op == "==" || op == "!=" || op == "===" || op == "!==") {
 		goop := "=="
-		if op == "!==" {
+		if op == "!=" || op == "!==" {
 			goop = "!="
 		}
 		return b.typedTemp(left+goop+right, "bool")
 	}
 	if b.tempType(left) == "*tsString" && b.tempType(right) == "*tsString" {
 		switch op {
+		case "==", "===":
+			return b.typedTemp("tsStringEqual("+left+","+right+")", "bool")
+		case "!=", "!==":
+			return b.typedTemp("!tsStringEqual("+left+","+right+")", "bool")
 		case "+":
 			return b.typedTemp("tsStringConcat("+left+","+right+")", "*tsString")
-		case "===":
-			return b.typedTemp("tsStringEqual("+left+","+right+")", "bool")
-		case "!==":
-			return b.typedTemp("!tsStringEqual("+left+","+right+")", "bool")
 		case "<", "<=", ">", ">=":
 			return b.typedTemp("tsStringCompare("+left+","+right+")"+op+"0", "bool")
 		}
@@ -1360,7 +1437,42 @@ func (b *machineBuilder) binary(node *ast.Node) string {
 		}
 		return b.typedTemp(left+goop+right, kind)
 	}
+	if isComparisonOperator(op) {
+		return b.temp(fmt.Sprintf("tsPolicyCompare(%q,%s,%s,%t)", op, b.comparisonOperand(left), b.comparisonOperand(right), b.e.coerce))
+	}
 	return b.temp("tsBinary(" + strconv.Quote(op) + "," + left + "," + right + ")")
+}
+
+func optionalValueType(kind string) string {
+	if strings.HasPrefix(kind, "tsOptional[") && strings.HasSuffix(kind, "]") {
+		return strings.TrimSuffix(strings.TrimPrefix(kind, "tsOptional["), "]")
+	}
+	return ""
+}
+
+func (b *machineBuilder) nativeNumberAnyEquality(op, number, value string) string {
+	strict := op == "===" || op == "!=="
+	equal := fmt.Sprintf("tsPolicyEqualNumberAny(loop,%s,%s,%t,%t)", number, value, strict, b.e.coerce)
+	if op == "!=" || op == "!==" {
+		equal = "!(" + equal + ")"
+	}
+	return b.typedTemp(equal, "bool")
+}
+
+func (b *machineBuilder) policyComparisonOperand(value string, p primitive) string {
+	if p.numeric() {
+		return b.temp(fmt.Sprintf("tsComparisonOperand(%s,%q,%d,%t)", value, p.kind, p.nulls, b.e.coerce))
+	}
+	return b.comparisonBoundary(value, p)
+}
+
+func (b *machineBuilder) nativeOptionalNumberAnyEquality(op, optional, value string) string {
+	strict := op == "===" || op == "!=="
+	equal := fmt.Sprintf("tsPolicyEqualOptionalNumberAny(loop,%s,%s,%t,%t)", optional, value, strict, b.e.coerce)
+	if op == "!=" || op == "!==" {
+		equal = "!(" + equal + ")"
+	}
+	return b.typedTemp(equal, "bool")
 }
 
 func isComparisonOperator(op string) bool {
@@ -1592,12 +1704,12 @@ func compoundOperator(kind ast.Kind) string {
 func (b *machineBuilder) logicalAssignment(node *ast.BinaryExpression) string {
 	read, write := b.lvalue(node.Left)
 	result := b.temp(read)
-	condition := "tsTruthy(" + result + ")"
+	condition := b.truthCondition(result)
 	switch node.OperatorToken.Kind {
 	case ast.KindBarBarEqualsToken:
-		condition = "!" + condition
+		condition = "!(" + condition + ")"
 	case ast.KindQuestionQuestionEqualsToken:
-		condition = "tsNullish(" + result + ")"
+		condition = b.nullishCondition(result)
 	}
 	if b.direct {
 		b.emit("if " + condition + " {")

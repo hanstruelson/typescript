@@ -43,6 +43,45 @@ func TestNativeStringNumber(t *testing.T){
  for _,item:=range cases{got:=tsStringNumber(tsStringUTF8(item.text));if math.IsNaN(item.want){if !math.IsNaN(got){t.Errorf("%q: wanted NaN, got %v",item.text,got)}}else if got!=item.want||got==0&&math.Signbit(got)!=math.Signbit(item.want){t.Errorf("%q: wanted %v, got %v",item.text,item.want,got)}}
  loop:=tsNewLoop();if tsStringValueWithLoop(loop,tsNumberValue(1e21)).String()!="1e+21"{t.Fatal("number formatting")}
 }
+func TestStringIdentityComparisonFastPath(t *testing.T){
+ value:=tsStringUTF8(strings.Repeat("x",4096));if !tsStringEqual(value,value)||tsStringCompare(value,value)!=0{t.Fatal("identical string references did not compare equal")}
+ different:=tsStringUTF8(strings.Repeat("x",4095)+"y");if tsStringEqual(value,different)||tsStringCompare(value,different)>=0{t.Fatal("content comparison changed for distinct large strings")}
+}
+func TestBigIntRelationalPairs(t *testing.T){
+ loop:=tsNewLoop();one:=tsBigIntSigned(1);less:=func(value tsValue)bool{return tsTruthy(tsBigIntBinary(loop,"<",one,value))}
+ if !less(tsStringReference(tsStringUTF8("2"))){t.Fatal("BigInt/string ordering did not parse an integer string")}
+ if less(tsStringReference(tsStringUTF8("1.5")))||less(tsStringReference(tsStringUTF8("not a number"))){t.Fatal("invalid BigInt/string comparison was not unordered")}
+ symbol:=tsNewSymbol(nil);if tsTruthy(tsBigIntBinary(loop,"==",one,symbol)){t.Fatal("loose BigInt/Symbol equality should be false")}
+ func(){defer func(){recovered:=recover();thrown,ok:=recovered.(tsThrown);if !ok||thrown.value.kind!=tsErrorKind||(*tsRuntimeError)(thrown.value.ref).name!="TypeError"{t.Fatalf("BigInt/Symbol ordering did not throw TypeError: %#v",recovered)}}();tsBigIntBinary(loop,"<",one,symbol);t.Fatal("BigInt/Symbol ordering returned instead of throwing")}()
+}
+func TestNativeIntegerDecimalStringComparison(t *testing.T){
+	cases:=[]struct{name string;integer tsValue;text string;want int;valid bool}{
+		{"int64 max exact",tsInt64Value(math.MaxInt64),"9223372036854775807",0,true},
+		{"int64 max with Unicode space",tsInt64Value(math.MaxInt64),"\u00a09223372036854775807\u00a0",0,true},
+		{"int64 max hexadecimal",tsInt64Value(math.MaxInt64),"0x7fffffffffffffff",0,true},
+		{"int64 max fraction",tsInt64Value(math.MaxInt64),"9223372036854775807.5",-1,true},
+		{"int64 rounded boundary",tsInt64Value(math.MaxInt64),"9223372036854775808",-1,true},
+		{"uint64 max exact",tsUint64Value(math.MaxUint64),"18446744073709551615",0,true},
+		{"uint64 max hexadecimal",tsUint64Value(math.MaxUint64),"0xffffffffffffffff",0,true},
+		{"decimal exponent",tsInt64Value(1000),"1e3",0,true},
+		{"invalid",tsInt64Value(1),"not a number",0,false},
+	}
+	for _,test:=range cases{t.Run(test.name,func(t *testing.T){got,valid:=tsIntegerStringCompare(test.integer,tsStringUTF8(test.text));if valid!=test.valid||valid&&got!=test.want{t.Fatalf("comparison = (%d,%t), want (%d,%t)",got,valid,test.want,test.valid)}})}
+}
+func TestStrictIdentityRuntimeKinds(t *testing.T){
+ loop:=tsNewLoop();module:=tsNewModule(loop,"identity");other:=tsNewModule(loop,"other")
+ task:=&tsTask{};if !tsStrictEqual(tsTaskValue(task),tsTaskValue(task))||tsStrictEqual(tsTaskValue(task),tsTaskValue(&tsTask{})){t.Fatal("task identity")}
+ if !tsStrictEqual(tsNamespaceValue(tsNamespace{module}),tsNamespaceValue(tsNamespace{module}))||tsStrictEqual(tsNamespaceValue(tsNamespace{module}),tsNamespaceValue(tsNamespace{other})){t.Fatal("namespace identity must use its module")}
+ if !tsStrictEqual(tsImportValue(tsImportRef{module,"x"}),tsImportValue(tsImportRef{module,"x"}))||tsStrictEqual(tsImportValue(tsImportRef{module,"x"}),tsImportValue(tsImportRef{module,"y"})){t.Fatal("import binding identity")}
+ if !tsStrictEqual(tsModuleValue(module),tsModuleValue(module))||tsStrictEqual(tsModuleValue(module),tsModuleValue(other)){t.Fatal("module identity")}
+}
+func TestInChecksRightBeforeConvertingKey(t *testing.T){
+ loop:=tsNewLoop();called:=false;object:=tsNewObject();key:=tsWellKnownSymbol(loop,"toPrimitive")
+ object.set(loop,tsPropertyKey(loop,key),tsFunctionValue(tsFunc(func(_ *tsLoop,_ ...tsValue)tsValue{called=true;return tsStringReference(tsStringUTF8("x"))})))
+ func(){defer func(){recovered:=recover();thrown,ok:=recovered.(tsThrown);if !ok||thrown.value.kind!=tsErrorKind||(*tsRuntimeError)(thrown.value.ref).name!="TypeError"{t.Fatalf("primitive right operand did not throw TypeError: %#v",recovered)}}();tsHas(loop,tsNumberValue(1),tsObjectValue(object));t.Fatal("primitive right operand was accepted")}()
+ if called{t.Fatal("left key conversion ran before rejecting the right operand")}
+ target:=tsNewObject();target.set(loop,"x",tsBooleanValue(true));if !tsHas(loop,tsObjectValue(target),tsObjectValue(object))||!called{t.Fatal("valid object membership did not convert the key once")}
+}
 func TestGeneratedRegExpRuntime(t *testing.T){
 	loop:=tsNewLoop();value:=testGeneratedRegExp(loop);regexp:=(*tsRegExp)(value.ref)
  if regexp.flags!="dg"||!regexp.global||!regexp.hasIndices{t.Fatal("flags were not canonicalized")}

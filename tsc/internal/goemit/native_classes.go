@@ -20,16 +20,17 @@ var tsNativeClasses struct {sync.Once;classes map[string]*tsClass}
 func tsNativeClass(name string)*tsClass{
     tsNativeClasses.Do(func(){
         tsNativeClasses.classes=map[string]*tsClass{}
-        for _,name:=range []string{"Stats","BigIntStats","StatFs","BigIntStatFs","Dirent","Dir","FSWatcher","StatWatcher","ReadStream","WriteStream","Buffer","Date","AbortSignal","AbortController","FileHandle","Blob","ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader"}{
+        for _,name:=range []string{"Stats","BigIntStats","StatFs","BigIntStatFs","Dirent","Dir","FSWatcher","StatWatcher","ReadStream","WriteStream","Buffer","Date","AbortSignal","AbortController","FileHandle","Blob","File","ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader"}{
             class:=&tsClass{builtin:name,static:tsInstanceValue(tsNewProperties()),nativePrototype:tsNewObject()};tsNativeClasses.classes[name]=class;class.nativePrototype.set("constructor",tsClassValue(class));properties:=tsInstanceProperties(class.static);properties.define("prototype");properties.extra["prototype"]=tsObjectValue(class.nativePrototype)
             class.construct=func(loop *tsLoop,args ...tsValue)tsValue{
                 switch name{
                 case "Blob":return tsBlobConstruct(loop,args)
+                case "File":return tsNodeBufferFileConstruct(loop,args)
                 case "Date":return tsDateConstruct(args)
                 case "Stats":return tsFSConstructStats(args)
                 case "Dirent":return tsFSConstructDirent(args)
                 case "ReadStream","WriteStream":return tsFSCreateStream(loop,tsArg(args,0),tsArg(args,1),name=="ReadStream")
-                case "Buffer":module:=tsNodeBufferModule();method:="from";if tsIsNumeric(tsArg(args,0)){method="alloc"};return tsCall(loop,tsFSProperty(module,method),args...)
+                case "Buffer":if tsIsNumeric(tsArg(args,0)){return tsNodeBufferAllocate(loop,args,false)};return tsNodeBufferFrom(loop,args)
                 case "AbortController":return tsAbortController(loop)
                 default:panic(tsThrown{tsFSException("TypeError","ERR_ILLEGAL_CONSTRUCTOR","Illegal constructor")})
                 }
@@ -49,7 +50,7 @@ func tsNativeClass(name string)*tsClass{
         buffer:=tsNativeClasses.classes["Buffer"]
         methods:=[]string{};for _,operation:=range []string{"read","write"}{for _,spec:=range []string{"UInt","Uint","Int","UInt16","Uint16","Int16","UInt32","Uint32","Int32","Float","Double","BigUInt64","BigUint64","BigInt64"}{for _,endian:=range []string{"LE","BE"}{methods=append(methods,operation+spec+endian)}};for _,spec:=range []string{"UInt8","Uint8","Int8"}{methods=append(methods,operation+spec)}}
         for _,name:=range methods{method:=name;buffer.nativePrototype.set(method,tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if receiver.kind!=tsTypedArrayKind||!(*tsTypedArray)(receiver.ref).nodeBuffer{tsFSInvalid("this","a Buffer")};return tsCall(loop,tsNodeBufferGet(receiver,method),args...)}))}
-        for _,name:=range []string{"toString","toLocaleString","toJSON","equals","compare","copy","fill","write","slice","subarray","includes","indexOf","lastIndexOf","swap16","swap32","swap64"}{method:=name;buffer.nativePrototype.set(method,tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if receiver.kind!=tsTypedArrayKind||!(*tsTypedArray)(receiver.ref).nodeBuffer{tsFSInvalid("this","a Buffer")};return tsCall(loop,tsNodeBufferGet(receiver,method),args...)}))}
+        for _,name:=range []string{"toString","toLocaleString","toJSON","inspect","equals","compare","copy","fill","write","slice","subarray","includes","indexOf","lastIndexOf","swap16","swap32","swap64","asciiSlice","asciiWrite","base64Slice","base64Write","base64urlSlice","base64urlWrite","hexSlice","hexWrite","latin1Slice","latin1Write","ucs2Slice","ucs2Write","utf16leSlice","utf16leWrite","utf8Slice","utf8Write"}{method:=name;buffer.nativePrototype.set(method,tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if receiver.kind!=tsTypedArrayKind||!(*tsTypedArray)(receiver.ref).nodeBuffer{tsFSInvalid("this","a Buffer")};return tsCall(loop,tsNodeBufferGet(receiver,method),args...)}))}
         for _,class:=range tsNativeClasses.classes{class.nativePrototype.descriptors=map[string]*tsDescriptor{};for _,key:=range class.nativePrototype.order{class.nativePrototype.descriptors[key]=&tsDescriptor{writable:true,configurable:true}}}
     })
     return tsNativeClasses.classes[name]

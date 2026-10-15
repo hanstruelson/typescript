@@ -173,7 +173,7 @@ func (b *machineBuilder) exportDeclaration(node *ast.Node) {
 		return
 	}
 	if n.ModuleSpecifier != nil && IsNativeNodeModule(n.ModuleSpecifier.Text()) {
-		module := "tsNodeModule(" + strconv.Quote(strings.TrimPrefix(n.ModuleSpecifier.Text(), "node:")) + ")"
+		module := "tsNodeModule(loop," + strconv.Quote(strings.TrimPrefix(n.ModuleSpecifier.Text(), "node:")) + ")"
 		for _, specifier := range n.ExportClause.AsNamedExports().Elements.Nodes {
 			s := specifier.AsExportSpecifier()
 			if s.IsTypeOnly {

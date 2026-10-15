@@ -107,6 +107,7 @@ func tsFSWatchFile(loop *tsLoop,args []tsValue)tsValue{
     tsFSStatWatchers.Lock();if tsFSStatWatchers.states==nil{tsFSStatWatchers.states=map[*tsLoop]map[string]*tsFSWatchState{}};if tsFSStatWatchers.states[loop]==nil{tsFSStatWatchers.states[loop]=map[string]*tsFSWatchState{}};state:=tsFSStatWatchers.states[loop][path];tsFSStatWatchers.Unlock()
     if state!=nil&&!state.closed{state.events.listeners["change"]=append(state.events.listeners["change"],tsFSListener{callback:callback});return tsObjectValue(state.events.object)}
     state=&tsFSWatchState{cancel:make(chan struct{}),events:tsFSEventObject(loop)};state.events.object.nativeClass=tsNativeClass("StatWatcher");state.events.listeners["change"]=[]tsFSListener{{callback:callback}}
+    state.events.object.set("stop",tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{state.close();return tsU})))
     tsFSStatWatchers.Lock();tsFSStatWatchers.states[loop][path]=state;tsFSStatWatchers.Unlock()
     state.task=loop.submit(func()tsResult{
         previous,previousErr:=os.Stat(path);previousValue:=tsFSZeroStats(options);if previousErr==nil{previousValue=tsFSStats(previous,options)}

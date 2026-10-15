@@ -6,7 +6,7 @@ const webStreamRuntime = `
 type tsWebReadRequest struct { promise *tsPromise; loop *tsLoop; token uint64; canceled bool;view tsValue;minimum,capacity,filled int }
 type tsWebStream struct {
     iterator *tsAsyncIterator;object *tsObject;locked,ended,busy bool;failure tsValue
-    token uint64;queue []*tsWebReadRequest;buffered []tsValue;readerClosed *tsPromise
+    token uint64;queue []*tsWebReadRequest;buffered []tsValue;readerClosed *tsPromise;closeWaiters []*tsPromise
 }
 func tsWebStreamValue(iterator *tsAsyncIterator)tsValue{
     stream:=&tsWebStream{iterator:iterator,object:tsNewObject()};stream.object.webStream=stream;stream.object.nativeClass=tsNativeClass("ReadableStream");stream.object.set("locked",tsBooleanValue(false))
@@ -48,7 +48,7 @@ func(stream *tsWebStream)commitBYOB(request *tsWebReadRequest,done bool)bool{
     if request.filled==0&&done{array.length=0;request.promise.settle(tsResult{tsIteratorResult(request.view,true),false});return true}
     aligned:=request.filled-request.filled%array.bytes
     if aligned<request.minimum&&!done{return false}
-    if done&&request.filled%array.bytes!=0{stream.failure=tsFSException("TypeError","ERR_INVALID_STATE","The stream ended with a partial BYOB element");request.promise.settle(tsResult{stream.failure,true});return true}
+    if done&&request.filled%array.bytes!=0{stream.failure=tsFSException("TypeError","ERR_INVALID_STATE","The stream ended with a partial BYOB element");stream.ended=true;tsWebStreamSettleClosed(stream,tsResult{stream.failure,true});request.promise.settle(tsResult{stream.failure,true});return true}
     if aligned<request.filled{data:=tsFSBytes(request.view);tail:=tsByteView(append([]byte{},data[aligned:request.filled]...));stream.buffered=append([]tsValue{tail},stream.buffered...)}
     array.length=aligned/array.bytes;request.promise.settle(tsResult{tsIteratorResult(request.view,false),false});return true
 }
@@ -66,7 +66,7 @@ func(stream *tsWebStream)pumpStream(){
         stream.busy=true;direct:=byob&&stream.iterator.nextInto!=nil;var promise *tsPromise
         if direct{array:=(*tsTypedArray)(request.view.ref);view:=tsNativeBufferView[uint8](array.buffer,array.offset+request.filled,request.capacity-request.filled,"Uint8Array",func(number float64)uint8{return uint8(tsNumberUint32(number))});promise=stream.iterator.nextInto(loop,tsTypedArrayValue(view))}else{promise=stream.iterator.next(loop)}
         loop.await(tsPromiseValue(promise),func(result tsResult){stream.busy=false
-            if result.rejected{stream.failure=result.value;stream.ended=true;if stream.readerClosed!=nil{stream.readerClosed.settle(result)}}else if tsTruthy(tsFSProperty(result.value,"done")){stream.ended=true;if stream.readerClosed!=nil{stream.readerClosed.settle(tsResult{tsU,false})}}
+            if result.rejected{stream.failure=result.value;stream.ended=true;tsWebStreamSettleClosed(stream,result)}else if tsTruthy(tsFSProperty(result.value,"done")){stream.ended=true;tsWebStreamSettleClosed(stream,tsResult{tsU,false})}
             if request.canceled{
                 stream.queue=stream.queue[1:];if !stream.ended&&!result.rejected{stream.buffered=append(stream.buffered,tsFSProperty(result.value,"value"))}
             }else if result.rejected{stream.queue=stream.queue[1:];request.promise.settle(result)
@@ -81,6 +81,9 @@ func(stream *tsWebStream)pumpStream(){
 }
 
 func(stream *tsWebStream)cancelStream(loop *tsLoop)*tsPromise{
-    stream.ended=true;stream.buffered=nil;for _,request:=range stream.queue{request.promise.settle(tsResult{tsIteratorResult(tsU,true),false});request.canceled=true};if stream.readerClosed!=nil{stream.readerClosed.settle(tsResult{tsU,false})};return stream.iterator.close(loop)
+    stream.ended=true;stream.buffered=nil;for _,request:=range stream.queue{request.promise.settle(tsResult{tsIteratorResult(tsU,true),false});request.canceled=true};tsWebStreamSettleClosed(stream,tsResult{tsU,false});return stream.iterator.close(loop)
 }
+func tsWebStreamSettleClosed(stream *tsWebStream,result tsResult){if stream.readerClosed!=nil{stream.readerClosed.settle(result)};for _,promise:=range stream.closeWaiters{promise.settle(result)};stream.closeWaiters=nil}
+func tsWebStreamClosedPromise(loop *tsLoop,stream *tsWebStream)*tsPromise{promise:=loop.promise();if !tsIsUndefined(stream.failure){promise.settle(tsResult{stream.failure,true})}else if stream.ended{promise.settle(tsResult{tsU,false})}else{stream.closeWaiters=append(stream.closeWaiters,promise)};return promise}
+func tsWebStreamControllerError(loop *tsLoop,value,errorValue tsValue){if value.kind!=tsObjectKind||(*tsObject)(value.ref).webStream==nil{return};stream:=(*tsObject)(value.ref).webStream;if stream.ended{return};stream.failure=errorValue;stream.ended=true;tsWebStreamSettleClosed(stream,tsResult{errorValue,true});for _,request:=range stream.queue{request.promise.settle(tsResult{errorValue,true});request.canceled=true};stream.queue=nil;_ = loop}
 `

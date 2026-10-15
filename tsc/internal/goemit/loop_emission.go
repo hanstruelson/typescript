@@ -138,11 +138,17 @@ func threadLoopContext(file *ast.File) {
 		}
 		return true
 	})
+	explicitLoop := map[string]bool{}
+	for _, fn := range functions {
+		if fn.Type.Params != nil && len(fn.Type.Params.List) > 0 && valueType(fn.Type.Params.List[0].Type) == "*tsLoop" {
+			explicitLoop[fn.Name.Name] = true
+		}
+	}
 	ast.Inspect(file, func(node ast.Node) bool {
 		if call, ok := node.(*ast.CallExpr); ok {
 			name := valueCallName(call.Fun)
 			_, selector := call.Fun.(*ast.SelectorExpr)
-			if required[name] && !receiverContext[name] && name != "tsFunc" && (name != "call" || selector) {
+			if required[name] && !receiverContext[name] && !explicitLoop[name] && name != "tsFunc" && (name != "call" || selector) {
 				if len(call.Args) == 0 || valueType(call.Args[0]) != "loop" {
 					call.Args = append([]ast.Expr{ast.NewIdent("loop")}, call.Args...)
 				}

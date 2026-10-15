@@ -343,8 +343,11 @@ func tsInitNumberIntrinsics() {
 }
 
 // Comparison preserves numeric payloads rather than narrowing a dynamic operand.
-func tsComparisonOperand(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsObjectKind&&(*tsObject)(value.ref).nativeDate{return value};if value.kind==tsBigIntKind{return value};if tsIsNumeric(value)&&tsNumericType(kind){return value};return tsBoundary(value,kind,nulls,coerce)}
+// References and Symbols stay intact so the comparison algorithm, rather than
+// assignment conversion, controls ToPrimitive order and Symbol behavior.
+func tsComparisonOperand(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if !tsIsPrimitiveValue(value)||value.kind==tsSymbolKind||value.kind==tsBigIntKind{return value};if tsIsNumeric(value)&&tsNumericType(kind){return value};return tsBoundary(value,kind,nulls,coerce)}
 func tsPolicyCompare(op string,left,right tsValue,coerce bool)tsValue {
+ if !coerce&&op!="==="&&op!="!=="&&((left.kind==tsStringKind&&tsIsNumeric(right))||(right.kind==tsStringKind&&tsIsNumeric(left))){tsConversionTypeFailure(tsValueTypeName(left),tsValueTypeName(right))}
  if left.kind==tsBigIntKind||right.kind==tsBigIntKind{return tsBigIntBinary(op,left,right)}
  return tsBinary(op,left,right)
 }

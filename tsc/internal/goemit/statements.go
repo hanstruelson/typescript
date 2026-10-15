@@ -125,7 +125,7 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 		n := node.AsIfStatement()
 		value := b.expression(n.Expression)
 		yes, no, end := b.block(), b.block(), b.block()
-		b.emit(fmt.Sprintf("if tsTruthy(%s) {m.pc=%d} else {m.pc=%d}; return", value, yes, no))
+		b.emit(fmt.Sprintf("if %s {m.pc=%d} else {m.pc=%d}; return", b.truthCondition(value), yes, no))
 		b.current = yes
 		b.statement(n.ThenStatement)
 		b.jump(end)
@@ -156,7 +156,7 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 		b.jump(test)
 		b.current = test
 		value := b.expression(condition)
-		b.emit(fmt.Sprintf("if tsTruthy(%s) {m.pc=%d} else {m.pc=%d}; return", value, start, end))
+		b.emit(fmt.Sprintf("if %s {m.pc=%d} else {m.pc=%d}; return", b.truthCondition(value), start, end))
 		b.loops = b.loops[:len(b.loops)-1]
 		b.current = end
 	case ast.KindForStatement:
@@ -250,7 +250,7 @@ func (b *machineBuilder) forStatement(node *ast.Node, label string) {
 	if n.Condition != nil {
 		value = b.expression(n.Condition)
 	}
-	b.emit(fmt.Sprintf("if tsTruthy(%s) {m.pc=%d} else {m.pc=%d}; return", value, body, end))
+	b.emit(fmt.Sprintf("if %s {m.pc=%d} else {m.pc=%d}; return", b.truthCondition(value), body, end))
 	b.current = body
 	b.statement(n.Statement)
 	b.jump(increment)

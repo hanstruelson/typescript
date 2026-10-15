@@ -38,7 +38,7 @@ func tsBigIntBinary(op string,left,right tsValue)tsValue{
     switch op{
     case "===","!==":equal:=left.kind==tsBigIntKind&&right.kind==tsBigIntKind&&(*big.Int)(left.ref).Cmp((*big.Int)(right.ref))==0;if op=="!=="{equal=!equal};return tsBooleanValue(equal)
     case "==","!=":equal:=tsLooseEqual(left,right);if op=="!="{equal=!equal};return tsBooleanValue(equal)
-    case "<","<=",">",">=":left=tsToPrimitive(left);right=tsToPrimitive(right);comparison,valid:=tsBigIntCompare(left,right);if !valid{return tsBooleanValue(false)};switch op{case "<":return tsBooleanValue(comparison<0);case "<=":return tsBooleanValue(comparison<=0);case ">":return tsBooleanValue(comparison>0);default:return tsBooleanValue(comparison>=0)}
+    case "<","<=",">",">=":left=tsToPrimitive(left);right=tsToPrimitive(right);if left.kind==tsSymbolKind||right.kind==tsSymbolKind{tsPropertyFailure("Cannot convert Symbol to number")};comparison,valid:=tsBigIntCompare(left,right);if !valid{return tsBooleanValue(false)};switch op{case "<":return tsBooleanValue(comparison<0);case "<=":return tsBooleanValue(comparison<=0);case ">":return tsBooleanValue(comparison>0);default:return tsBooleanValue(comparison>=0)}
     case "+":left=tsToPrimitive(left);right=tsToPrimitive(right);if left.kind==tsStringKind||right.kind==tsStringKind{return tsStringReference(tsStringUTF8(tsText(left)+tsText(right)))}
     }
     if left.kind!=tsBigIntKind||right.kind!=tsBigIntKind{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot mix BigInt and other types"})})}

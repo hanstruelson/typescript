@@ -28,7 +28,7 @@ func TestGoNumberBitwise(t *testing.T) {
 }
 func TestGoNumberBitwiseNativeEmission(t *testing.T) {
 	text := emitGoOptions(t, `function shift(x:number,n:number):number{return x>>>n;}let x:number=-1;x<<=33;console.log(shift(x,1),~x);`, core.CompilerOptions{Strict: core.TSTrue})
-	for _, fragment := range []string{`tsNumberBitwise(">>>",`, `tsNumberBitwise("<<",`, `tsNumberBitwiseNot(`} {
+	for _, fragment := range []string{`TsNumberBitwise(">>>",`, `TsNumberBitwise("<<",`, `TsNumberBitwiseNot(`} {
 		if !strings.Contains(text, fragment) {
 			t.Fatalf("missing native call %s", fragment)
 		}

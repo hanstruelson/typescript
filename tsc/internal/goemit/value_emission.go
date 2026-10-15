@@ -18,10 +18,38 @@ func formatValueSource(source []byte) ([]byte, error) {
 	set := token.NewFileSet()
 	file, err := parser.ParseFile(set, "output.go", source, parser.ParseComments)
 	if err != nil {
-		return nil, err
+		line := 0
+		_, _ = fmt.Sscanf(err.Error(), "output.go:%d:", &line)
+		lines := bytes.Split(source, []byte("\n"))
+		start, end := line-2, line+2
+		if start < 1 {
+			start = 1
+		}
+		if end > len(lines) {
+			end = len(lines)
+		}
+		var excerpt bytes.Buffer
+		for index := start; index <= end; index++ {
+			fmt.Fprintf(&excerpt, "%d: %s\n", index, lines[index-1])
+		}
+		return nil, fmt.Errorf("%w\n%s", err, excerpt.String())
 	}
 	threadLoopContext(file)
 	pass := valueEmission{fields: map[string]map[string]string{}, functions: map[string][]valueSignature{}, globals: map[string]string{}}
+	ast.Inspect(file, func(node ast.Node) bool {
+		structure, ok := node.(*ast.StructType)
+		if !ok {
+			return true
+		}
+		fields := map[string]string{}
+		for _, field := range structure.Fields.List {
+			for _, name := range field.Names {
+				fields[name.Name] = valueType(field.Type)
+			}
+		}
+		pass.fields[valueType(structure)] = fields
+		return true
+	})
 	for _, decl := range file.Decls {
 		switch d := decl.(type) {
 		case *ast.GenDecl:
@@ -35,6 +63,19 @@ func formatValueSource(source []byte) ([]byte, error) {
 							}
 						}
 						pass.fields[typ.Name.Name] = fields
+					}
+				} else if value, ok := spec.(*ast.ValueSpec); ok {
+					if structure, ok := value.Type.(*ast.StructType); ok {
+						fields := map[string]string{}
+						for _, field := range structure.Fields.List {
+							for _, name := range field.Names {
+								fields[name.Name] = valueType(field.Type)
+							}
+						}
+						pass.fields[valueType(value.Type)] = fields
+						for _, name := range value.Names {
+							pass.fields[name.Name] = fields
+						}
 					}
 				}
 			}
@@ -51,7 +92,7 @@ func formatValueSource(source []byte) ([]byte, error) {
 		if d, ok := decl.(*ast.FuncDecl); ok {
 			// Host adapters deliberately accept/return Go interfaces. Their body is not
 			// JavaScript code and must not recursively call itself through this pass.
-			if d.Name.Name == "tsUnwrap" || d.Name.Name == "tsPrimitiveValue" || d.Name.Name == "tsNative" {
+			if d.Name.Name == "tsUnwrap" || d.Name.Name == "tsPrimitiveValue" || d.Name.Name == "tsNative" || d.Name.Name == "tsNodeVMInstallModuleMethods" || d.Name.Name == "tsInternalClusterSharedCreate" {
 				continue
 			}
 			pass.scope = d.Name.Name
@@ -286,11 +327,19 @@ func (p *valueEmission) kind(expr ast.Expr, env map[string]string) string {
 	case *ast.SliceExpr:
 		return p.kind(e.X, env)
 	case *ast.SelectorExpr:
-		return p.fields[valueBase(p.kind(e.X, env))][e.Sel.Name]
+		if field := p.fields[valueBase(p.kind(e.X, env))][e.Sel.Name]; field != "" {
+			return field
+		}
+		if name, ok := e.X.(*ast.Ident); ok {
+			return p.fields[name.Name][e.Sel.Name]
+		}
 	case *ast.FuncLit:
 		return valueType(e.Type)
 	case *ast.CallExpr:
 		if selector, ok := e.Fun.(*ast.SelectorExpr); ok {
+			if selector.Sel.Name == "init" {
+				return "tsValue"
+			}
 			if pkg, ok := selector.X.(*ast.Ident); ok {
 				switch pkg.Name {
 				case "math":
@@ -313,8 +362,31 @@ func (p *valueEmission) kind(expr ast.Expr, env map[string]string) string {
 			}
 		}
 		name := valueCallName(e.Fun)
+		if strings.HasPrefix(name, "ts") && strings.HasSuffix(name, "Module") {
+			return "tsValue"
+		}
 		switch name {
-		case "tsNumberValue", "tsBooleanValue", "tsStringReference", "tsPrimitiveValue":
+		case "tsNativeClass":
+			return "*tsClass"
+		case "tsInstanceProperties":
+			return "*tsProperties"
+		case "tsDescriptorObject":
+			return "*tsObject"
+		case "metadata":
+			return "*tsObject"
+		case "node":
+			return "*tsJSONNode"
+		case "tsIterate", "tsArrayLikeIterator":
+			return "*tsIterator"
+		case "tsObjectKeys", "tsOwnKeys":
+			return "*tsArray"
+		}
+		switch name {
+		case "tsValue", "tsNumberValue", "tsBooleanValue", "tsStringReference", "tsPrimitiveValue", "tsFunctionValue", "tsObjectValue", "tsArrayValue", "tsArrayBuiltin", "tsClassValue", "tsErrorValue", "tsPromiseValue", "tsCollectionValue", "tsIteratorValueReference", "tsBigIntBinary", "tsBigIntSigned", "tsBigIntFrom", "tsConvertBigInt", "tsDateConstruct", "tsFSConstructStats", "tsFSConstructDirent", "tsFSDateMillis", "tsFSDate", "tsStringStatic", "tsStringConstructor", "tsBooleanConstructor", "tsNumberConstructor", "tsBigIntFunction", "tsUnicodeString", "tsRegExpLegacyGetter", "tsRegExpConstructor", "tsNewCompiledRegExp", "tsRegExpStringIteratorPrototype", "tsBinary", "tsPolicyCompare", "tsBoundary", "tsArrayBoundary", "tsComparisonOperand", "tsConvertValue", "tsToPrimitive", "tsPrimitiveHint":
+			return "tsValue"
+		case "tsNodeQUICMakeConstructor", "tsNodeQUICMakeStatsClass", "tsNodeQUICStateConstructor", "tsNodeSQLiteConstructor", "tsInternalMockTimersConstructor", "tsNodeTestNewMockTracker", "tsNodeTestMockFunctionContext":
+			return "tsValue"
+		case "tsObjectPrototype", "tsObjectConstructor", "tsProxyConstructor", "tsFunctionConstructor", "tsFunctionPrototype", "tsClassPrototype", "tsPrototypeOf", "tsRegExpPrototype", "tsErrorPrototype", "tsErrorConstructor", "tsGlobalObject", "tsGeneratorPrototype", "tsGeneratorFunctionPrototype", "tsWellKnownSymbol", "tsSymbolFunction", "tsPathModuleFor", "tsNodeURLPathToFileURL", "tsNodeURLFileURLToPath", "tsNodeOSConstants", "tsNodeOSString", "tsNodeOSNumber", "tsNodeOSCPUs", "tsNodeOSNetworkInterfaces", "tsNodeTimerRejectedIterator", "tsBuiltinClass", "tsInternalPrimordialsGetter", "tsNodeModuleConstructorValue", "tsNodeModuleCompileCacheStatus", "tsNodeParseArgsFunction", "tsNodeUtilSystemErrorMap", "tsNodePerfEntry", "tsNodePerfEntryList", "tsNodePerfGetEntries", "tsNodePerfUtilization", "tsNodePerfObserverConstructor", "tsNodeHistogramValue", "tsInternalSharedPerformanceEntry", "tsInternalSharedNodeEntryList", "tsInternalSharedPerformanceNodeEntry", "tsInternalSharedNodeObserverConstructor", "tsInternalSharedNodeObserverDisconnect", "tsInternalSharedErrorClass", "tsInternalSharedHideFromStack", "tsInternalValidatorCheckRanges", "tsInternalValidatorPath", "tsInternalValidatorFsPath", "tsInternalValidatorCheckLink", "tsInternalValidatorPort", "tsNodeDuplexifyOptions", "tsTypedArrayBufferExtended", "tsTypedArrayBuffer", "tsTypedArrayBigIntElement", "tsBigIntElement", "tsTypedArrayElement", "tsArrayMutate", "tsNodeIterFromIteratorObject", "tsNodeIterFromIterable", "tsNodeIterFromEmpty", "tsNodeIterFromArrayBatch", "tsNodeIterFromAsyncIterator", "tsNodeIterFromNormalizeAsyncValue", "tsNodeIterFromDeferredAsyncResult", "tsNodeIterFromArray", "tsNodeClassicBatchedReadable", "tsNodeCryptoKeyValue", "tsNodeCryptoCallable", "tsNodeCryptoConstructorPrototype", "tsNodeProcessBindingConstants", "tsNodeProcessReallyExit", "tsNodeProcessResourceUsage", "tsNodeProcessConfig", "tsNodeProcessStdin", "tsNodeProcessWriteStream", "tsNodeProcessMemoryUsage", "tsNodeProcessSetUncaughtExceptionCapture", "tsNodeDomainEnter", "tsNodeDomainExit", "tsNodeDiagnosticsChannelConstructor", "tsNodeALSMethod", "tsNodeAsyncResourceMethod", "tsNodeAsyncLocalStorageConstructor", "tsNodeAsyncResourceConstructor", "tsNodeAsyncHooksCreateHook", "tsNodeAssertDecorate", "tsGet", "tsSet", "tsSetPrototype", "tsObjectBuiltin", "tsConstruct", "tsFSProperty", "tsFSOption", "tsFSStats", "tsFSZeroStats", "tsFSDir", "tsFSDirent", "tsFSInvoke", "tsIteratorResult", "tsNodeBuffer", "tsBYOBTransfer", "tsWebStreamValue", "tsFSReadLines", "tsAsyncIteratorObject", "tsBlobObject", "tsNamedNativeMethod", "tsNodeURLParamsObject", "tsNodeURLObject", "tsNodeNetMakeAddr", "tsNodeNetNormalizeArgs", "tsNodeDNSObject", "tsNodeDNSStrings", "tsNodeDNSAsync", "tsNodeDNSLookupAsync", "tsNodeDNSServiceAsync", "tsNodeDNSError", "tsInternalTLSKey", "tsInternalTLSError", "tsInternalTLSSecureRange", "tsInternalTLSStripCipherNames", "tsInternalTLSNormalizePEM", "tsInternalTLSClientOptions", "tsInternalTLSHandshakeError", "tsInternalTLSProcessPFX", "tsInternalTLSUnsealPFX":
 			return "tsValue"
 		case "float64", "float32", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "bool", "string":
 			return name
@@ -404,7 +476,11 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 	if p.err == nil {
 		var detail bytes.Buffer
 		_ = format.Node(&detail, token.NewFileSet(), expr)
-		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue in %s", detail.String(), kind, p.scope)
+		candidates := ""
+		if call, ok := expr.(*ast.CallExpr); ok {
+			candidates = fmt.Sprintf("; call %s signatures: %#v", valueCallName(call.Fun), p.functions[valueCallName(call.Fun)])
+		}
+		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue in %s%s", detail.String(), kind, p.scope, candidates)
 	}
 	return expr
 }
@@ -535,6 +611,14 @@ func (p *valueEmission) fieldOrder(kind string) []string {
 func (p *valueEmission) multipleAssignmentResults(expr ast.Expr, env map[string]string) []string {
 	switch value := expr.(type) {
 	case *ast.CallExpr:
+		switch valueCallName(value.Fun) {
+		case "tsFSReadDirectory":
+			return []string{"tsValue", "error"}
+		case "tsRegExpLiteralSearch":
+			return []string{"tsValue", "bool"}
+		case "tsNodeDNSResolveValues":
+			return []string{"tsValue", "error"}
+		}
 		return p.signature(value, env).results
 	case *ast.IndexExpr:
 		if mapType := p.kind(value.X, env); strings.HasPrefix(mapType, "map[") {
@@ -596,9 +680,16 @@ func (p *valueEmission) statement(stmt ast.Stmt, env map[string]string, result s
 		if len(s.Rhs) == 1 {
 			tupleResults = p.multipleAssignmentResults(s.Rhs[0], env)
 		}
+		multipleResultAssignment := len(s.Rhs) == 1 && len(tupleResults) == len(s.Lhs) && len(tupleResults) > 1
 		for i, left := range s.Lhs {
 			left = p.expression(left, env)
 			s.Lhs[i] = left
+			if multipleResultAssignment {
+				if name, ok := left.(*ast.Ident); ok && s.Tok == token.DEFINE {
+					env[name.Name] = tupleResults[i]
+				}
+				continue
+			}
 			if i >= len(s.Rhs) {
 				if name, ok := left.(*ast.Ident); ok && s.Tok == token.DEFINE {
 					kind := ""

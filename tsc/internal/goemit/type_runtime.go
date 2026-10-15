@@ -1,6 +1,6 @@
 package goemit
 
-const TypeRuntime = typeBaseRuntime + nodeModuleRuntime + FSRuntime + bigintRuntime + nativeClassRuntime + dateRuntime + bufferTransferRuntime
+const TypeRuntime = typeBaseRuntime + nodeModuleRuntime + FSRuntime + NodeBufferRuntime + PathRuntime + nodeStringDecoderRuntime + nodeModulesRuntime + bigintRuntime + nativeClassRuntime + dateRuntime + bufferTransferRuntime
 
 const typeBaseRuntime = `
 type tsBindingCell struct {raw func() tsValue;initializedState func() bool}
@@ -84,6 +84,37 @@ func tsNumericCompare(a,b tsValue)(int,bool){
  if floatingB{f:=b.number;if tsIsSigned(a){i:=int64(math.Float64bits(a.number));if f< -9223372036854775808{return 1,true};if f>=9223372036854775808{return -1,true};j:=int64(f);if i<j{return -1,true};if i>j{return 1,true};if f>float64(j){return -1,true};if f<float64(j){return 1,true};return 0,true};if f<0{return 1,true};if f>=18446744073709551616{return -1,true};i,j:=math.Float64bits(a.number),uint64(f);if i<j{return -1,true};if i>j{return 1,true};if f>float64(j){return -1,true};return 0,true}
  if tsIsSigned(a)&&tsIsSigned(b){i,j:=int64(math.Float64bits(a.number)),int64(math.Float64bits(b.number));if i<j{return -1,true};if i>j{return 1,true};return 0,true}
  if tsIsSigned(a)&&int64(math.Float64bits(a.number))<0{return -1,true};if tsIsSigned(b)&&int64(math.Float64bits(b.number))<0{return 1,true};i,j:=math.Float64bits(a.number),math.Float64bits(b.number);if i<j{return -1,true};if i>j{return 1,true};return 0,true
+}
+// Integer-backed native values keep all 64 bits when compared with a decimal
+// string. Parsing through float64 would round values at and above 2^53.
+func tsIntegerStringCompare(integer tsValue,text *tsString)(int,bool){
+ number:=tsStringNumber(text);if math.IsNaN(number){return 0,false};if math.IsInf(number,1){return -1,true};if math.IsInf(number,-1){return 1,true}
+	source:=tsNumericStringText(text)
+	if rational,ok:=tsIntegerStringRational(source);ok{return new(big.Rat).SetInt(tsIntegerBig(integer)).Cmp(rational),true}
+ return tsNumericCompare(integer,tsNumberValue(number))
+}
+func tsIntegerStringRational(source string)(*big.Rat,bool){
+	if len(source)>2&&source[0]=='0'{base:=0;switch source[1]{case 'x','X':base=16;case 'o','O':base=8;case 'b','B':base=2};if base!=0{integer,ok:=new(big.Int).SetString(source[2:],base);if !ok{return nil,false};return new(big.Rat).SetInt(integer),true}}
+	for _,r:=range source{if !(r>='0'&&r<='9'||r=='+'||r=='-'||r=='.'||r=='e'||r=='E'){return nil,false}}
+	return new(big.Rat).SetString(source)
+}
+func tsIntegerBig(value tsValue)*big.Int{if tsIsSigned(value){return big.NewInt(int64(math.Float64bits(value.number)))};return new(big.Int).SetUint64(math.Float64bits(value.number))}
+func tsNativeIntegerBitwise[T tsNativeInteger](op string,left,right T)T{
+ if (op=="<<"||op==">>"||op==">>>")&&right<0{tsNumericRangeFailure("nonnegative shift count")}
+ switch op{
+ case "<<":return left<<uint64(right)
+ case ">>":return left>>uint64(right)
+ case ">>>":bits:=uint(unsafe.Sizeof(left)*8);raw:=uint64(left);if bits<64{raw&=(uint64(1)<<bits)-1};return T(raw>>uint64(right))
+ default:panic("Invalid native integer bitwise operator")
+ }
+}
+func tsNumericComparison(op string,a,b tsValue)bool{
+ switch op{
+ case "==","===":return tsNumericEqual(a,b)
+ case "!=","!==":return !tsNumericEqual(a,b)
+ }
+ comparison,valid:=tsNumericCompare(a,b);if !valid{return false}
+ switch op{case "<":return comparison<0;case "<=":return comparison<=0;case ">":return comparison>0;case ">=":return comparison>=0};panic("Invalid numeric comparison operator")
 }
 func tsIntegerBits(kind tsKind,bits uint64)tsValue{switch kind{case tsIntKind:return tsIntValue(int(bits));case tsInt8Kind:return tsInt8Value(int8(bits));case tsInt16Kind:return tsInt16Value(int16(bits));case tsInt32Kind:return tsInt32Value(int32(bits));case tsInt64Kind:return tsInt64Value(int64(bits));case tsUintKind:return tsUintValue(uint(bits));case tsUint8Kind:return tsUint8Value(uint8(bits));case tsUint16Kind:return tsUint16Value(uint16(bits));case tsUint32Kind:return tsUint32Value(uint32(bits));case tsUint64Kind:return tsUint64Value(uint64(bits));};panic("Invalid integer kind")}
 `

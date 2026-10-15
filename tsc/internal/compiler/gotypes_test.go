@@ -227,6 +227,146 @@ func TestGoMixedComparisonPolicy(t *testing.T) {
 	}
 }
 
+func TestGoNativeEqualityPaths(t *testing.T) {
+	source := `const fastA:number=5;const fastB:number=5;let nullableA:number|null|undefined=5;let nullableB:number|null|undefined=5;let dynamic:any="5";let flagA:boolean=true;let flagB:boolean=false;let textA:string="same";let textB:string="same";console.log(fastA==fastB,fastA!=fastB,fastA===fastB,fastA!==fastB,nullableA==nullableB,nullableA!=nullableB,nullableA===nullableB,nullableA!==nullableB,fastA==dynamic,fastA!=dynamic,fastA===dynamic,fastA!==dynamic);console.log(flagA==flagB,flagA!=flagB,flagA===flagB,flagA!==flagB,flagA<flagB,flagA<=flagB,flagA>flagB,flagA>=flagB,flagB<flagA,flagB<=flagA,flagB>flagA,flagB>=flagA,textA==textB,textA!=textB,textA===textB,textA!==textB);nullableA=null;dynamic=undefined;console.log(nullableA==dynamic,nullableA!=dynamic,nullableA===dynamic,nullableA!==dynamic);dynamic=null;console.log(nullableA==dynamic,nullableA!=dynamic,nullableA===dynamic,nullableA!==dynamic);nullableB=undefined;console.log(nullableA==nullableB,nullableA!=nullableB,nullableA===nullableB,nullableA!==nullableB);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	for _, op := range []string{"==", "!=", "===", "!=="} {
+		if strings.Contains(text, `tsruntime.TsBinary(loop, "`+op+`",`) || strings.Contains(text, `TsPolicyCompare("`+op+`",`) {
+			t.Fatalf("typed equality %s fell back to the generic comparison path", op)
+		}
+	}
+	if !strings.Contains(text, "TsPolicyEqualNumberAny(loop,") || !strings.Contains(text, "TsPolicyEqualOptionalNumberAny(loop,") {
+		t.Fatalf("number-versus-any equality did not use its specialized runtime helpers")
+	}
+	got, err := runGoProgram(t, text, false)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	want := "true false true false true false true false true false true false\nfalse true false true false false true true true true false false true false true false\ntrue false false true\ntrue false true false\ntrue false false true\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestGoNativeNonnumericComparisonPaths(t *testing.T) {
+	source := `let textA:string|null|undefined="same";let textB:string|null|undefined="same";let flagA:boolean|null|undefined=false;let flagB:boolean|null|undefined=null;const flag:boolean=true;const number:int32=1;let maybeNumber:int64|null|undefined=null;console.log(textA==textB,textA===textB,textA!==textB);console.log(textA<textB,textA<=textB,textA>textB,textA>=textB);textA=null;textB="2";console.log(textA<textB,textA<=textB,textA>textB,textA>=textB);textB=undefined;console.log(textA==textB,textA===textB,textA!==textB);console.log(flagA<flagB,flagA<=flagB,flagA>flagB,flagA>=flagB);flagA=true;flagB=false;console.log(flagA<flagB,flagA<=flagB,flagA>flagB,flagA>=flagB);flagA=undefined;console.log(flagA<flagB,flagA<=flagB,flagA>flagB,flagA>=flagB);console.log(flag==number,flag!=number,flag<number,flag<=number,flag>number,flag>=number);console.log(flagB==maybeNumber,flagB===maybeNumber,flagB<maybeNumber,flagB<=maybeNumber,flagB>maybeNumber,flagB>=maybeNumber);flagA=true;maybeNumber=1;console.log(flagA==maybeNumber,flagA===maybeNumber,flagA<maybeNumber,flagA<=maybeNumber,flagA>maybeNumber,flagA>=maybeNumber);maybeNumber=undefined;console.log(flagA<maybeNumber,flagA<=maybeNumber,flagA>maybeNumber,flagA>=maybeNumber);console.log(number===flag,number!==flag,textA===flag,textA!==flag);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	for _, op := range []string{"==", "!=", "===", "!==", "<", "<=", ">", ">="} {
+		if strings.Contains(text, `TsPolicyCompare("`+op+`"`) || strings.Contains(text, `tsruntime.TsBinary(loop, "`+op+`",`) {
+			t.Fatalf("statically known nonnumeric comparison %s used the generic path", op)
+		}
+	}
+	if !strings.Contains(text, "TsStringEqual(") || !strings.Contains(text, ".Tag == 0") {
+		t.Fatal("nullable string equality did not use content and tag fast paths")
+	}
+	got, err := runGoProgram(t, text, true)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	want := "true true false\nfalse true false true\ntrue true false false\ntrue false true\nfalse true false true\nfalse false true true\nfalse false false false\ntrue false false true false true\nfalse false false true false true\ntrue false false true false true\nfalse false false false\nfalse true false true\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestGoTypedDynamicComparisonDispatch(t *testing.T) {
+	source := `const small:int32=7;let dynamic:any=7;const flag:boolean=true;let maybe:string|null|undefined="x";let dynamicText:any="x";console.log(small==dynamic,small===dynamic,small>=dynamic);console.log(flag==dynamic,flag===dynamic);maybe=undefined;dynamicText=null;console.log(maybe==dynamicText,maybe===dynamicText);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue, CoerceAny: core.TSTrue})
+	for _, helper := range []string{"TsPolicyCompareNative[int32]", "TsPolicyCompareNative[bool]", "TsPolicyCompareOptionalNative[*tsruntime.TsString]"} {
+		if !strings.Contains(text, helper) {
+			for _, line := range strings.Split(text, "\n") {
+				if strings.Contains(line, "Compare") || strings.Contains(line, "Binary") {
+					t.Log(line)
+				}
+			}
+			t.Fatalf("typed/dynamic comparison did not use shared native dispatch %s", helper)
+		}
+	}
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != "true true true\ntrue true\ntrue false\n" {
+		t.Fatalf("got %q: %v", got, err)
+	}
+}
+
+func TestGoTypedDynamicComparisonPreservesObjectCoercion(t *testing.T) {
+	source := `let log:string="";const text:string="1";let dynamic:any={valueOf:()=>{log+="V";return 1;}};console.log(text==dynamic,log);log="";const number:number=1;console.log(dynamic>=number,log);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue, CoerceAny: core.TSTrue})
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != "true V\ntrue V\n" {
+		t.Fatalf("got %q: %v", got, err)
+	}
+}
+
+func TestGoTypedBitwiseLowering(t *testing.T) {
+	source := `const a:int8=-2;const b:int8=3;const minusOne:int8=-1;const shift:int8=1;const f:float32=3.5;const n:number=1.5;const flag:boolean=true;const off:boolean=false;console.log(a&b,a|b,a^b,a<<shift,a>>shift,minusOne>>>shift);console.log(f&n,~f,flag&off,flag|off);try{console.log(a<<minusOne);}catch(e){console.log(e.name);}`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	if !strings.Contains(text, "TsNativeIntegerBitwise[int8]") || !strings.Contains(text, "TsNumberBitwise(") {
+		for _, line := range strings.Split(text, "\n") {
+			if strings.Contains(line, "tsNativeIntegerBitwise") || strings.Contains(line, "tsNumberBitwise") || strings.Contains(line, "tsBinary(\"&\"") {
+				t.Log(line)
+			}
+		}
+		t.Fatal("typed integer and Number bitwise paths were not selected")
+	}
+	got, err := runGoProgram(t, text, true)
+	want := "2 -1 -3 -4 -1 127\n1 -4 0 1\nRangeError\n"
+	if err != nil || got != want {
+		t.Fatalf("got %q want %q: %v", got, want, err)
+	}
+}
+
+func TestGoNativeTruthinessPaths(t *testing.T) {
+	source := `const zero:int32=0;const nan:number=NaN;const empty:string="";let maybe:boolean|null|undefined=undefined;console.log(!zero,!nan,!empty,!maybe);console.log(zero||2,empty||"fallback",maybe??true);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	if !strings.Contains(text, "!= 0") || !strings.Contains(text, "math.IsNaN(float64(") || !strings.Contains(text, "len(") || !strings.Contains(text, ".Tag == 0") || strings.Contains(text, "TsTruthy(") {
+		for _, line := range strings.Split(text, "\n") {
+			if strings.Contains(line, "tsTruthy") || strings.Contains(line, "tsNullish") || strings.Contains(line, ".tag!=0") || strings.Contains(line, "len(") || strings.Contains(line, "math.IsNaN(float64(") {
+				t.Log(line)
+			}
+		}
+		t.Fatal("known primitive truthiness/nullish paths were not emitted directly")
+	}
+	got, err := runGoProgram(t, text, true)
+	if err != nil || got != "true true true true\n2 fallback true\n" {
+		t.Fatalf("got %q: %v", got, err)
+	}
+}
+
+func TestGoNumericComparisonPlans(t *testing.T) {
+	source := `const signed:int32=2147483647;const unsigned:uint32=4294967295;const rounded:float32=0.1;const exact:float64=0.1;const wide:int64=9007199254740993;const nearby:float64=9007199254740992;const minimum:int64=-9223372036854775808;const minimumFloat:float64=-9223372036854775808;const signedMax:int64=9223372036854775807;const signedLimit:float64=9223372036854775808;const unsignedMax:uint64=18446744073709551615;const unsignedLimit:float64=18446744073709551616;let optional:int64|null|undefined=null;console.log(signed<unsigned,signed<=unsigned,signed>unsigned,signed>=unsigned,signed===unsigned,signed!=unsigned);console.log(rounded>exact,rounded===exact);console.log(wide<nearby,wide<=nearby,wide>nearby,wide>=nearby,wide==nearby,wide!=nearby,wide===nearby,wide!==nearby);console.log(nearby<wide,nearby<=wide,nearby>wide,nearby>=wide,nearby==wide,nearby!=wide,nearby===wide,nearby!==wide);console.log(minimum<minimumFloat,minimum<=minimumFloat,minimum>minimumFloat,minimum>=minimumFloat,minimum==minimumFloat,minimum!=minimumFloat,minimum===minimumFloat,minimum!==minimumFloat);console.log(signedMax<signedLimit,signedMax<=signedLimit,signedMax>signedLimit,signedMax>=signedLimit,signedMax==signedLimit,signedMax!=signedLimit);console.log(unsignedMax<unsignedLimit,unsignedMax<=unsignedLimit,unsignedMax>unsignedLimit,unsignedMax>=unsignedLimit,unsignedMax==unsignedLimit,unsignedMax!=unsignedLimit);console.log(unsignedLimit<unsignedMax,unsignedLimit<=unsignedMax,unsignedLimit>unsignedMax,unsignedLimit>=unsignedMax,unsignedLimit==unsignedMax,unsignedLimit!=unsignedMax);console.log(optional<=0,optional==undefined,optional===null);optional=undefined;console.log(optional<0,optional==null,optional===undefined);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	if !strings.Contains(text, `TsNumericComparison(">"`) {
+		t.Fatal("int64/float64 comparison did not use the exact numeric fallback")
+	}
+	if !strings.Contains(text, "int64(") || !strings.Contains(text, "float64(") {
+		t.Fatal("safe third-target numeric widening was not emitted")
+	}
+	got, err := runGoProgram(t, text, true)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	want := "true true false false false true\ntrue false\nfalse false true true false true false true\ntrue true false false false true false true\nfalse true false true true false true false\ntrue true false false false true\ntrue true false false false true\nfalse false true true false true\ntrue true true\nfalse true true\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+func TestGoDynamicEqualityDispatch(t *testing.T) {
+	source := `let left:any="5";let right:any=5;console.log(left==right,left!=right,left===right,left!==right);console.log(right==left,right!=left,right===left,right!==left);`
+	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
+	if !strings.Contains(text, `tsruntime.TsBinary(loop, "==",`) {
+		t.Fatal("dynamic equality did not use the factored runtime dispatch")
+	}
+	got, err := runGoProgram(t, text, false)
+	if err != nil {
+		t.Fatalf("%v\n%s", err, got)
+	}
+	want := "true false false true\ntrue false false true\n"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestGoNativeNumericConversions(t *testing.T) {
 	source := `let big:int64=9223372036854775807;let unsigned:uint64=18446744073709551615;let small:int32=7;let f:float32=1.25;let dynamic:any=big;console.log(big,unsigned,small,f,dynamic,typeof big);try{small=big;}catch(e){console.log(e.name);}try{small=1.5 as any;}catch(e){console.log(e.name);}small=12 as any;console.log(small);let exact:int64=9007199254740993;exact++;let tiny:int32=1;let inferred=exact+tiny;console.log(exact,inferred);`
 	for _, coerce := range []core.Tristate{core.TSTrue, core.TSFalse} {

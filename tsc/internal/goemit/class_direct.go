@@ -93,7 +93,7 @@ func (b *machineBuilder) directStatement(node *ast.Node) {
 	case ast.KindIfStatement:
 		n := node.AsIfStatement()
 		condition := b.expression(n.Expression)
-		b.emit("if tsTruthy(" + condition + ") {")
+		b.emit("if " + b.truthCondition(condition) + " {")
 		b.directStatement(n.ThenStatement)
 		b.emit("} else {")
 		b.directStatement(n.ElseStatement)

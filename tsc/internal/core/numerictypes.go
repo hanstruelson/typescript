@@ -128,3 +128,85 @@ func NativeNumericLosslessConversion(target, source string) bool {
 	}
 	return sourceUnsigned && !targetUnsigned && targetBits > sourceBits
 }
+
+// NativeNumericCommonType returns the least-cost native type that exactly
+// represents every value of both source types. An empty target means the pair
+// needs an exact comparison path instead of conversion to a common type.
+//
+// The selector considers third types as well as either input type. For
+// example, int32 and uint32 share int64, while int32 and float32 share
+// float64. It prefers fewer conversions, then a smaller representation, then
+// integer targets over floating targets when both plans have the same cost.
+func NativeNumericCommonType(a, b string) string {
+	canonical := func(kind string) string {
+		if kind == "number" {
+			return "float64"
+		}
+		return kind
+	}
+	a, b = canonical(a), canonical(b)
+	if !isNativeNumericType(a) || !isNativeNumericType(b) {
+		return ""
+	}
+	if a == b {
+		return a
+	}
+
+	targets := [...]string{
+		"int8", "uint8", "int16", "uint16", "int32", "uint32",
+		"int64", "uint64", "int", "uint", "float32", "float64",
+	}
+	width := func(kind string) int {
+		switch kind {
+		case "int8", "uint8":
+			return 8
+		case "int16", "uint16":
+			return 16
+		case "int32", "uint32", "float32":
+			return 32
+		case "int64", "uint64", "float64":
+			return 64
+		case "int", "uint":
+			return strconv.IntSize
+		default:
+			return 0
+		}
+	}
+	integerTarget := func(kind string) bool { return kind != "float32" && kind != "float64" }
+
+	best := ""
+	bestConversions, bestWidth := int(^uint(0)>>1), int(^uint(0)>>1)
+	bestInteger := false
+	for _, target := range targets {
+		if !NativeNumericLosslessConversion(target, a) || !NativeNumericLosslessConversion(target, b) {
+			continue
+		}
+		conversions := 0
+		if canonical(target) != a {
+			conversions++
+		}
+		if canonical(target) != b {
+			conversions++
+		}
+		targetWidth := width(target)
+		targetInteger := integerTarget(target)
+		if conversions < bestConversions ||
+			conversions == bestConversions && targetWidth < bestWidth ||
+			conversions == bestConversions && targetWidth == bestWidth && targetInteger && !bestInteger {
+			best = target
+			bestConversions = conversions
+			bestWidth = targetWidth
+			bestInteger = targetInteger
+		}
+	}
+	return best
+}
+
+func isNativeNumericType(kind string) bool {
+	switch kind {
+	case "number", "float32", "float64", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64":
+		return true
+	default:
+		return false
+	}
+}
