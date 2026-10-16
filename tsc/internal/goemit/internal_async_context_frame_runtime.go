@@ -12,10 +12,14 @@ var tsInternalAsyncContextFrameState struct {
 
 func tsInternalAsyncContextFrameValue(frame *tsAsyncContextFrame) tsValue {
     if frame==nil{return tsU}
-    tsInternalAsyncContextFrameState.Lock();defer tsInternalAsyncContextFrameState.Unlock()
-    if value,ok:=tsInternalAsyncContextFrameState.values[frame];ok{return value}
-    object:=tsNewObject();object.prototype=tsNull;object.nonExtensible=true
+    tsInternalAsyncContextFrameState.Lock()
+    if tsInternalAsyncContextFrameState.values==nil{tsInternalAsyncContextFrameState.values=map[*tsAsyncContextFrame]tsValue{};tsInternalAsyncContextFrameState.frames=map[*tsObject]*tsAsyncContextFrame{}}
+    if value,ok:=tsInternalAsyncContextFrameState.values[frame];ok{tsInternalAsyncContextFrameState.Unlock();return value}
+    object:=tsNewObject();object.prototype=tsNull
     value:=tsObjectValue(object);tsInternalAsyncContextFrameState.values[frame]=value;tsInternalAsyncContextFrameState.frames[object]=frame
+    tsInternalAsyncContextFrameState.Unlock()
+    object.set("storage",tsObjectValue((*tsObject)(frame.storage)));object.set("value",frame.value);object.set("prev",tsInternalAsyncContextFrameValue(frame.prev))
+    if frame.masked!=nil{masked:=&tsArray{};for storage,enabled:=range frame.masked{if enabled{masked.values=append(masked.values,tsObjectValue((*tsObject)(storage)))}};object.set("masked",tsArrayValue(masked))}
     return value
 }
 

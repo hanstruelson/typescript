@@ -1,6 +1,9 @@
 package goemit
 
 const fsBlobRuntime = `
+// Bun's BlobSizeType is u64-backed but Node-visible sizes stop at 2^52 - 1.
+const tsFSBlobSizeMax int64 = (1 << 52) - 1
+
 type tsBlobFile struct {sync.Mutex;file *os.File;stat unix.Stat_t}
 type tsBlob struct {data []byte;file *tsBlobFile;offset,length int64;mediaType string}
 func tsBlobError()tsValue{return tsErrorValue(&tsRuntimeError{name:"NotReadableError",message:"The blob could not be read",fields:map[string]tsValue{"code":tsNumberValue(0)}})}

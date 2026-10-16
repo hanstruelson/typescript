@@ -1,6 +1,6 @@
 # Native JavaScript built-ins
 
-Node module expansion is paused while the shared JavaScript built-ins are implemented and checked against Node. The TypeScript emitter compiles supported regular-expression literals into Go matcher functions; Goja and regexp2 are not runtime dependencies. Dynamic RegExp construction and unsupported graph forms remain compatibility gaps.
+Node module adapters are tracked separately in [`tsc/NODE_MODULE_PORTING.md`](../../tsc/NODE_MODULE_PORTING.md). This checklist covers shared JavaScript built-ins. The TypeScript emitter compiles supported regular-expression literals into Go matcher functions; Goja and regexp2 are not runtime dependencies. Dynamic RegExp construction and unsupported graph forms remain compatibility gaps.
 
 The [API inventory](builtins-api.json) records the Node reference surface, including symbol-named entries. Presence in this inventory does not imply implementation or conformance. The behavioral references are [ECMA-262](https://tc39.es/ecma262/) and, for locale formatting, [ECMA-402](https://tc39.es/ecma402/). RFC date formats alone do not define JavaScript Date behavior.
 

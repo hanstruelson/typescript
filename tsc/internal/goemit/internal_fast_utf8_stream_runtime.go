@@ -56,14 +56,14 @@ func tsInternalFastUTF8StreamStartWrite(state *tsInternalFastUTF8StreamState) {
 	size:=len(state.buffer);if state.maxWrite>0&&size>state.maxWrite{size=state.maxWrite}
 	state.current=append([]byte{},state.buffer[:size]...);state.writing=true;tsInternalFastUTF8StreamUpdate(state)
 	if state.sync {
-		result:=tsFSDescriptorIO("write",[]tsValue{state.fd,tsNodeBuffer(state.current),tsNumberValue(0),tsNumberValue(float64(len(state.current))),tsNull})
+		result:=tsFSDescriptorIO(loop,"write",[]tsValue{state.fd,tsNodeBuffer(state.current),tsNumberValue(0),tsNumberValue(float64(len(state.current))),tsNull})
 		if result.rejected{state.writing=false;tsInternalFastUTF8StreamUpdate(state);state.events.emitEvent("error",result.value);return}
 		n:=int(tsNumber(tsFSProperty(result.value,"bytesWritten")));if n<0{n=0};if n>len(state.buffer){n=len(state.buffer)};state.buffer=append([]byte{},state.buffer[n:]...);state.events.emitEvent("write",tsNumberValue(float64(n)))
 		if state.fsync{syncResult:=tsFSExecute(state.loop,"fsync",[]tsValue{state.fd},false);if syncResult.rejected{state.events.emitEvent("error",syncResult.value);return}}
 		state.writing=false;state.current=nil;tsInternalFastUTF8StreamUpdate(state);tsInternalFastUTF8StreamStartWrite(state);return
 	}
 	fd,current:=state.fd,append([]byte{},state.current...)
-	state.loop.submit(func()tsResult{return tsFSDescriptorIO("write",[]tsValue{fd,tsNodeBuffer(current),tsNumberValue(0),tsNumberValue(float64(len(current))),tsNull})},func(result tsResult){
+	state.loop.submit(func()tsResult{return tsFSDescriptorIO(state.loop,"write",[]tsValue{fd,tsNodeBuffer(current),tsNumberValue(0),tsNumberValue(float64(len(current))),tsNull})},func(result tsResult){
 		state.writing=false;state.current=nil
 		if result.rejected{tsInternalFastUTF8StreamUpdate(state);state.events.emitEvent("error",result.value);tsInternalFastUTF8StreamFlushCallbacks(state,result.value);return}
 		n:=int(tsNumber(tsFSProperty(result.value,"bytesWritten")));if n<0{n=0};if n>len(state.buffer){n=len(state.buffer)};state.buffer=append([]byte{},state.buffer[n:]...);state.events.emitEvent("write",tsNumberValue(float64(n)));tsInternalFastUTF8StreamUpdate(state)

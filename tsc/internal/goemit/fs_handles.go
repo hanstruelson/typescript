@@ -42,11 +42,100 @@ func tsFSFile(value tsValue, flags int, mode os.FileMode) (*tsFSFileRecord,bool,
 }
 
 func tsFSPosition(value tsValue) int64 {
-    if tsNullish(value){return -1}
-    return tsFSInteger(value,"position",-1,-1)
+    if !tsIsNumeric(value){return -1}
+    number:=tsNumber(value);if math.IsNaN(number)||math.IsInf(number,0)||math.Trunc(number)!=number||number<0||number>9007199254740991{return -1}
+    return int64(number)
 }
 
-func tsFSDescriptorIO(operation string, args []tsValue) tsResult {
+func tsFSReadPosition(value tsValue,length int)int64{
+    if tsNullish(value){return -1}
+    if value.kind==tsBigIntKind{
+        minimum:=big.NewInt(-1);maximum:=big.NewInt(int64(^uint64(0)>>1)-int64(length));number:=(*big.Int)(value.ref)
+        if number.Cmp(minimum)<0||number.Cmp(maximum)>0{panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","position is out of range")})}
+        return number.Int64()
+    }
+    if !tsIsNumeric(value){tsFSInvalid("position","a number or bigint")}
+    number:=tsFSInteger(value,"position",-1,-1);if number>9007199254740991{panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","position is out of range")})};return number
+}
+
+func tsFSValidateDescriptorIO(loop *tsLoop,operation string,args []tsValue) []tsValue {
+    values:=append([]tsValue(nil),args...)
+    if operation=="read" {
+        for len(values)<5 { values=append(values,tsU) }
+        buffer:=tsArg(values,1)
+        if buffer.kind!=tsTypedArrayKind&&buffer.kind!=tsDataViewKind { tsFSInvalid("buffer","an instance of Buffer, TypedArray, or DataView") }
+        data:=tsFSBytes(buffer)
+        offset:=int64(0)
+        if !tsNullish(values[2]) {
+            if !tsIsNumeric(values[2]) { tsFSInvalid("offset","a number") }
+            offset=tsFSInteger(values[2],"offset",0,0)
+            if offset>9007199254740991 { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","offset is out of range")}) }
+        }
+        lengthFloat:=float64(0)
+        if len(args)>3 { lengthFloat=tsNumber(tsPrimitiveHintName(loop,values[3],"number")) }
+        values[2]=tsNumberValue(float64(offset))
+        if lengthFloat==0 {
+            values[2]=tsNumberValue(0);values[3]=tsNumberValue(0);values[4]=tsNull
+            return values
+        }
+        if len(data)==0 { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_VALUE","The argument 'buffer' is empty and cannot be written.")}) }
+        if math.IsNaN(lengthFloat)||math.IsInf(lengthFloat,0)||math.Trunc(lengthFloat)!=lengthFloat { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length must be an integer")}) }
+        length:=int64(0)
+        if lengthFloat>=9223372036854775808.0 { length=1<<63-1 } else if lengthFloat< -9223372036854775808.0 { length= -1<<63 } else { length=int64(lengthFloat) }
+        if length>0&&length>int64(len(data)) { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length exceeds buffer length")}) }
+        if (length>0&&offset>int64(len(data))-length)||(length<=0&&offset+length>int64(len(data))) { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length exceeds buffer length")}) }
+        if length<0 { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length must be non-negative")}) }
+        _=tsFSReadPosition(values[4],int(length))
+        values[3]=tsNumberValue(float64(length))
+        return values
+    }
+    if operation=="write" {
+        for len(values)<5 { values=append(values,tsU) }
+        source:=tsArg(values,1)
+        if source.kind==tsStringKind {
+            encoding:=tsArg(values,3)
+            if encoding.kind==tsStringKind { _=tsFSEncoding(encoding,"utf8") }
+            return values
+        }
+        if source.kind!=tsTypedArrayKind&&source.kind!=tsDataViewKind { tsFSInvalid("buffer","a string, Buffer, TypedArray, or DataView") }
+        data:=tsFSBytes(source)
+        offsetValue:=tsArg(values,2)
+        if offsetValue.kind==tsObjectKind||offsetValue.kind==tsInstanceKind {
+            options:=offsetValue
+            offsetValue=tsFSProperty(options,"offset");if tsIsUndefined(offsetValue){offsetValue=tsNumberValue(0)}
+            lengthValue:=tsFSProperty(options,"length");if tsIsUndefined(lengthValue){lengthValue=tsNumberValue(float64(len(data)-int(tsFSInteger(offsetValue,"offset",0,0))))}
+            positionValue:=tsFSProperty(options,"position");if tsIsUndefined(positionValue){positionValue=tsNull}
+            values[2],values[3],values[4]=offsetValue,lengthValue,positionValue
+        }
+        if tsNullish(offsetValue)||offsetValue.kind==tsFunctionKind {
+            values[2]=tsNumberValue(0);values[3]=tsNumberValue(float64(len(data)));values[4]=tsNull
+            return values
+        }
+        if !tsIsNumeric(offsetValue) { tsFSInvalid("offset","a number") }
+        offset:=tsFSInteger(offsetValue,"offset",0,0)
+        if offset>9007199254740991 { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","offset is out of range")}) }
+        if offset>int64(len(data)) { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","offset exceeds buffer length")}) }
+        lengthValue:=tsArg(values,3)
+        if tsIsNumeric(lengthValue)||lengthValue.kind==tsBigIntKind {
+            var length int64
+            if lengthValue.kind==tsBigIntKind {
+                bigLength:=(*big.Int)(lengthValue.ref);maximumBig:=big.NewInt(int64(len(data))-offset);if maximumBig.Cmp(big.NewInt((1<<31)-1))>0{maximumBig.SetInt64((1<<31)-1)}
+                if bigLength.Sign()<0||bigLength.Cmp(maximumBig)>0 { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length exceeds buffer bounds")}) }
+                length=bigLength.Int64()
+            } else {
+                number:=tsNumber(lengthValue)
+                if math.IsNaN(number){length=0}else if number>=9223372036854775808.0{length=1<<63-1}else if number< -9223372036854775808.0{length= -1<<63}else{length=int64(math.Trunc(number))}
+            }
+            maximum:=int64(len(data))-offset;if maximum>(1<<31)-1 { maximum=(1<<31)-1 }
+            if length<0||length>maximum { panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length exceeds buffer bounds")}) }
+        } else {
+            values[3]=tsNumberValue(float64(len(data)-int(offset)));values[4]=tsNull
+        }
+    }
+    return values
+}
+
+func tsFSDescriptorIO(loop *tsLoop,operation string, args []tsValue) tsResult {
     record:=tsFSDescriptor(tsArg(args,0));record.Lock();defer record.Unlock()
     if record.closed{return tsResult{tsFSError(syscall.EBADF,operation,"",""),true}}
     source:=tsArg(args,1);original:=source;position:=int64(-1)
@@ -55,14 +144,29 @@ func tsFSDescriptorIO(operation string, args []tsValue) tsResult {
     if operation=="readv"||operation=="writev"{
         buffers:=[][]byte{};it:=tsIterate(source);for it.next(){buffers=append(buffers,tsFSBytes(it.value))}
         position=tsFSPosition(tsArg(args,2))
-        if operation=="readv"{if position<0{n,err=unix.Readv(record.fd,buffers)}else{n,err=unix.Preadv(record.fd,buffers,position)}}else{if position<0{n,err=unix.Writev(record.fd,buffers)}else{n,err=unix.Pwritev(record.fd,buffers,position)}}
+        if operation=="readv"{
+            if len(buffers)>1024{buffers=buffers[:1024]}
+            if len(buffers)>0{if position<0{n,err=unix.Readv(record.fd,buffers)}else{n,err=unix.Preadv(record.fd,buffers,position)}}
+        }else{
+            remaining:=buffers
+            for len(remaining)>0{
+                count:=len(remaining);if count>1024{count=1024};batch:=remaining[:count]
+                var written int
+                if position<0{written,err=unix.Writev(record.fd,batch)}else{written,err=unix.Pwritev(record.fd,batch,position)}
+                if err!=nil{if n==0{return tsResult{tsFSError(err,operation,record.path,""),true}};err=nil;break}
+                if written==0{break};n+=written
+                capacity:=0;for _,buffer:=range batch{capacity+=len(buffer)}
+                if written<capacity{break}
+                if position>=0{position+=int64(written)}
+                remaining=remaining[count:]
+            }
+        }
         out.set("buffers",source)
     }else{
         var data []byte
         if operation=="write"&&source.kind==tsStringKind{
-            encoding:=tsArg(args,3);positionValue:=tsArg(args,2)
-            if positionValue.kind==tsStringKind{encoding=positionValue;positionValue=tsNull}
-            position=tsFSPosition(positionValue);data=tsFSData(source,encoding)
+            encoding:=tsArg(args,3);if encoding.kind!=tsStringKind{encoding=tsStringReference(tsStringUTF8("utf8"))}
+            position=tsFSPosition(tsArg(args,2));data=tsFSData(source,encoding)
         }else{
             offsetValue,lengthValue,positionValue:=tsArg(args,2),tsArg(args,3),tsArg(args,4)
             if source.kind==tsObjectKind||tsIsUndefined(source){
@@ -73,11 +177,13 @@ func tsFSDescriptorIO(operation string, args []tsValue) tsResult {
                 options:=offsetValue;offsetValue=tsFSProperty(options,"offset");lengthValue=tsFSProperty(options,"length");positionValue=tsFSProperty(options,"position")
             }
             data=tsFSBytes(source)
-            offset:=int(tsFSInteger(offsetValue,"offset",0,0))
+            offset:=0;if !tsNullish(offsetValue)&&offsetValue.kind!=tsFunctionKind{offset=int(tsFSInteger(offsetValue,"offset",0,0))}
             if offset>len(data){panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","offset exceeds buffer length")})}
-            length:=int(tsFSInteger(lengthValue,"length",int64(len(data)-offset),0))
+            length:=len(data)-offset;if tsIsNumeric(lengthValue){number:=tsNumber(lengthValue);if math.IsNaN(number){length=0}else if number>=9223372036854775808.0{length=int(^uint(0)>>1)}else if number< -9223372036854775808.0{length= -1<<63}else{length=int(math.Trunc(number))}}else if lengthValue.kind==tsBigIntKind{length=int((*big.Int)(lengthValue.ref).Int64())}
+            if length>(1<<31)-1{length=(1<<31)-1}
+            if length<0{panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length must be non-negative")})}
             if length>len(data)-offset{panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE","length exceeds buffer length")})}
-            data=data[offset:offset+length];position=tsFSPosition(positionValue)
+            data=data[offset:offset+length];if operation=="read"{position=tsFSReadPosition(positionValue,length)}else{position=tsFSPosition(positionValue)}
         }
         if operation=="read"{if position<0{n,err=record.file.Read(data)}else{n,err=record.file.ReadAt(data,position)}}else{if position<0{n,err=record.file.Write(data)}else{n,err=record.file.WriteAt(data,position)}}
         out.set("buffer",original)

@@ -15,22 +15,43 @@ func tsInternalFSBindingModule(loop *tsLoop) tsValue {
 		for _, name := range promises.order { binding.set(name, promises.values[name]) }
 		for _, operation := range tsFSOperations {
 			op := operation
-			if op != "mkdtempDisposable" {
+			if op != "mkdtempDisposable" && op != "glob" {
 				binding.set(op, tsNamedNativeMethod(op, 1, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
+					if op == "open" { return tsInternalFSBindingOpen(loop, args) }
 					return tsFSInvoke(loop, op, "promise", args)
 				}))
-				binding.set(op+"Cb", tsNamedNativeMethod(op+"Cb", 1, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
-					return tsInternalFSBindingCallback(loop, op, args)
-				}))
+				if op != "cp" {
+					binding.set(op+"Cb", tsNamedNativeMethod(op+"Cb", 1, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
+						return tsInternalFSBindingCallback(loop, op, args)
+					}))
+				}
 			}
 		}
 		binding.set("realpathNative", binding.get("realpath"))
+		binding.set("realpathNativeCb", tsNamedNativeMethod("realpathNativeCb", 1, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
+			return tsInternalFSBindingCallback(loop, "realpath", args)
+		}))
 		if syncRealpath := binding.get("realpathSync"); syncRealpath.kind == tsFunctionKind {
 			binding.set("realpathNativeSync", tsGet(loop, syncRealpath, tsStringReference(tsStringUTF8("native"))))
 		}
 		tsInternalFSBindingSingleton.value = tsObjectValue(binding)
 	})
 	return tsInternalFSBindingSingleton.value
+}
+
+func tsInternalFSBindingOpen(loop *tsLoop, args []tsValue) tsValue {
+	promise := loop.promise()
+	callback := tsFunctionValue(tsFunc(func(_ *tsLoop, values ...tsValue) tsValue {
+		if failure := tsArg(values, 0); tsTruthy(failure) {
+			promise.settle(tsResult{failure, true})
+		} else {
+			promise.settle(tsResult{tsArg(values, 1), false})
+		}
+		return tsU
+	}))
+	callArgs := append(append([]tsValue(nil), args...), callback)
+	tsFSInvoke(loop, "open", "callback", callArgs)
+	return tsPromiseValue(promise)
 }
 
 func tsInternalFSBindingCallback(loop *tsLoop, operation string, args []tsValue) tsValue {

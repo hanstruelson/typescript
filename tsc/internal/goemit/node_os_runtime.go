@@ -5,7 +5,7 @@ package goemit
 // nodeOSRuntime maps Bun's Node OS wrapper to Go's standard library. Linux
 // procfs supplies the host statistics for which Go has no portable API.
 const nodeOSRuntime = `
-var tsNodeOSSingleton struct { sync.Once; value *tsObject; started time.Time }
+var tsNodeOSSingleton struct { sync.Once; value *tsObject }
 
 func tsNodeOSFailure(name string, err error) {
 	panic(tsThrown{tsErrorValue(&tsRuntimeError{name:name, message:err.Error()})})
@@ -17,6 +17,11 @@ func tsNodeOSString(name, value string) tsValue {
 
 func tsNodeOSNumber(name string, value float64) tsValue {
 	return tsNamedNativeMethod(name, 0, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsNumberValue(value) })
+}
+
+func tsNodeOSInt32(value tsValue, name string, minimum, maximum tsValue) int {
+	tsInternalValidatorInt32(value, tsStringReference(tsStringUTF8(name)), minimum, maximum)
+	return int(tsNumber(value))
 }
 
 func tsNodeOSArch() string {
@@ -109,10 +114,9 @@ func tsNodeOSVersion() string {
 
 func tsNodeOSUptime() float64 {
 	if data, err := os.ReadFile("/proc/uptime"); err == nil {
-		fields := strings.Fields(string(data)); if len(fields) > 0 { if value, err := strconv.ParseFloat(fields[0], 64); err == nil { return value } }
+		fields := strings.Fields(string(data)); if len(fields) > 0 { if value, err := strconv.ParseFloat(fields[0], 64); err == nil { return float64(uint64(value)) } }
 	}
-	if tsNodeOSSingleton.started.IsZero() { tsNodeOSSingleton.started = time.Now() }
-	return time.Since(tsNodeOSSingleton.started).Seconds()
+	return 0
 }
 
 func tsNodeOSMemory() (uint64, uint64) {
@@ -122,12 +126,9 @@ func tsNodeOSMemory() (uint64, uint64) {
 			fields := strings.Fields(line); if len(fields) < 2 { continue }
 			value, err := strconv.ParseUint(fields[1], 10, 64); if err == nil { values[strings.TrimSuffix(fields[0], ":")] = value * 1024 }
 		}
-		free := values["MemAvailable"]; if free == 0 { free = values["MemFree"] }
-		return values["MemTotal"], free
+		return values["MemTotal"], values["MemFree"]
 	}
-	var stats runtime.MemStats
-	runtime.ReadMemStats(&stats)
-	return stats.Sys, stats.HeapIdle
+	return 0, 0
 }
 
 func tsNodeOSLoadavg() []tsValue {
@@ -156,7 +157,7 @@ func tsNodeOSCPUData() (string, float64, map[int][]float64) {
 			fields := strings.Fields(line); if len(fields) < 5 || !strings.HasPrefix(fields[0], "cpu") || fields[0] == "cpu" { continue }
 			index, err := strconv.Atoi(strings.TrimPrefix(fields[0], "cpu")); if err != nil { continue }
 			values := make([]float64, 5)
-			for i := 0; i < len(values) && i+1 < len(fields); i++ { ticks, _ := strconv.ParseFloat(fields[i+1], 64); values[i] = ticks * 10 }
+			for i, fieldIndex := range []int{1, 2, 3, 4, 6} { if fieldIndex < len(fields) { ticks, _ := strconv.ParseFloat(fields[fieldIndex], 64); values[i] = ticks * 10 } }
 			times[index] = values
 		}
 	}
@@ -165,10 +166,12 @@ func tsNodeOSCPUData() (string, float64, map[int][]float64) {
 
 func tsNodeOSCPUs() tsValue {
 	model, speed, times := tsNodeOSCPUData()
-	count := runtime.NumCPU(); values := make([]tsValue, count)
-	for index := range values {
-		entry := tsNewObject(); entry.set("model", tsStringReference(tsStringUTF8(model))); entry.set("speed", tsNumberValue(speed))
-		parts := times[index]; if parts == nil { parts = make([]float64, 5) }
+	cpuIndexes:=make([]int,0,len(times));for index:=range times{cpuIndexes=append(cpuIndexes,index)};sort.Ints(cpuIndexes)
+	count := runtime.NumCPU(); if len(cpuIndexes)>0 { count=len(cpuIndexes) } else { for index:=0;index<count;index++{cpuIndexes=append(cpuIndexes,index)} }; values := make([]tsValue, count)
+	for index, cpuIndex := range cpuIndexes {
+		cpuModel:=model;if cpuModel==runtime.GOARCH{cpuModel="unknown"}
+		entry := tsNewObject(); entry.set("model", tsStringReference(tsStringUTF8(cpuModel))); entry.set("speed", tsNumberValue(speed))
+		parts := times[cpuIndex]; if parts == nil { parts = make([]float64, 5) }
 		cpuTimes := tsNewObject()
 		for i, key := range []string{"user", "nice", "sys", "idle", "irq"} { cpuTimes.set(key, tsNumberValue(parts[i])) }
 		entry.set("times", tsObjectValue(cpuTimes)); values[index] = tsObjectValue(entry)
@@ -180,6 +183,7 @@ func tsNodeOSNetworkInterfaces() tsValue {
 	interfaces, err := net.Interfaces(); if err != nil { tsNodeOSFailure("Error", err) }
 	out := tsNewObject()
 	for _, iface := range interfaces {
+		if runtime.GOOS!="windows"&&(iface.Flags&net.FlagUp==0||iface.Flags&net.FlagRunning==0){continue}
 		addresses, err := iface.Addrs(); if err != nil { continue }
 		entries := make([]tsValue, 0, len(addresses))
 		for _, address := range addresses {
@@ -188,7 +192,8 @@ func tsNodeOSNetworkInterfaces() tsValue {
 			if ip.IsLinkLocalUnicast() { scope = float64(iface.Index) }
 			if v4 := ip.To4(); v4 != nil { family, mask, scope = "IPv4", net.IP(network.Mask).String(), 0; ip = v4 }
 			item := tsNewObject(); item.set("address", tsStringReference(tsStringUTF8(ip.String()))); item.set("netmask", tsStringReference(tsStringUTF8(mask))); item.set("family", tsStringReference(tsStringUTF8(family)))
-			item.set("mac", tsStringReference(tsStringUTF8(iface.HardwareAddr.String()))); item.set("internal", tsBooleanValue(iface.Flags&net.FlagLoopback != 0)); item.set("cidr", tsStringReference(tsStringUTF8(network.String()))); item.set("scopeid", tsNumberValue(scope))
+			mac:="00:00:00:00:00:00";if len(iface.HardwareAddr)>=6{mac=iface.HardwareAddr[:6].String()}
+			item.set("mac", tsStringReference(tsStringUTF8(mac))); item.set("internal", tsBooleanValue(iface.Flags&net.FlagLoopback != 0)); item.set("cidr", tsStringReference(tsStringUTF8(network.String()))); if family=="IPv6"{item.set("scopeid", tsNumberValue(scope))}
 			entries = append(entries, tsObjectValue(item))
 		}
 		if len(entries) > 0 { out.set(iface.Name, tsArrayValue(&tsArray{values:entries})) }
@@ -225,7 +230,6 @@ func tsNodeOSConstants() tsValue {
 
 func tsNodeOSModule() tsValue {
 	tsNodeOSSingleton.Do(func() {
-		tsNodeOSSingleton.started = time.Now()
 		out := tsNewObject(); total, free := tsNodeOSMemory()
 		out.set("EOL", tsStringReference(tsStringUTF8("\n"))); if runtime.GOOS == "windows" { out.set("EOL", tsStringReference(tsStringUTF8("\r\n"))) }
 		out.set("devNull", tsStringReference(tsStringUTF8("/dev/null"))); if runtime.GOOS == "windows" { out.set("devNull", tsStringReference(tsStringUTF8("\\\\.\\nul"))) }
@@ -242,8 +246,8 @@ func tsNodeOSModule() tsValue {
 		out.set("networkInterfaces", tsNamedNativeMethod("networkInterfaces", 0, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsNodeOSNetworkInterfaces() }))
 		out.set("userInfo", tsNamedNativeMethod("userInfo", 0, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { return tsNodeOSUserInfo(loop, args) }))
 		out.set("endianness", tsNamedNativeMethod("endianness", 0, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue { endian := "LE"; switch runtime.GOARCH { case "ppc64", "s390x", "mips", "mips64": endian = "BE" }; return tsStringReference(tsStringUTF8(endian)) }))
-		out.set("getPriority", tsNamedNativeMethod("getPriority", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid := os.Getpid(); if len(args)>0 && !tsIsUndefined(args[0]) { pid = int(tsNumber(args[0])) }; value, err := syscall.Getpriority(syscall.PRIO_PROCESS, pid); if err != nil { tsNodeOSFailure("Error", err) }; return tsNumberValue(float64(20-value)) }))
-		out.set("setPriority", tsNamedNativeMethod("setPriority", 2, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid, priority := os.Getpid(), 0; if len(args)==1 { priority = int(tsNumber(args[0])) } else { pid, priority = int(tsNumber(tsArg(args,0))), int(tsNumber(tsArg(args,1))) }; if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, priority); err != nil { tsNodeOSFailure("Error", err) }; return tsU }))
+		out.set("getPriority", tsNamedNativeMethod("getPriority", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid := 0; if len(args)>0 && !tsIsUndefined(args[0]) { pid = tsNodeOSInt32(args[0],"pid",tsU,tsU) }; value, err := syscall.Getpriority(syscall.PRIO_PROCESS, pid); if err != nil { tsNodeOSFailure("Error", err) }; return tsNumberValue(float64(value)) }))
+		out.set("setPriority", tsNamedNativeMethod("setPriority", 2, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid, priority := 0, tsU; if len(args)==1 { priority = tsNodeOSInt32(args[0],"priority",tsNumberValue(-20),tsNumberValue(19)) } else { pid=tsNodeOSInt32(tsArg(args,0),"pid",tsU,tsU); priority=tsNodeOSInt32(tsArg(args,1),"priority",tsNumberValue(-20),tsNumberValue(19)) }; if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, priority); err != nil { tsNodeOSFailure("Error", err) }; return tsU }))
 		tsNodeOSSingleton.value = out
 	})
 	return tsObjectValue(tsNodeOSSingleton.value)

@@ -20,7 +20,7 @@ var tsNativeClasses struct {sync.Once;classes map[string]*tsClass}
 func tsNativeClass(name string)*tsClass{
     tsNativeClasses.Do(func(){
         tsNativeClasses.classes=map[string]*tsClass{}
-        for _,name:=range []string{"Stats","BigIntStats","StatFs","BigIntStatFs","Dirent","Dir","FSWatcher","StatWatcher","ReadStream","WriteStream","Buffer","Date","AbortSignal","AbortController","FileHandle","Blob","File","ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader"}{
+        for _,name:=range []string{"Stats","BigIntStats","StatFs","BigIntStatFs","Dirent","Dir","FSWatcher","StatWatcher","FSEvent","ReadStream","WriteStream","Buffer","Date","AbortSignal","AbortController","FileHandle","Blob","File","ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader"}{
             class:=&tsClass{builtin:name,static:tsInstanceValue(tsNewProperties()),nativePrototype:tsNewObject()};tsNativeClasses.classes[name]=class;class.nativePrototype.set("constructor",tsClassValue(class));properties:=tsInstanceProperties(class.static);properties.define("prototype");properties.extra["prototype"]=tsObjectValue(class.nativePrototype)
             class.construct=func(loop *tsLoop,args ...tsValue)tsValue{
                 switch name{
@@ -28,6 +28,9 @@ func tsNativeClass(name string)*tsClass{
                 case "File":return tsNodeBufferFileConstruct(loop,args)
                 case "Date":return tsDateConstruct(args)
                 case "Stats":return tsFSConstructStats(args)
+                case "BigIntStats":return tsFSConstructBigIntStats(args)
+                case "StatFs":return tsFSConstructStatFS(args,false)
+                case "BigIntStatFs":return tsFSConstructStatFS(args,true)
                 case "Dirent":return tsFSConstructDirent(args)
                 case "ReadStream","WriteStream":return tsFSCreateStream(loop,tsArg(args,0),tsArg(args,1),name=="ReadStream")
                 case "Buffer":if tsIsNumeric(tsArg(args,0)){return tsNodeBufferAllocate(loop,args,false)};return tsNodeBufferFrom(loop,args)
@@ -40,9 +43,9 @@ func tsNativeClass(name string)*tsClass{
         for _,name:=range []string{"Stats","BigIntStats","Dirent"}{
             class:=tsNativeClasses.classes[name]
             for _,predicate:=range []string{"isFile","isDirectory","isSymbolicLink","isBlockDevice","isCharacterDevice","isFIFO","isSocket"}{
-                method:=predicate;class.nativePrototype.set(method,tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{
+                method:=predicate;class.nativePrototype.set(method,tsNamedNativeMethod(method,0,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{
                     if receiver.kind!=tsObjectKind{tsFSInvalid("this","a filesystem metadata object")};object:=(*tsObject)(receiver.ref);mode:=object.nativeMode;if class.builtin=="Dirent"&&object.nativeClass!=class{mode=os.ModeIrregular}
-                    if class.builtin=="Stats"||class.builtin=="BigIntStats"{value:=object.get("mode");bits:=uint32(0);if value.kind==tsBigIntKind{bits=uint32((*big.Int)(value.ref).Uint64())}else{bits=tsNumberUint32(tsNumber(value))};switch bits&syscall.S_IFMT{case syscall.S_IFDIR:mode=os.ModeDir;case syscall.S_IFLNK:mode=os.ModeSymlink;case syscall.S_IFBLK:mode=os.ModeDevice;case syscall.S_IFCHR:mode=os.ModeDevice|os.ModeCharDevice;case syscall.S_IFIFO:mode=os.ModeNamedPipe;case syscall.S_IFSOCK:mode=os.ModeSocket;case syscall.S_IFREG:mode=0;default:mode=os.ModeIrregular}}
+                    if class.builtin=="Stats"||class.builtin=="BigIntStats"{value:=object.get("mode");bits:=uint32(0);if class.builtin=="BigIntStats"{if value.kind!=tsBigIntKind{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert value to a BigInt"})})};bits=uint32((*big.Int)(value.ref).Int64())}else{if value.kind==tsBigIntKind{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert a BigInt value to a number"})})};bits=tsNumberUint32(tsNumber(value))};switch bits&syscall.S_IFMT{case syscall.S_IFDIR:mode=os.ModeDir;case syscall.S_IFLNK:mode=os.ModeSymlink;case syscall.S_IFBLK:mode=os.ModeDevice;case syscall.S_IFCHR:mode=os.ModeDevice|os.ModeCharDevice;case syscall.S_IFIFO:mode=os.ModeNamedPipe;case syscall.S_IFSOCK:mode=os.ModeSocket;case syscall.S_IFREG:mode=0;default:mode=os.ModeIrregular}}
                     answer:=false;switch method{case "isFile":answer=mode.IsRegular();case "isDirectory":answer=mode.IsDir();case "isSymbolicLink":answer=mode&os.ModeSymlink!=0;case "isBlockDevice":answer=mode&os.ModeDevice!=0&&mode&os.ModeCharDevice==0;case "isCharacterDevice":answer=mode&os.ModeCharDevice!=0;case "isFIFO":answer=mode&os.ModeNamedPipe!=0;case "isSocket":answer=mode&os.ModeSocket!=0};return tsBooleanValue(answer)
                 }))
             }
@@ -52,11 +55,24 @@ func tsNativeClass(name string)*tsClass{
         for _,name:=range methods{method:=name;buffer.nativePrototype.set(method,tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if receiver.kind!=tsTypedArrayKind||!(*tsTypedArray)(receiver.ref).nodeBuffer{tsFSInvalid("this","a Buffer")};return tsCall(loop,tsNodeBufferGet(receiver,method),args...)}))}
         for _,name:=range []string{"toString","toLocaleString","toJSON","inspect","equals","compare","copy","fill","write","slice","subarray","includes","indexOf","lastIndexOf","swap16","swap32","swap64","asciiSlice","asciiWrite","base64Slice","base64Write","base64urlSlice","base64urlWrite","hexSlice","hexWrite","latin1Slice","latin1Write","ucs2Slice","ucs2Write","utf16leSlice","utf16leWrite","utf8Slice","utf8Write"}{method:=name;buffer.nativePrototype.set(method,tsNativeMethod(func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if receiver.kind!=tsTypedArrayKind||!(*tsTypedArray)(receiver.ref).nodeBuffer{tsFSInvalid("this","a Buffer")};return tsCall(loop,tsNodeBufferGet(receiver,method),args...)}))}
         for _,class:=range tsNativeClasses.classes{class.nativePrototype.descriptors=map[string]*tsDescriptor{};for _,key:=range class.nativePrototype.order{class.nativePrototype.descriptors[key]=&tsDescriptor{writable:true,configurable:true}}}
+        tagKey:=tsPropertyKey(tsWellKnownSymbol("toStringTag"))
+        for _,name:=range []string{"Stats","BigIntStats","StatFs","BigIntStatFs","Dirent"}{class:=tsNativeClasses.classes[name];class.nativePrototype.set(tagKey,tsStringReference(tsStringUTF8(name)));class.nativePrototype.descriptors[tagKey]=&tsDescriptor{configurable:true}}
     })
     return tsNativeClasses.classes[name]
 }
 func tsFSConstructStats(args []tsValue)tsValue{
     out:=tsNewObject();out.nativeClass=tsNativeClass("Stats");for index,name:=range []string{"dev","mode","nlink","uid","gid","rdev","blksize","ino","size","blocks","atimeMs","mtimeMs","ctimeMs","birthtimeMs"}{out.set(name,tsArg(args,index))};return tsObjectValue(out)
+}
+func tsFSConstructBigIntStats(args []tsValue)tsValue{
+    out:=tsNewObject();out.nativeClass=tsNativeClass("BigIntStats")
+    for index,name:=range []string{"dev","mode","nlink","uid","gid","rdev","blksize","ino","size","blocks"}{out.set(name,tsArg(args,index))}
+    for index,name:=range []string{"atime","mtime","ctime","birthtime"}{value:=tsArg(args,10+index);if value.kind!=tsBigIntKind{panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot convert value to a BigInt"})})};nanoseconds:=(*big.Int)(value.ref);milliseconds:=tsNumberValue(float64(nanoseconds.Int64())/1e6);out.set(name+"Ms",milliseconds);out.set(name+"Ns",tsBigIntValue(new(big.Int).Set(nanoseconds)))}
+    return tsObjectValue(out)
+}
+func tsFSConstructStatFS(args []tsValue,bigint bool)tsValue{
+    class:="StatFs";if bigint{class="BigIntStatFs"};out:=tsNewObject();out.nativeClass=tsNativeClass(class)
+    for index,name:=range []string{"type","bsize","frsize","blocks","bfree","bavail","files","ffree"}{out.set(name,tsArg(args,index))}
+    return tsObjectValue(out)
 }
 func tsFSConstructDirent(args []tsValue)tsValue{
     out:=tsNewObject();out.nativeClass=tsNativeClass("Dirent");out.set("name",tsArg(args,0));out.set("parentPath",tsArg(args,2));out.set("path",tsArg(args,2));mode:=os.ModeIrregular;switch int(tsNumber(tsArg(args,1))){case 1:mode=0;case 2:mode=os.ModeDir;case 3:mode=os.ModeSymlink;case 4:mode=os.ModeNamedPipe;case 5:mode=os.ModeSocket;case 6:mode=os.ModeDevice|os.ModeCharDevice;case 7:mode=os.ModeDevice};out.nativeMode=mode;return tsObjectValue(out)

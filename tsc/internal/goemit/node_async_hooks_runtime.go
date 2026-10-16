@@ -1,8 +1,8 @@
 package goemit
 
 // nodeAsyncHooksRuntime adapts AsyncLocalStorage and AsyncResource to the
-// event loop's persistent async-context frames. Hook callbacks and async IDs
-// remain stubbed, matching Bun's partial implementation.
+// event loop's persistent async-context frames. TickObject init hooks run
+// during process.nextTick setup; other hook phases remain unsupported.
 const nodeAsyncHooksRuntime = `
 type tsNodeALSState struct { object *tsObject; defaultValue tsValue; name string }
 type tsNodeAsyncResourceState struct { object *tsObject; context *tsAsyncContextFrame; triggerID int64; typeName string }
@@ -51,7 +51,42 @@ func tsNodeAsyncResourceConstructor() tsValue {
 	fn.properties=static;return tsFunctionValue(fn)
 }
 
-func tsNodeAsyncHooksCreateHook() tsValue {return tsNamedNativeMethod("createHook",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{hook:=tsArg(args,0);if hook.kind!=tsObjectKind{tsPropertyFailure("The hooks argument must be an object")};for _,name:=range []string{"init","before","after","destroy","promiseResolve"}{value:=tsFSProperty(hook,name);if !tsIsUndefined(value)&&value.kind!=tsFunctionKind{tsPropertyFailure("Hook callback must be a function")}};out:=tsNewObject();enabled:=false;out.set("enable",tsNamedNativeMethod("enable",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if !enabled{enabled=true;tsInternalAsyncHooksMark(true)};return receiver}));out.set("disable",tsNamedNativeMethod("disable",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if enabled{enabled=false;tsInternalAsyncHooksMark(false)};return receiver}));return tsObjectValue(out)})}
+func tsNodeAsyncHooksCreateHook() tsValue {
+	return tsNamedNativeMethod("createHook", 1, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
+		hook := tsArg(args, 0)
+		if hook.kind != tsObjectKind && hook.kind != tsInstanceKind { tsPropertyFailure("The hooks argument must be an object") }
+		for _, name := range []string{"init", "before", "after", "destroy", "promiseResolve"} {
+			value := tsFSProperty(hook, name)
+			if !tsIsUndefined(value) && value.kind != tsFunctionKind { tsPropertyFailure("Hook callback must be a function") }
+		}
+		init := tsFSProperty(hook, "init")
+		var enabledInit tsValue
+		enabled := false
+		out := tsNewObject()
+		out.set("enable", tsNamedNativeMethod("enable", 0, func(_ *tsLoop, receiver tsValue, _ ...tsValue) tsValue {
+			if init.kind == tsFunctionKind && tsIsUndefined(enabledInit) {
+				callback := init
+				enabledInit = tsFunctionValue(tsFunc(func(loop *tsLoop, values ...tsValue) tsValue { return tsCall(loop, callback, values...) }))
+				module := tsInternalAsyncHooksTickModule(loop)
+				list := (*tsArray)(tsGet(loop, module, tsStringReference(tsStringUTF8("tickInitHooks"))).ref)
+				list.values = append(list.values, enabledInit)
+			}
+			if !enabled { enabled = true; tsInternalAsyncHooksMark(true) }
+			return receiver
+		}))
+		out.set("disable", tsNamedNativeMethod("disable", 0, func(loop *tsLoop, receiver tsValue, _ ...tsValue) tsValue {
+			if !tsIsUndefined(enabledInit) {
+				module := tsInternalAsyncHooksTickModule(loop)
+				list := (*tsArray)(tsGet(loop, module, tsStringReference(tsStringUTF8("tickInitHooks"))).ref)
+				for index, entry := range list.values { if tsStrictEqual(entry, enabledInit) { list.values = append(list.values[:index], list.values[index+1:]...); break } }
+				enabledInit = tsU
+			}
+			if enabled { enabled = false; tsInternalAsyncHooksMark(false) }
+			return receiver
+		}))
+		return tsObjectValue(out)
+	})
+}
 
 func tsNodeAsyncHooksModule() tsValue {
 	tsNodeAsyncHooksInit();if len(tsNodeAsyncHooksSingleton.module.values)>0{return tsObjectValue(tsNodeAsyncHooksSingleton.module)}

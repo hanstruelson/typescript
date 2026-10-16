@@ -5,23 +5,27 @@ Go packages for the implementation. Bun is not linked into generated programs.
 Do not translate its repository file by file: its engine bindings, allocation,
 JSC promises, and native resource management are specific to its runtime.
 
-The reference checkout is a shallow, sparse clone at `../bun`, pinned to
-`bbdc5a519e0a06d1b3133b564f91096b9ba10a31`. It includes `src`, `packages/bun-types`,
-and `test/js/node/fs`. Bun's source is MIT licensed; retain attribution and its
+The current Bun reference checkout is a shallow clone at `../bun`, on upstream
+`main` at `a407eae88ac76d2f54068b00a9f79c7b9ccc0f0f`. It includes `src`,
+`packages/bun-types`, and `test/js/node/fs`. The filesystem API inventory in
+[fs-api.json](fs-api.json) remains pinned to Bun `bbdc5a519e0a06d1b3133b564f91096b9ba10a31`
+and Node v24.19.0. Bun's source is MIT licensed; retain attribution and its
 license for any future code copied or translated directly. The implementation
-here uses Bun's APIs and behavior as a reference and Go's filesystem packages.
+here uses Bun's APIs and behavior as a reference and Go's standard library.
 
-Shared JavaScript built-ins are the current priority; module expansion is paused.
-See the [built-in implementation checklist](builtins.md) and [API inventory](builtins-api.json).
+Node builtin adapters are active work. The source revision, literal dependency
+graph, per-file line checkpoints, and saved dependency stack are tracked in
+[`tsc/NODE_MODULE_PORTING.md`](../../tsc/NODE_MODULE_PORTING.md). The
+[built-in checklist](builtins.md) covers shared ECMAScript built-ins separately;
+neither inventory claims complete compatibility.
 
 ## Module order
 
 | Module | Status | Next gate |
 | --- | --- | --- |
-| `fs`, `fs/promises` | First implementation; incomplete | Close every item in [the filesystem checklist](fs.md) |
-| `buffer` | Supporting subset for filesystem byte operations | Full Buffer API and constructor/prototype compatibility |
-| `events`, `stream` | Filesystem-local plumbing only | Public modules, inheritance, complete stream contract |
-| `http`, `https` | Not started | Complete `fs` and shared prerequisites first |
+| `fs`, `fs/promises` | Native Go implementation; incomplete | Close every item in [the filesystem checklist](fs.md) |
+| `buffer`, `path` | Native Go adapters with known compatibility gaps | Close remaining API and constructor/prototype gaps in the port inventory |
+| Node builtins | Per-file Bun source checkpoints and Go adapters are active | Continue from the saved dependency stack in the port inventory |
 | npm resolution, Express | Deferred | Built-ins and CommonJS module execution |
 
 For each module:

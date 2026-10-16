@@ -5,7 +5,7 @@ package goemit
 // use the runtime's simpler strong references and callback adapters.
 const nodeDiagnosticsChannelRuntime = `
 type tsNodeChannelStore struct { key, transform tsValue }
-type tsNodeChannel struct { object *tsObject; name tsValue; subscribers []tsValue; stores []tsNodeChannelStore }
+type tsNodeChannel struct { object *tsObject; name tsValue; stores []tsNodeChannelStore }
 type tsNodeDiagnosticsState struct { sync.Once; value *tsObject; channels map[string]*tsNodeChannel; objects map[*tsObject]*tsNodeChannel; prototype *tsObject }
 var tsNodeDiagnosticsSingleton tsNodeDiagnosticsState
 
@@ -29,33 +29,60 @@ func tsNodeChannelState(value tsValue) *tsNodeChannel {
 	return tsNodeDiagnosticsSingleton.objects[(*tsObject)(value.ref)]
 }
 
+func tsNodeChannelSubscriberList(state *tsNodeChannel) tsValue {
+	return tsFSProperty(tsObjectValue(state.object),"_subscribers")
+}
+
+func tsNodeChannelSubscriberLength(value tsValue) int {
+	if tsNullish(value){return 0}
+	length:=tsFSProperty(value,"length")
+	if !tsIsNumeric(length){return 0}
+	n:=int(tsNumber(length));if n<0{n=0}
+	return n
+}
+
+func tsNodeChannelSubscribers(state *tsNodeChannel) []tsValue {
+	value:=tsNodeChannelSubscriberList(state)
+	n:=tsNodeChannelSubscriberLength(value)
+	values:=make([]tsValue,n)
+	for index:=range values{values[index]=tsFSProperty(value,strconv.Itoa(index))}
+	return values
+}
+
+func tsNodeChannelMaybeMarkInactive(state *tsNodeChannel) {
+	if len(tsNodeChannelSubscribers(state))==0&&len(state.stores)==0 {
+		state.object.set("_subscribers",tsU)
+	}
+}
+
 func tsNodeChannelCreate(loop *tsLoop,name tsValue) tsValue {
 	key:=tsNodeChannelNameKey(loop,name)
 	object:=tsNewObject();object.nativeClass=tsNativeClass("Channel");object.prototype=tsObjectValue(tsNodeDiagnosticsSingleton.prototype)
 	state:=&tsNodeChannel{object:object,name:name};tsNodeDiagnosticsSingleton.objects[object]=state;tsNodeDiagnosticsSingleton.channels[key]=state
 	object.set("name",name)
-	object.set("subscribe",tsNamedNativeMethod("subscribe",1,func(_ *tsLoop,receiver tsValue,args ...tsValue)tsValue{
-		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};callback:=tsArg(args,0);if callback.kind!=tsFunctionKind{tsFSInvalid("subscription","a function")};state.subscribers=append(state.subscribers,callback);return tsU
+	object.set("_subscribers",tsU)
+	object.set("subscribe",tsNamedNativeMethod("subscribe",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{
+		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};callback:=tsArg(args,0);if callback.kind!=tsFunctionKind{tsFSInvalid("subscription","a function")};subscribers:=tsNodeChannelSubscribers(state);subscribers=append(subscribers,callback);state.object.set("_subscribers",tsArrayValue(&tsArray{values:subscribers}));return tsU
 	}))
-	object.set("unsubscribe",tsNamedNativeMethod("unsubscribe",1,func(_ *tsLoop,receiver tsValue,args ...tsValue)tsValue{
-		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};callback:=tsArg(args,0)
-		for index:=len(state.subscribers)-1;index>=0;index--{if tsStrictEqual(state.subscribers[index],callback){state.subscribers=append(state.subscribers[:index],state.subscribers[index+1:]...);return tsBooleanValue(true)}}
+	object.set("unsubscribe",tsNamedNativeMethod("unsubscribe",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{
+		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};callback:=tsArg(args,0);subscribers:=tsNodeChannelSubscribers(state)
+		for index:=0;index<len(subscribers);index++{if tsStrictEqual(subscribers[index],callback){subscribers=append(subscribers[:index],subscribers[index+1:]...);state.object.set("_subscribers",tsArrayValue(&tsArray{values:subscribers}));tsNodeChannelMaybeMarkInactive(state);return tsBooleanValue(true)}}
 		return tsBooleanValue(false)
 	}))
 	object.set("publish",tsNamedNativeMethod("publish",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeChannelState(receiver);if state!=nil{tsNodeChannelPublish(loop,state,tsArg(args,0))};return tsU}))
 	object.set("bindStore",tsNamedNativeMethod("bindStore",2,func(_ *tsLoop,receiver tsValue,args ...tsValue)tsValue{
-		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};store,transform:=tsArg(args,0),tsArg(args,1);if tsIsUndefined(transform){transform=tsU}else if transform.kind!=tsFunctionKind{tsFSInvalid("transform","a function")}
+		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};store,transform:=tsArg(args,0),tsArg(args,1);if tsIsUndefined(transform){transform=tsU}else if transform.kind!=tsFunctionKind{tsFSInvalid("transform","a function")};if tsIsUndefined(tsFSProperty(receiver,"_subscribers")){state.object.set("_subscribers",tsArrayValue(&tsArray{}))}
 		for index:=range state.stores{if tsStrictEqual(state.stores[index].key,store){state.stores[index].transform=transform;return tsU}}
 		state.stores=append(state.stores,tsNodeChannelStore{store,transform});return tsU
 	}))
 	object.set("unbindStore",tsNamedNativeMethod("unbindStore",1,func(_ *tsLoop,receiver tsValue,args ...tsValue)tsValue{
 		state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};store:=tsArg(args,0)
-		for index:=range state.stores{if tsStrictEqual(state.stores[index].key,store){state.stores=append(state.stores[:index],state.stores[index+1:]...);return tsBooleanValue(true)}}
+		for index:=range state.stores{if tsStrictEqual(state.stores[index].key,store){state.stores=append(state.stores[:index],state.stores[index+1:]...);tsNodeChannelMaybeMarkInactive(state);return tsBooleanValue(true)}}
 		return tsBooleanValue(false)
 	}))
 	object.set("runStores",tsNamedNativeMethod("runStores",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeChannelState(receiver);if state==nil{tsPropertyFailure("Channel method called on incompatible receiver")};values:=[]tsValue{};if len(args)>3{values=args[3:]};return tsNodeChannelRunStores(loop,state,tsArg(args,0),tsArg(args,1),tsArg(args,2),values)}))
 	object.order=append(object.order,"hasSubscribers")
-	object.descriptors=map[string]*tsDescriptor{"hasSubscribers":{accessor:true,enumerable:true,configurable:true,getter:tsNamedNativeMethod("get hasSubscribers",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{state:=tsNodeChannelState(receiver);return tsBooleanValue(state!=nil&&(len(state.subscribers)>0||len(state.stores)>0))})}}
+	object.descriptors=map[string]*tsDescriptor{"hasSubscribers":{accessor:true,enumerable:true,configurable:true,getter:tsNamedNativeMethod("get hasSubscribers",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{state:=tsNodeChannelState(receiver);return tsBooleanValue(state!=nil&&(tsNodeChannelSubscriberLength(tsNodeChannelSubscriberList(state))>0||len(state.stores)>0))})}}
 	return tsObjectValue(object)
 }
 
@@ -66,9 +93,9 @@ func tsNodeDiagnosticsChannel(loop *tsLoop,name tsValue) tsValue {
 }
 
 func tsNodeChannelPublish(loop *tsLoop,state *tsNodeChannel,data tsValue) {
-	listeners:=state.subscribers
-	for index:=0;index<len(listeners);index++{
-		var callback tsValue;callback=listeners[index]
+	listeners:=tsNodeChannelSubscriberList(state)
+	for index:=0;index<tsNodeChannelSubscriberLength(listeners);index++{
+		callback:=tsFSProperty(listeners,strconv.Itoa(index))
 		func(){defer func(){if failure:=recover();failure!=nil{loop.errors=append(loop.errors,tsUnwrap(failure))}}();tsCall(loop,callback,data,state.name)}()
 	}
 }
@@ -142,7 +169,7 @@ func tsNodeDiagnosticsModule(loop *tsLoop) tsValue {
 	if tsNodeDiagnosticsSingleton.value!=nil{return tsObjectValue(tsNodeDiagnosticsSingleton.value)}
 	module:=tsNewObject()
 	module.set("channel",tsNamedNativeMethod("channel",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeDiagnosticsChannel(loop,tsArg(args,0))}))
-	module.set("hasSubscribers",tsNamedNativeMethod("hasSubscribers",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{name:=tsArg(args,0);key:=tsNodeChannelNameKey(loop,name);state:=tsNodeDiagnosticsSingleton.channels[key];return tsBooleanValue(state!=nil&&(len(state.subscribers)>0||len(state.stores)>0))}))
+	module.set("hasSubscribers",tsNamedNativeMethod("hasSubscribers",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{name:=tsArg(args,0);key:=tsNodeChannelNameKey(loop,name);state:=tsNodeDiagnosticsSingleton.channels[key];return tsBooleanValue(state!=nil&&(tsNodeChannelSubscriberLength(tsNodeChannelSubscriberList(state))>0||len(state.stores)>0))}))
 	module.set("subscribe",tsNamedNativeMethod("subscribe",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{channel:=tsNodeDiagnosticsChannel(loop,tsArg(args,0));tsCallReceiver(loop,tsFSProperty(channel,"subscribe"),channel,tsArg(args,1));return tsU}))
 	module.set("unsubscribe",tsNamedNativeMethod("unsubscribe",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{channel:=tsNodeDiagnosticsChannel(loop,tsArg(args,0));return tsCallReceiver(loop,tsFSProperty(channel,"unsubscribe"),channel,tsArg(args,1))}))
 	module.set("tracingChannel",tsNamedNativeMethod("tracingChannel",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeTraceChannel(loop,tsArg(args,0))}))

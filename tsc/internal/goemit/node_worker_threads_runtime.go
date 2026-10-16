@@ -139,7 +139,7 @@ func tsNodeWorkerThreadsInit(loop *tsLoop) {
 		module.set("isMarkedAsUntransferable",tsNamedNativeMethod("isMarkedAsUntransferable",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsBooleanValue(tsNodeWorkerThreads.markedUntransferable[uintptr(tsArg(args,0).ref)])}))
 		module.set("isMarkedAsUncloneable",tsNamedNativeMethod("isMarkedAsUncloneable",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsBooleanValue(tsNodeWorkerThreads.markedUncloneable[uintptr(tsArg(args,0).ref)])}))
 		module.set("moveMessagePortToContext",tsNamedNativeMethod("moveMessagePortToContext",2,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{if tsNodeWorkerPortFor(tsArg(args,0))==nil{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \"port\" argument must be a MessagePort")})};return tsArg(args,0)}))
-		messaging:=tsNodeModuleRequire(loop,[]tsValue{tsNodeWorkerKey("internal/worker/messaging")});module.set("postMessageToThread",tsGet(loop,messaging,tsNodeWorkerKey("postMessageToThread")));module.set("default",tsObjectValue(module));tsNodeWorkerThreads.module=tsObjectValue(module)
+		messaging:=tsNodeModuleRequire(loop,[]tsValue{tsNodeWorkerKey("internal/worker/messaging")});tsCall(loop,tsGet(loop,messaging,tsNodeWorkerKey("initThreadInfo")),tsNumberValue(float64(tsNodeWorkerThreads.threadID)),tsBooleanValue(tsNodeWorkerThreads.isMainThread),tsNodeWorkerThreads.channelConstructor);module.set("postMessageToThread",tsGet(loop,messaging,tsNodeWorkerKey("postMessageToThread")));module.set("default",tsObjectValue(module));tsNodeWorkerThreads.module=tsObjectValue(module)
 	})
 	return tsNodeWorkerThreads.module
 }

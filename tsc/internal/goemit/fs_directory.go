@@ -3,24 +3,43 @@ package goemit
 const fsDirectoryRuntime = `
 func tsFSDirent(entry os.DirEntry, parent string, encoding string) tsValue {
     out:=tsNewObject();out.set("name",tsFSDecode([]byte(entry.Name()),encoding))
-    out.set("parentPath",tsStringReference(tsStringUTF8(parent)));out.set("path",tsStringReference(tsStringUTF8(parent)))
+    parentValue:=tsFSDecode([]byte(parent),encoding);out.set("parentPath",parentValue);out.set("path",parentValue)
     mode:=entry.Type();if mode==0{if info,err:=entry.Info();err==nil{mode=info.Mode()}}
     tsFSSetTypePredicates(out,mode);return tsObjectValue(out)
 }
 
-func tsFSReadDirectory(path string, options tsValue) (tsValue,error) {
-    out:=&tsArray{};encoding:=tsFSEncoding(options,"utf8");withTypes:=tsTruthy(tsFSProperty(options,"withFileTypes"));recursive:=tsTruthy(tsFSProperty(options,"recursive"))
-    var walk func(string,string)error
-    walk=func(directory,prefix string)error{
-        entries,err:=os.ReadDir(directory);if err!=nil{return err}
+func tsFSReadDirectory(path string, options tsValue, asynchronous bool) (tsValue,error) {
+    out:=&tsArray{};encoding:=tsFSEncoding(options,"utf8");withTypes:=tsFSBooleanOption(options,"withFileTypes",false);recursive:=tsFSBooleanOption(options,"recursive",false)
+    bufferEncoding:=encoding=="buffer"
+    resultEncoding:=encoding;if recursive&&asynchronous{resultEncoding="utf8"}
+    var walk func(string,string,bool)error
+    walk=func(directory,prefix string,isRoot bool)error{
+        handle,err:=os.Open(directory);if err!=nil{if !isRoot&&recursive&&tsFSReaddirSkipsSubdir(err){return nil};return err}
+        entries,readErr:=handle.ReadDir(-1);closeErr:=handle.Close();if readErr!=nil{if !isRoot&&recursive&&tsFSReaddirSkipsSubdir(readErr){return nil};return readErr};if closeErr!=nil{return closeErr}
         for _,entry:=range entries{
             name:=filepath.Join(prefix,entry.Name())
-            if withTypes{out.values=append(out.values,tsFSDirent(entry,directory,encoding))}else{out.values=append(out.values,tsFSDecode([]byte(name),encoding))}
-            if recursive&&entry.IsDir(){if err:=walk(filepath.Join(directory,entry.Name()),name);err!=nil{return err}}
+            if bufferEncoding {
+                out.values=append(out.values,tsNodeBuffer([]byte(name)))
+            } else if withTypes {
+                out.values=append(out.values,tsFSDirent(entry,directory,resultEncoding))
+            } else {
+                out.values=append(out.values,tsFSDecode([]byte(name),resultEncoding))
+            }
+            if !recursive{continue}
+            kind:=entry.Type()
+            if kind==0{if info,infoErr:=entry.Info();infoErr==nil{kind=info.Mode()}}
+            if !entry.IsDir()&&kind&os.ModeSymlink==0{continue}
+            if len(entry.Name())+1+len(name)>4096{continue}
+            child:=filepath.Join(directory,entry.Name())
+            info,statErr:=os.Stat(child)
+            if statErr!=nil{if tsFSReaddirSkipsSubdir(statErr){continue};return statErr}
+            if info.IsDir(){if err:=walk(child,name,false);err!=nil{return err}}
         };return nil
     }
-    err:=walk(path,"");return tsArrayValue(out),err
+    err:=walk(path,"",true);return tsArrayValue(out),err
 }
+
+func tsFSReaddirSkipsSubdir(err error)bool{return errors.Is(err,os.ErrNotExist)||errors.Is(err,syscall.ENOTDIR)||errors.Is(err,syscall.EPERM)}
 
 type tsFSDirectory struct {
     sync.Mutex
@@ -37,7 +56,7 @@ func (directory *tsFSDirectory) readEntry(loop *tsLoop) tsResult {
         if directory.file==nil{return tsResult{tsNull,false}}
         entries,err:=directory.file.ReadDir(1)
         if err!=nil&&!errors.Is(err,io.EOF){return tsResult{tsFSError(err,"readdir",directory.path,""),true}}
-        if len(entries)>0{entry:=entries[0];if directory.recursive&&entry.IsDir(){directory.pending=append(directory.pending,filepath.Join(directory.path,entry.Name()))};return tsResult{tsFSDirent(entry,directory.path,directory.encoding),false}}
+        if len(entries)>0{entry:=entries[0];if directory.recursive&&(entry.IsDir()||entry.Type()&os.ModeSymlink!=0){child:=filepath.Join(directory.path,entry.Name());if info,e:=os.Stat(child);e==nil&&info.IsDir(){directory.pending=append(directory.pending,child)}};return tsResult{tsFSDirent(entry,directory.path,directory.encoding),false}}
         if !directory.recursive{return tsResult{tsNull,false}}
         _ = directory.file.Close();directory.file=nil
         if len(directory.pending)==0{return tsResult{tsNull,false}}
@@ -56,7 +75,7 @@ func (directory *tsFSDirectory) close() tsResult {
 }
 
 func tsFSDir(file *os.File, path string, options tsValue) tsValue {
-    directory:=&tsFSDirectory{file:file,path:path,encoding:tsFSEncoding(options,"utf8"),recursive:tsTruthy(tsFSProperty(options,"recursive"))}
+    directory:=&tsFSDirectory{file:file,path:path,encoding:tsFSEncoding(options,"utf8"),recursive:tsFSBooleanOption(options,"recursive",false)}
     out:=tsNewObject();out.nativeClass=tsNativeClass("Dir");out.set("path",tsStringReference(tsStringUTF8(path)))
     for _,name:=range []string{"read","close"}{
         operation:=name

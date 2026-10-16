@@ -1,23 +1,34 @@
 # Bun Node built-in port inventory
 
-**Bun snapshot:** `e40a58ad` (`/workspace/bun`; clean worktree when inspected).
-**Scope:** the Node module source and Bun runtime bindings at that snapshot. This document inventories source; it does not claim complete API support or behavioral parity.
+**Bun reference:** `/workspace/bun` local source tree.
+**Scope:** line-by-line mapping of Node module source and Bun runtime bindings into the Go adapters, with source coverage and behavior gaps recorded in this file.
 
 ## Port checkpoint
 
 | Field | Value |
 |---|---|
-| Modules with registered runtime adapters | 57 |
-| Bun source lines mapped in tracked checkpoints | 109117 |
-| Active module | `node:net` |
-| Active source file | `src/js/node/net.ts` |
-| Next source line | 448 |
+| Modules with registered runtime adapters | 65 |
+| Bun source lines mapped in tracked checkpoints | 166516 |
+| Active module | `node:http2` |
+| Active source file | `src/runtime/api/bun/h2_frame_parser.rs` |
+| Active source reviewed through | `7873` (read through EOF; 270/7873 parser lines mapped across selected host methods and SETTINGS preface encoding) |
+| Next source line | `src/runtime/api/bun/h2_frame_parser.rs:1` (translate parser definitions and host methods sequentially) |
 
-`node:sqlite` is paused at `NodeSqlite.cpp:1`: its remaining implementation enters JavaScriptCore and Bun's bundled SQLite C engine. The Go adapter retains the public facade and an in-memory SQL subset. `node:net.ts` is mapped through line 447, including option flags, BlockList/SocketAddress constructors, connection entry points, TLS key-log setup, socket-write error completion, and TLS bridge substitutions; source review pauses at line 448's adopted TLS raw-handle close path. `node_net_binding.rs` is mapped through line 184 onto the Go socket adapter. BlockList matching and rule descriptions are implemented, but its structured-clone hooks still cross the JavaScriptCore boundary.
+`node:sqlite` binding sources `NodeSqlite.cpp:4135/4135`, `NodeSqlite.h:902/902`, and `JSSQLStatement.cpp/.h:3166/3166` are mapped. The mapped sections cover SQLite library selection/version reporting, text/blob/row conversion, database and statement lifecycle/configuration, scalar and aggregate callbacks, sessions, changeset validation, authorizers, serialization, SQL tag-store creation and LRU behavior, backup validation, path/options validation, named and positional binding, and StatementSync run/get/all/iterate/columns behavior. The Go adapter validates database and backup paths and constructor options, matches method lengths, provides own database/statement/tag-store getters and stable live limit accessors, checks closed-session and tag-store states, uses an LRU cache, and reports finalized/reentrant state errors. SQLite limit values use documented defaults because no engine is linked. `JSSQLStatement.cpp/.h` are Bun’s separate `bun:sqlite` statement API; this pass mapped their binding, result conversion, database registry, and lifecycle sections and recorded the shared SQLite initialization/termination boundary. The first 3,500 lines of `sqlite3_local.h` cover the connection/result-code/flags/VFS/file-control API, library and allocator configuration, database options, rowid and change counters, busy handling, formatting, and authorizer declarations. The header continues as an upstream SQLite engine contract, and the bundled `sqlite3.c` implementation is 269,669 lines; neither is a Node wrapper translation target or has a Go standard-library equivalent, so both remain an explicit engine dependency boundary. The in-memory SQL subset still lacks full SQL parsing/execution, parameter semantics, live cursors, changeset application, real serialization, and backup; `SQLITE_IGNORE` cannot rewrite selected columns. The supported SQL subset now invokes authorizer callbacks for statement actions and basic SELECT/function/column reads. Native metadata, JSC ownership, and SQLite error details remain unavailable. The `node:net.ts` pass reaches line 4634, and `node_net_binding.rs` reaches 184/184. `BlockList.rs` (524 lines) and its `SocketAddress.rs` dependency (1,084 lines) are now mapped into the Go adapter. SocketAddress option validation, getters, `toJSON`, exact-instance recognition, numeric/string family handling, IPv4/IPv6 validation, and common URL-style address parsing are represented. Its `parse` uses Go `net/url` and a local IPv4 canonicalizer in place of Bun's WHATWG parser; native sockaddr DTO helpers and named-interface IPv6 scopes use Go address handling or remain absent. BlockList rule mutation/matching is lock-protected; the v8 serializer now tags BlockList references and restores the same object through a nonce registry, but the registry has no destruction cleanup. Worker message delivery still passes runtime values directly instead of invoking the serializer.
+
+The `net.ts` source pass reaches line 4634, with its final export surface mapped. The Go adapter routes worker listen requests through the local cluster module and can hand off accepted round-robin sockets when both sides share this runtime. Native descriptor transfer across real process boundaries, exact kernel backlog control, and the private TLS handshake hook remain gaps. The `node:child_process.ts` pass is complete through line 2071, including validators, URL/path helpers, `SystemError`, and the default export. Its Go adapter covers the standard child process entry points, event lifecycle, sync results, promisify hooks, stdio normalization, and error metadata. Real IPC transport, descriptor-backed extra stdio, detached process groups, uid/gid application, exact Windows argv quoting, maxBuffer termination, lazy native streams, and some error details remain approximate. The assertion import chain now has its UTF-16-aware Myers algorithm, comma-tolerant line matching, diff list output, color rendering, skipped-line collapse, AssertionError message/metadata formatting, and CallTracker call recording/report/reset/verify behavior mapped across its JS and Rust helper files. Deep equality still uses a local structural comparator instead of Bun's full native comparison semantics. The `internal/async_hooks_tick.ts` dependency is mapped through all 20 lines, including snapshotted `TickObject` init-hook delivery. `internal/fixed_queue.ts` is mapped through all 130 lines, including segmented circular buffers and the `FixedQueue` export. `internal/fs/binding.ts` is mapped through all 123 lines onto the shared fs binding adapter. The public Rust binding dispatch and test-only host helpers are mapped through line 527. The `fs.rm` parser validates own options before snapshotting, `stringToFlags` shares the filesystem flag parser, and the memfd test helper follows Bun's Linux flag and fallback path. `node_fs.rs` imports, error/path/time helpers, the 52-bit Blob size bound, IOVec dispatch, and async operation aliases map through line 637. The Windows-only `UVFSRequest` operation setup, buffer slicing, request callbacks/cleanup, completion settlement, `FsArgument`/`FsReturn` conversions, and generic `AsyncFSTask` lifecycle map through line 1459 onto the shared Go filesystem worker and event loop. The Go adapter rechecks the three Bun AbortSignal-bearing file operations (`readFile`, `writeFile`, `appendFile`) at completion; Windows libuv ref accounting, context tags, and native callback/task ownership remain host-boundary gaps. Bun's `NewAsyncCpTask`/`CpSingleTask` async traversal and promise settlement map through line 2254 onto `fs_copy.go`; Go now validates cp options and paths before dispatch, handles source/destination identity and directory nesting, merges directories, follows `dereference`, resolves or preserves symlink targets, applies source modes/timestamps, and mirrors `force`/`errorOnExist` behavior. Go copies tree entries sequentially instead of Bun's per-file fanout, and native clonefile/libuv/Windows copy handling remains approximate. Go routes descriptor I/O through `os.File` and `unix.Readv`/`Writev`; it caps readv at 1,024 buffers and batches writev, while the exact platform IOV_MAX and descriptor ownership remain differences. `AsyncReaddirRecursiveTask`, its result batching/type conversions, and promise/callback completion map through line 2736 onto `tsFSReadDirectory`; Go now follows recursive directory symlinks, skips vanished/not-enterable descendants, honors Buffer encoding precedence, and reflects Bun's async recursive encoding path. Bun fans directory scans out across worker tasks and joins lock-free result batches; Go scans sequentially with `os.File.ReadDir` to preserve filesystem order, but uses path based traversal, so fd-root safety, race behavior, and cancellation-on-first-error remain approximate. The argument structs map through line 4554, including null/default behavior for optional access/copy flags, u32 mode parsing, optional `exists` paths, and pre-scheduling `read`/`write` validation. Go handles DataView byte windows, read length coercion and zero-length behavior, buffer offset/length bounds, and write encoding validation/caps. Return conversions and handlers for `readlink`, realpath, rename, rmdir/rm, statfs/stat, symlink, truncate, unlink, watch, and time updates map through line 8109. Sync `cp` traversal, symlink handling, single-file copy behavior, and generated function dispatch/Dirent conversion map through line 9450. Recursive delete/error tables, `zig_delete_tree` and its bounded-stack fallback, and the function enum map through line 10116. Go now preserves the distinct syscall tags for `unlink`, `rm`, and `rmdir`, translates recursive-rmdir EACCES to EPERM, and applies Bun's narrow nonrecursive-rm errno table. The Go filesystem uses `os.RemoveAll` instead of Bun's fd-relative delete walker; descriptor-root race resistance and exact retry races remain approximate, along with platform-specific clone/copy paths, standalone graph lookup, early `readFile` OOM limits, large-write preallocation, and native Windows libuv ownership. The 821-line `dir_iterator.rs` platform implementations and wrapped iterator initialization map onto Go `os.File.ReadDir`; raw getdents records, Windows NT directory queries, borrowed filename buffers, and Windows UTF-16 names remain standard-library boundary differences. `Stat.rs` maps both Stats variants, Date-backed timestamp access, high inode conversion, and its test-only constructor through line 212; Go emits the same fields and lazy Date values, with statx supplying Linux birthtime. `StatFS.rs` and `node_fs_constant.rs` map through their final lines. The 465-line `NodeFSStatFSBinding.cpp` object layout, constructors, number/BigInt fields, and prototype tags are mapped onto the Go StatFs adapter; the Go result now includes `frsize` in Bun’s field order and falls back to `bsize` on hosts without a separate fragment size. `NodeFSStatBinding.cpp` (967 lines) and `NodeDirent.cpp` (375 lines) now map through their final lines. Go covers Stats/BigIntStats fields, lazy Date getters, predicates, BigInt timestamp fields, Dirent type predicates and constructors, and native `toStringTag` values; Stats and StatFs constructor calls are represented. `Dirent` type discovery for `os.ReadDir` uses Go metadata fallback when the host does not report a type, so unknown entries can be classified more precisely than Bun’s raw `DT_UNKNOWN` path. Continue with `node_fs_stat_watcher.rs`.
+
+The `node:fs` watcher source stack is mapped through the end of each dependency: `node_fs_watcher.rs` 1256/1256, `node_fs_stat_watcher.rs` 1110/1110, `path_watcher.rs` 1618/1618, `win_watcher.rs` 547/547, `fs_events.rs` 939/939, and `node.classes.ts` 384/384. The Go adapter now returns a Node EventEmitter for `fs.watch`, handles the wrapper's listener, ignore, encoding shorthand, `throwIfNoEntry`, abort, error, close, ref/unref, and `_handle` behavior, and recursively adds Linux inotify watches with dynamic directory discovery and overflow `(change, null)` events. Go's standard library has no portable filesystem notification API, so Linux uses inotify through the Unix syscall adapter. Windows libuv, macOS FSEvents, FreeBSD kqueue, Bun's process-wide watcher deduplication and native cross-event batching remain host/backend gaps. `watchFile` still stores one watcher per path per loop rather than Bun's per-realm/per-ModuleGraph ownership. `ProcessBindingFs.cpp` (216 lines) and `ProcessBindingFs.h` (36 lines) also map through their final lines: Bun's raw process binding table deliberately exposes throwing stubs for filesystem calls plus four typed-array metadata views; this Go runtime currently routes `process.binding("fs")` to the functional filesystem adapter instead. `src/runtime/node/types.rs` is mapped through all 1,779 lines: argument ownership/flavor, string and typed-array parsing, encoding aliases and conversion, file URL and byte-path validation, uint32 mode and open-flag parsing, vector I/O buffers, Dirent conversion, path-or-fd, and path-or-Blob helpers are traced to the Go filesystem, Buffer, URL, and Blob adapters. Go GC replaces Bun's explicit JSC root/pin lifetime; native Windows path-prefix normalization and deferred async path-too-long errors remain differences. `src/runtime/node/util/validators.rs` is mapped through all 486 lines: integer/int32/uint32/number/string/boolean/function/object/array checks, array element validation, and string enum validation route through the local validators, filesystem argument checks, and `node:util.parseArgs` implementation. Parsing bounds and supported object flags are represented; formatted error details and JSC-specific type naming remain approximate. The `node:fs` dependency stack is complete. `node:crypto` is mapped through its 562-line wrapper, 403-line C++ binding, and 1,750-line Rust binding. The Go adapter uses standard crypto packages for hashes, HMAC, ciphers, key parsing/generation, signatures, ECDH, PBKDF2, HKDF, random bytes, and scrypt; scrypt now uses a bounded RFC 7914 implementation, and random callbacks use the loop worker/next-tick paths. Argon2, SPKAC, classic Diffie-Hellman, OpenSSL cipher/hash enumeration, custom engines, secure heap, and subtle WebCrypto remain unavailable or partial; OpenSSL error details and exact curve/cipher tables differ. Bun's `node_cluster_binding.rs` is mapped through all 810 lines: IPC setup, internal-message dispatch and acknowledgments, callback tracking, channel ref control, raw TCP/UDP/Unix socket binding, descriptor validation and closure are represented by the cluster and network adapters. The Go shared-handle adapter now validates socket descriptors, honors address family and IPv6/reuse flags where Go's socket controls expose them, reports the actual ephemeral port, and closes owned descriptors. Real child-process IPC/descriptor transfer, Windows socket export, and exact libuv error translation remain gaps. The 4,135-line `src/jsc/bindings/sqlite/NodeSqlite.cpp` is mapped through its final line.
+
+The `node:net` pass includes option flags, connection entry points, connect trace and performance entries, TLS key-log file output and client `keylog` events, socket-write error completion and string encoding, TLS upgrades over an existing socket, transport close collapse, socket AbortSignal cleanup, the peer-FIN `EPIPE` write path, default server-name verification, protocol-error conversion, certificate-chain and identity checks, TLS authorization/event state, standalone wrapping, pre-handshake EOF `ECONNRESET` reporting, established-session TLS protocol-error conversion, data listener exception routing, read backpressure, client `connect`/`ready` event ordering, accepted-socket `pauseOnConnect`, timeout setup and pending-write suppression, read-error teardown, exact/wildcard server contexts, asynchronous SNI callbacks, ALPN selection callbacks, TLS server handshake deadlines and per-socket `tlsClientError` routing, requested client-certificate verification, accepted-socket server properties and connection-error routing, TLS client session-cache `session` events, Socket option validation, kernel-backed IP_TOS/IPV6_TCLASS controls, `onread` typed-array callbacks with sliced delivery, pause/resume tail preservation and deferred EOF, Socket address and state accessors, write-finalization waiting for connect, and handle close/reset routing through Go `crypto/tls` and `crypto/x509`. Source lines 2800–3702 additionally map descriptor-backed synchronous write helpers, reset/keepalive/no-delay/timeout controls, writev and pending-write handling, connect argument validation and DNS lookup, address alternation and deduplication, connection-attempt/BlockList/trace/performance events, and the `afterConnect` success/failure path. Go and Bun both try one family-selected address at a time, advancing immediately on failure or after the per-attempt deadline; the final address has no attempt deadline. The Go path preserves this flow, while exact libuv cancellation and error ordering remain approximations. Server construction, listen overload normalization, Unix socket permissions, fd listener adoption, asynchronous listen errors, close draining, async disposal, and EventEmitter rejection handling are mapped. The `listenInCluster`, faux-listen, bind-error-check, and round-robin connection paths now route through the local cluster adapter. Same-runtime round-robin handoff can pass an accepted Socket directly. Cross-process descriptor adoption and IPC handle transfer remain incomplete; Go does not expose the requested kernel listen backlog. TCP `reusePort` and `ipv6Only` socket options are applied through Go `ListenConfig`; private native-handle callbacks remain approximate. For lines 448–596, Go interrupts the raw read pump, replays bytes already read, and wraps that same `net.Conn` with `crypto/tls`; this folds Bun's separate raw/TLS handle pair and event callbacks into one Go connection lifecycle. Lines 597–604 use the existing abort-listener helper and remove it when the socket closes; lines 605–632 install the socket-specific write error after remote EOF. Lines 807–1088 map Bun's callback table and read-stop/end/error flow onto the Go read pump and local Duplex lifecycle; a read failure reaches `error` listeners once when present and otherwise ends the readable side like EOF. The TLS listener accepts without blocking the next accept, performs handshakes as separate tasks, reports failed handshakes through `tlsClientError`, and keeps accepting connections. Accepted sockets receive `server`, `_server`, and `isServer`; throwing connection/TLS event listeners use the `uncaughtException` path. Go collapses the raw/TLS handle pair into one `net.Conn`; server-side TLS ticket `session` events, descriptor-backed network reads and complete fd adoption/close semantics, exact kernel read sizing for `onread`, precise close-reset noise handling, and exact loop-reference accounting remain unimplemented or approximate. The TLS client cache is local to a socket, so session tickets are exposed as buffers but are not interoperable with Node/OpenSSL session state. SNI and ALPN callbacks execute on the owning event loop; the Go server dispatches its config callback on each handshake rather than selecting a reduced handler table, and ALPN callback `this` is the server object rather than the accepted socket. IPv4/IPv6 family autoselection follows Bun’s sequential retry shape; exact libuv timeout/error formatting and per-attempt TLS option rebuilding, cross-process cluster descriptor sharing, kernel backlog control and some connect/listen option validation remain gaps; `reusePort`/`ipv6Only` use Go socket options. Some callback error/uncaught-exception ordering remains approximate. The `internal/tls.ts` is mapped through all 476 lines. The TLS native dependency pass now traces `SecureContext.rs` (460/460), `runtime/socket/SSLConfig.rs` (531/531), `http/ssl_config.rs` (699/699), and the 116-line `SSLConfig.bindv2.ts` schema. The Go adapter now provides private secure contexts, `_external`, `addCACert`, certificate/key/CA file reads, encrypted legacy PEM key handling, selected TLS version flags, and common ECDH curves. PKCS#12 decoding, shared BoringSSL context interning, DH parameters, CRL enforcement, signature algorithm selection, TLS session timeout, and exact OpenSSL cipher expressions remain unavailable or approximate. Standalone client wrapping skips hostname verification, preserves `authorized=false`, emits only `secure`, and rejects an untrusted chain when requested. `node:net` source dependency coverage is complete; continue with the recorded net behavior gaps before selecting the next module.
+
+The `node:zlib` source pass now covers the 1,021-line wrapper and all four native files (3,144 Rust lines). Deflate/gzip use Go standard codecs, and Zstandard uses the dependency already declared in go.mod; Brotli remains a known codec gap because there is no Go standard-library Brotli implementation. Native worker scheduling, exact zlib window/memory/strategy controls, and incremental decompression remain tracked behavior gaps. `src/js/internal/worker/stdio.ts` is mapped through line 152 onto the local MessagePort stream adapter. `src/js/internal/worker/messaging.ts` is mapped through line 301 with local MessagePort routing, listener results, and timeout handling. `src/js/internal/trace_events.ts` is mapped through all 874 lines; category enablement, output, instrumentation, inspector collection, and metadata use the shared Go adapter, with separate worker VMs and native hooks remaining gaps. Its event timestamps now use the runtime's monotonic performance clock. The `node:worker_threads` wrapper is now mapped through line 1296; its Go adapter exposes the API but worker execution still lacks a separate JavaScript VM.
 
 Each source index row starts at `ported through line 0`. Update the row after each file is translated. The module-level counter advances only when a module is fully translated; keep the per-file line checkpoint even when work pauses mid-module.
 
-Current stack checkpoint: `node:tls` uses Go’s standard `crypto/tls` without OpenSSL or cgo. `node:_http_server` is mapped through line 4306, including response completion, header accessors, writes, and queued pipelined operations. `node:http` and `node:https` are registered through their full wrappers; HTTP parser, agent, native binding, and platform details remain prototype approximations. `internal/dgram.ts` and `node:dgram.ts` are mapped through their full source ranges onto Go `net.UDPConn` and `syscall` adapters; cluster sharing, the native send queue, custom async lookup, and source-specific multicast membership remain approximations. `node:dns.ts` and its Promise facade are mapped through their full source ranges onto Go `net.Resolver`; uncommon record types remain limited by the standard library. `node:fs.ts` is mapped through all 1,509 lines, and `node:fs/promises.ts` through all 1,674 lines. The `node:readline` and `node:readline/promises` wrappers are mapped through their final lines. Their internal helpers cover the interface, history, key decoding, cursor callbacks, and promise cursor builder. `node:tty` is mapped through all 204 wrapper lines; stream controls and cursor/color APIs are exposed, while raw terminal mode and real window-size probing are approximated. `node:repl` and its internal Acorn, await, completion, mode, and utility dependencies are mapped through their final source lines and executed through the local VM; runtime behavior is unverified. `node:wasi` is mapped through all 1,775 lines and exposes the complete 47-entry preview1 import table; core memory, clock, random, descriptor, and path operations are adapted to Go, while socket support and several uncommon semantics are approximated. `node:v8` uses a local object-graph serialization format rather than V8 wire data, and `node:inspector` exposes Session, runtime console events, the inspector WebSocket endpoint, profiler/coverage commands, and its Promise facade; engine-backed debugger state, samples, and coverage remain approximations. `node:http2` maps its complete 6,794-line JavaScript wrapper and private TLS-upgrade helper to Go session, stream, request, response, server, settings, and validation surfaces; the Bun native frame parser is not translated, so protocol operation remains approximate. `node:quic` maps its public wrapper and internal symbol, diagnostics, header, binding, state, statistics, and class surfaces. Its connect/listen/session APIs are placeholders because Go’s standard library has no QUIC transport and no external QUIC dependency is enabled. `node:sqlite` now exposes DatabaseSync, StatementSync, Session, SQLTagStore, backup, constants, statement properties, and symbol disposal with a small in-memory SQL subset. `node:test` now maps the full 2,874-line wrapper and its mock-timer/assert utility dependencies; nested tests, hooks, contexts, mocks, assertions, and event-shaped run output are exposed, while file subprocess execution and snapshot persistence are stubs. `node:stream/iter` now maps its wrapper, ring buffer, push, duplex, pull, consumer, broadcast, share, and classic-stream adapters; backpressure and async scheduling remain approximate. `node:zlib/iter` exposes all 16 async/sync transform factories through the local transform adapter; gzip/deflate use Go standard codecs, while Brotli and Zstd remain unsupported. Bun’s native SQLite binding and bundled C engine are not translated; file-backed databases, full SQL semantics, changesets, serialization, and backup are placeholders or absent. The public module shim is mapped through 38/38 lines; the SQLite native binding is the active source at `NodeSqlite.cpp:1`, with its JavaScriptCore and bundled SQLite C engine boundary recorded in the module row. `node:fs/promises.ts` maps `FileHandle.readLines`, `pull`, `pullSync`, and `writer`; `internal/streams/iter/pull.ts` is mapped through all 977 lines and supplies the pull pipeline adapter. The fs dependencies `internal/fs/glob`, `cp-sync`, `cp`, `watch`, `watchfile`, `streams`, and `internal/streams/fast-utf8-stream` route through Go filesystem helpers. Glob uses the local simpler matcher in place of vendored minimatch; cp uses the shared Go copy walker instead of Node’s separate sync/async tree algorithms; watch helpers use the existing watcher state; filesystem streams use the local stream state machine. The UTF-8 stream maps buffering, flush, reopen, and lifecycle APIs, while Bun’s custom fs overrides, precise retry behavior, and zero-copy writer path are approximated. Through values remain per-file source checkpoints.
+Current stack checkpoint: `node:tls` uses Go’s standard `crypto/tls` without OpenSSL or cgo. `node:_http_server` is mapped through line 4306, including response completion, header accessors, writes, and queued pipelined operations. `node:http` and `node:https` are registered through their full wrappers; HTTP parser, agent, native binding, and platform details remain prototype approximations. `internal/dgram.ts` and `node:dgram.ts` are mapped through their full source ranges onto Go `net.UDPConn` and `syscall` adapters; cluster sharing, the native send queue, custom async lookup, and source-specific multicast membership remain approximations. `node:dns.ts` and its Promise facade are mapped through their full source ranges onto Go `net.Resolver`; uncommon record types remain limited by the standard library. `node:fs.ts` is mapped through all 1,509 lines, and `node:fs/promises.ts` through all 1,674 lines. The `node:readline` and `node:readline/promises` wrappers are mapped through their final lines. Their internal helpers cover the interface, history, key decoding, cursor callbacks, and promise cursor builder. `node:tty` is mapped through all 204 wrapper lines; stream controls and cursor/color APIs are exposed, while raw terminal mode and real window-size probing are approximated. `node:repl` and its internal Acorn, await, completion, mode, and utility dependencies are mapped through their final source lines and executed through the local VM; runtime behavior is unverified. `node:wasi` is mapped through all 1,775 lines and exposes the complete 47-entry preview1 import table; core memory, clock, random, descriptor, and path operations are adapted to Go, while socket support and several uncommon semantics are approximated. `node:v8` uses a local object-graph serialization format rather than V8 wire data, and `node:inspector` exposes Session, runtime console events, the inspector WebSocket endpoint, profiler/coverage commands, and its Promise facade; engine-backed debugger state, samples, and coverage remain approximations. `node:http2` maps its complete 6,794-line JavaScript wrapper and private TLS-upgrade helper to Go session, stream, request, response, server, settings, and validation surfaces. The generated `h2.classes.ts` host-method registration is mapped through line 151. The parser is reviewed through EOF with 270/7873 lines mapped across SETTINGS wire encoding, stream state, buffer size, trailer completion, read flow control, and stream-ID allocation; selected protocol/session paths and the complete 210-line native header materializer are represented in Go. HPACK decoding, Bun native socket ownership/corking, most parser host methods, and remaining callback/lifecycle details are still open. `node:quic` maps its public wrapper and internal symbol, diagnostics, header, binding, state, statistics, and class surfaces. Its connect/listen/session APIs are placeholders because Go’s standard library has no QUIC transport and no external QUIC dependency is enabled. `node:sqlite` now exposes DatabaseSync, StatementSync, Session, SQLTagStore, backup, constants, statement properties, and symbol disposal with a small in-memory SQL subset. `node:test` now maps the full 2,874-line wrapper and its mock-timer/assert utility dependencies; nested tests, hooks, contexts, mocks, assertions, and event-shaped run output are exposed, while file subprocess execution and snapshot persistence are stubs. `node:stream/iter` now maps its wrapper, ring buffer, push, duplex, pull, consumer, broadcast, share, and classic-stream adapters; backpressure and async scheduling remain approximate. `node:zlib/iter` exposes all 16 async/sync transform factories through the local transform adapter; gzip/deflate use Go standard codecs, Zstd uses the existing klauspost codec, and Brotli remains unsupported. Bun’s native SQLite binding and bundled C engine are not translated; file-backed databases, full SQL semantics, changesets, serialization, and backup are placeholders or absent. The public module shim is mapped through 38/38 lines; the `NodeSqlite.cpp` and `NodeSqlite.h` passes are complete, and `JSSQLStatement.cpp/.h` have been mapped as Bun `bun:sqlite` infrastructure with only its shared engine setup relevant here. The first 3,500 lines of `sqlite3_local.h` are mapped as engine API context; the bundled SQLite C engine remains a Go boundary gap. `node:fs/promises.ts` maps `FileHandle.readLines`, `pull`, `pullSync`, and `writer`; `internal/streams/iter/pull.ts` is mapped through all 977 lines and supplies the pull pipeline adapter. The fs dependencies `internal/fs/glob`, `cp-sync`, `cp`, `watch`, `watchfile`, `streams`, and `internal/streams/fast-utf8-stream` route through Go filesystem helpers. Glob uses the local simpler matcher in place of vendored minimatch; cp uses the shared Go copy walker instead of Node’s separate sync/async tree algorithms; watch helpers use the existing watcher state; filesystem streams use the local stream state machine. The UTF-8 stream maps buffering, flush, reopen, and lifecycle APIs, while Bun’s custom fs overrides, precise retry behavior, and zero-copy writer path are approximated. Through values remain per-file source checkpoints.
+
+`node:vm` is now mapped through the 674-line wrapper and its native source chain: NodeVM and Script bindings, shared Module lifecycle, SourceTextModule parsing/request metadata, SyntheticModule exports, script fetcher, option names, code-generation policy, and run termination. The adapter now exposes source request attributes/phases and recursive linker callbacks, module status transitions, namespace/error accessors, synthetic export updates, and import.meta initialization. Its lexical source scanner/evaluator is a partial substitute: arbitrary JavaScript parsing/execution, true JSC contexts and microtask queues, bytecode cache decoding, top-level-await settlement, and timeout/SIGINT termination are still backend gaps.
 
 ## Line-by-line dependency-stack strategy
 
@@ -27,7 +38,7 @@ Current stack checkpoint: `node:tls` uses Go’s standard `crypto/tls` without O
 4. Repeat until the original entry point reaches its end. Record each module’s dependencies and per-file `Through` line so no file silently jumps ahead.
 5. Keep one Go module (`go.mod`) and the existing `goemit` package. Give each Node builtin its own file, named `internal/goemit/node_<builtin>_runtime.go`, containing that builtin's generated-runtime fragment. Go files in this package can share the private runtime value types and helpers without Go imports or package cycles. A build-tagged registry joins the fragments into the generated single-file runtime and dispatches module names to their constructors.
 
-The completed `node:querystring`, `node:punycode`, `node:console`, `node:os`, `node:timers`, `node:timers/promises`, `node:util/types`, `node:module`, `node:perf_hooks`, `node:events`, `node:domain`, `node:diagnostics_channel`, `node:trace_events`, `node:assert`, `node:assert/strict`, `node:async_hooks`, `node:crypto`, `node:stream`, `node:stream/promises`, `node:stream/consumers`, and `node:stream/web` wrappers are registered in the generated runtime. The `node:module` adapter follows Bun's 76-entry builtin table and exposes Module construction, CommonJS wrapper helpers, lookup entry points, and compile-cache APIs; host resolver, source-map, and compile-cache behavior use local approximations. `node:async_hooks` implements `AsyncLocalStorage` and `AsyncResource` against persistent event-loop context frames; promise reactions and timer task completions capture those frames, while hook callbacks and async IDs remain stubs. The assertion facade provides the standard assertion method family, strict aliases, error matching, and promise assertions through local runtime helpers; deep object comparison and deprecated `CallTracker` reporting are approximations. The timers implementation shares the transpiler event loop; its promise interval uses the local async-iterator machinery. Timer handle refresh/ref APIs are not modeled yet. `node:util/types` maps predicates to generated runtime value tags; brands for weak collections, shared buffers, crypto keys, and native externals are unavailable and report false. `node:perf_hooks` uses Go's monotonic clock and exposes performance entries, observers, timerify, and a basic recordable histogram; Node-only engine observation and high resolution histogram quantization are approximated. Its `monitorEventLoopDelay` wrapper is translated to a local histogram adapter; the native C++ sampling substrate remains unported. `node:events` implements EventEmitter listeners, emission, static helpers, one-shot Promises, and async iteration; EventTarget bridges are adapted. `node:domain` builds on `node:events`; it tracks enter/run/exit and the common listener wrappers, but does not update a process global. `node:diagnostics_channel` provides cached channels, subscriptions, stores, and tracing wrappers; weak-reference cleanup and async-context propagation use strong references and direct calls. `node:trace_events` tracks category enablement and writes local trace files through an internal agent adapter; worker-specific native hooks and exact trace timing remain approximate. `node:os` uses Go's standard library and procfs in place of Bun's Rust host binding; OS constants and some non-Linux host details remain approximate. Its `src/runtime/node/node_os.rs` source rows remain at line 0 because the binding was replaced rather than translated line by line. Newly ported modules are enabled by default and can be omitted from a compiler build with `-tags no_node_modules`. The existing `fs`, `buffer`, and `path` runtime support predates this registry and is not controlled by that tag yet.
+The completed `node:querystring`, `node:punycode`, `node:console`, `node:os`, `node:timers`, `node:timers/promises`, `node:util/types`, `node:module`, `node:perf_hooks`, `node:events`, `node:domain`, `node:diagnostics_channel`, `node:trace_events`, `node:assert`, `node:assert/strict`, `node:async_hooks`, `node:crypto`, `node:stream`, `node:stream/promises`, `node:stream/consumers`, and `node:stream/web` wrappers are registered in the generated runtime. The `node:module` adapter follows Bun's 76-entry builtin table and exposes Module construction, CommonJS wrapper helpers, lookup entry points, and compile-cache APIs; host resolver, source-map, and compile-cache behavior use local approximations. `node:async_hooks` implements `AsyncLocalStorage` and `AsyncResource` against persistent event-loop context frames; promise reactions and timer task completions capture those frames; `createHook` delivers `TickObject` init events for `process.nextTick`, while other hook phases and non-tick resource events remain unsupported. The assertion facade provides the standard assertion method family, strict aliases, error matching, and promise assertions through local runtime helpers; deep object comparison and deprecated `CallTracker` reporting are approximations. The timers implementation shares the transpiler event loop; its promise interval uses the local async-iterator machinery. Timeout and interval cancellation stop pending work through the loop cancellation channel; timer handle refresh/ref APIs remain partial. `node:util/types` maps predicates to generated runtime value tags; brands for weak collections, shared buffers, crypto keys, and native externals are unavailable and report false. `node:perf_hooks` uses Go's monotonic clock and exposes performance entries, observers, timerify, and a basic recordable histogram; Node-only engine observation and high resolution histogram quantization are approximated. Its `monitorEventLoopDelay` wrapper is translated to a local histogram adapter; the native C++ sampling substrate remains unported. `node:events` implements EventEmitter listeners, emission, static helpers, one-shot Promises, and async iteration; EventTarget bridges are adapted. `node:domain` builds on `node:events`; it tracks enter/run/exit and the common listener wrappers, but does not update a process global. `node:diagnostics_channel` provides cached channels, subscriptions, stores, and tracing wrappers; weak-reference cleanup and async-context propagation use strong references and direct calls. `node:trace_events` tracks category enablement and writes local trace files through an internal agent adapter; worker-specific native hooks and exact trace timing remain approximate. `node:os` uses Go's standard library and procfs in place of Bun's Rust host binding; OS constants and some non-Linux host details remain approximate. This pass mapped `node_os.bind.ts` through 94/94 and `node_os.rs` through 1614/1614, correcting Linux iowait/IRQ CPU accounting, physical free-memory and system-uptime semantics, IPv6-only `scopeid`, interface filtering/MAC width, and priority validation. Host-specific CPU/network details, non-Linux physical memory/uptime/release data, and platform constants remain approximate. Newly ported modules are enabled by default and can be omitted from a compiler build with `-tags no_node_modules`. The existing `fs`, `buffer`, and `path` runtime support predates this registry and is not controlled by that tag yet.
 
 `node:process` source review is complete through `BunProcess.cpp:5172`; `ProcessBindingConstants.cpp/.h`, `NodeProcessModule.h`, and `node_process.rs` are also mapped through their final lines. No unported Node builtin dependency was encountered. The binding's TLS/OpenSSL constants are numeric compatibility values only; the Go runtime adds no OpenSSL or cgo dependency. The `node:path` wrappers, native bridge, Rust host wrapper, and portable Rust algorithm crate are mapped through their final lines; they route to the existing Go path runtime with standard-library host functions and local Windows path logic. `path.matchesGlob` uses the local glob matcher, so advanced Bun glob features remain approximate. The `node:buffer` module wrapper, Rust helper, JSBuffer bindings, encoding parser, constructor, and prototype sources have all been mapped. The Go runtime now exposes the constructor/statics, string and view operations, search and compare, typed accessors, numeric/BigInt readers and writers, encoding-specific methods, inspection, and module exports. Object URL lookup remains a placeholder; JSC memory mapping, resizable-buffer side effects, custom inspect context properties, and some exact Node error ordering/messages are approximated. The `node:string_decoder` native module handoff, declaration, and 631-line implementation are now translated into stateful UTF-8, UTF-16LE, and base64/base64url chunk decoding with the `write`, `end`, `text`, `lastChar`, `lastNeed`, `lastTotal`, and `encoding` API. Its encoders reuse the Buffer runtime; invalid receiver/error wording and a few malformed chunk boundary details are approximate. The `node:url` wrapper, internal IDNA helpers, NodeURL native bridge, and punycode/host-validation helpers are mapped through their final lines; the Go adapter uses `net/url`, `filepath`, and the existing punycode runtime, so ICU UTS #46 validation and detailed `URLPattern` matching remain approximate. Its URL, URLSearchParams, legacy `Url`, file URL, IDNA, and HTTP-options entry points are exposed. The crypto dependency stack has mapped `readable.ts` through line 1734, `writable.ts` through 1118, `duplex.ts` through 166, `duplexify.ts` through 395, `webstreams_adapters.ts` through 864, the TypeScript logic of `native-readable.ts` through 306, `iter/from.ts` through 576, `iter/classic.ts` through 898, `transform.ts` through 173, `lazy_transform.ts` through 53, `passthrough.ts` through 20, `pipeline.ts` through 448, and `compose.ts` through 221. These Go adapters cover the classic/Web stream conversion surfaces with approximate scheduling, destroy, and strategy behavior; Bun's `BunStreamConsumers.cpp` native-handle transfer remains a no-op.
 
@@ -47,18 +58,20 @@ The stream dependency pass has mapped `internal/abort_listener.ts` through line 
 | `node:punycode` | `src/js/node/punycode.ts` | 414 | 414 | source translated | none |
 | `node:console` | `src/js/node/console.ts` | 1 | 1 | source translated; API partial | none |
 | `node:os` | `src/js/node/os.ts` | 179 | 179 | wrapper translated; native bridge replaced | Go standard library |
-| `node:timers` | `src/js/node/timers.ts` | 41 | 41 | wrapper translated; handle methods partial | `node:timers/promises` (lazy property) |
+| `node:timers` | `src/js/node/timers.ts` | 41 | 41 | wrapper translated; timeout and interval cancellation stop pending work through the loop cancellation channel; `refresh`/handle APIs remain partial | `node:timers/promises` (lazy property) |
 | `node:timers/promises` | `src/js/node/timers.promises.ts` | 253 | 253 | wrapper translated; async iterator adapted | `node:timers` (global timer primitives) |
 | `node:util/types` | `src/jsc/modules/NodeUtilTypesModule.cpp`, `.h` | 1314 | 1314 | predicate table translated; host-only brands partial | generated runtime value tags |
 | `node:perf_hooks` | `src/js/node/perf_hooks.ts`; `src/js/internal/perf_hooks/monitorEventLoopDelay.ts` | 452 | 452 | wrappers translated; native event-loop sampling approximated | Go monotonic clock, generated runtime |
 | `node:events` | `src/js/node/events.ts` | 1057 | 1057 | EventEmitter and static APIs adapted; host integrations partial | `node:util/types`, local AbortSignal |
-| `node:child_process` | `src/js/node/child_process.ts` | 2071 | 0 | broad spawn/exec/fork and synchronous API adapter uses `os/exec`; IPC, stream timing, and source-line sweep remain approximate | Go standard `os/exec`, local streams and events |
+| `node:child_process` | `src/js/node/child_process.ts` | 2071 | 2071/2071 | Go `os/exec` adapter maps spawn, exec, execFile, sync calls, fork argument setup, the `ChildProcess` class, kill/dispose, timeout/AbortSignal handling, custom promisify symbols and `.child`, shell argv normalization, stdio/environment helpers, validators, URL/path conversion, `SystemError`, and exports. Real IPC transport, descriptor-backed extra stdio, detached process groups, uid/gid application, exact Windows argv quoting, maxBuffer termination, lazy native streams, and some error details remain approximate | Go standard `os/exec`, local streams and events, `node:os`, `node:util`, `internal/promisify`, `internal/fs/streams`, `node:url`, `node:net` |
 | `node:domain` | `src/js/node/domain.ts` | 96 | 96 | wrapper translated | `node:events` |
-| `node:cluster` | `src/js/node/cluster.ts`; `src/js/internal/cluster/{primary,child,Worker,isPrimary,RoundRobinHandle,SharedHandle}.ts`; `src/js/internal/linkedlist.ts` | 1183 | 1183 | primary and worker APIs mapped; native process IPC and descriptor transfer are approximated | `node:events`, Go `net`, `os/exec`, local cluster handles |
-| `node:net` | `src/js/node/net.ts`; `src/runtime/node/node_net_binding.rs`; `src/runtime/node/net/BlockList.rs` | 5342 | net.ts:447/4634; node_net_binding.rs:184/184; BlockList.rs:0/524 | Go `net` adapter exposes Socket, Server, BlockList, SocketAddress, IP predicates, connection controls, process flags, and TLS key-log file output; write failures reach stream destruction, while adopted TLS handle ownership, cluster listeners, and BlockList structured cloning remain approximate | Go standard `net`, `crypto/tls`, `os`, `syscall`; local Duplex, events, DNS, validators |
-| `node:tls` | `src/js/node/tls.ts` | 1757 | 1757 | exported client/server/context and socket surfaces mapped through Go `crypto/tls`; native certificate caches, OpenSSL cipher strings, and several compatibility details are approximate | Go standard `crypto/tls`, `crypto/x509`, `net`; local `node:net` sockets |
+| `node:cluster` | `src/js/node/cluster.ts`; `src/js/internal/cluster/{primary,child,Worker,isPrimary,RoundRobinHandle,SharedHandle}.ts`; `src/js/internal/linkedlist.ts`; `src/runtime/node/node_cluster_binding.rs` | 1993 | 1183/1183; 810/810 | primary and worker APIs mapped; Go `net` backs shared TCP/UDP/Unix listeners and socket metadata; real child-process IPC/descriptor transfer, Windows socket export, and exact libuv errors remain approximate | `node:events`, Go `net`, `os/exec`, local cluster handles |
+| `node:net` | `src/js/node/net.ts`; `src/runtime/node/node_net_binding.rs`; `src/runtime/node/net/BlockList.rs`; `src/runtime/socket/SocketAddress.rs` | 6426 | net.ts:4634/4634; node_net_binding.rs:184/184; BlockList.rs:524/524; SocketAddress.rs:1084/1084 | Go `net` adapter exposes Socket, Server, BlockList, SocketAddress, IP predicates, connection controls, process flags, connect trace events, TLS key-log file and client event output, existing-socket and standalone TLS wrapping, socket AbortSignal cleanup, peer-FIN `EPIPE` writes, certificate-chain/identity verification, pre-handshake EOF reset errors, established-session TLS error conversion, data listener exception reporting, read backpressure, client `connect`/`ready` ordering, accepted-socket pausing, timeout suppression for queued writes, read-error teardown, exact/wildcard TLS server contexts, event-loop-dispatched SNI/ALPN callbacks, handshake deadlines, per-socket TLS failure events, client session-cache events, SocketAddress validation/getters/JSON/common parse behavior, option checks, kernel TOS controls, custom `onread` buffer callbacks and tail/EOF handling, Socket state accessors, write-finalization waiting, optional client-certificate validation, accepted-socket server state, BlockList rules and matching, and BlockList reference serialization; server TLS session-ticket events, descriptor-backed network reads and complete fd adoption/close semantics, exact kernel read sizing for `onread`, precise close-reset noise handling, exact loop-reference accounting, Bun's separate adopted TLS handles, custom socket classes, cross-process cluster descriptor adoption/IPC and kernel backlog control, exact libuv IPv4/IPv6 retry cancellation/error formatting and per-attempt TLS option rebuilding, exact WHATWG URL parsing, named-interface IPv6 scope ids, low-level SocketAddress DTO helpers, clone-registry cleanup, and worker structured cloning remain approximate or absent | Go standard `net`, `net/url`, `crypto/tls`, `crypto/x509`, `os`, `syscall`; local Duplex, events, DNS, validators |
+| `node:tls` | `src/js/node/tls.ts`; `src/jsc/bindings/NodeTLS.cpp`; `src/runtime/api/bun/SecureContext.rs`; `src/runtime/socket/SSLConfig.rs`; `src/http/ssl_config.rs`; `src/runtime/socket/SSLConfig.bindv2.ts` | 3925 | tls.ts:1757/1757; NodeTLS.cpp:362/362; SecureContext.rs:460/460; SSLConfig.rs:531/531; http/ssl_config.rs:699/699; SSLConfig.bindv2.ts:116/116 | exported client/server/context/socket surfaces, certificate enumeration and overrides, private secure-context CA mutation, key/CA file loading, legacy encrypted PEM keys, common curves, and selected secureOptions mapped onto Go `crypto/tls`; PKCS#12, BoringSSL interning, CRLs, DH params, sigalgs, renegotiation controls, session timeout, and exact OpenSSL cipher strings remain gaps | Go standard `crypto/tls`, `crypto/x509`, `crypto/pem`, `net`; local `node:net` sockets |
+| `node:_tls_common` | `src/js/node/_tls_common.ts` | 43 | 43/43 | re-exports SecureContext APIs, translates legacy peer certificate fields, and emits `DEP0192` once | `node:tls`, `node:process`, JSON |
+| `node:_tls_wrap` | `src/js/node/_tls_wrap.ts` | 14 | 14/14 | re-exports TLSSocket/server/connect APIs and emits `DEP0192` once | `node:tls`, `node:process` |
 | `node:_http_agent` | `src/js/node/_http_agent.ts` | 626 | 626 | agent pools, request queues, socket reuse, and proxy option handling adapted; CONNECT tunnel behavior and host networking details remain approximate | `node:events`, `internal/http`, validators, `node:tls`, `node:net`, async context |
-| `node:http` | `src/js/node/http.ts` | 138 | 138 | public request/server facade, header controls, shared agent accessors, and proxy environment setup mapped | local `_http_*` adapters, `internal/http`, validators; lazy `node:https` edge |
+| `node:http` | `src/js/node/http.ts`; `src/jsc/bindings/NodeHTTP.cpp`; `src/jsc/bindings/NodeHTTP.h`; `NodeHTTPRequestHeaderValues.h`; `src/jsc/bindings/node/JSNodeHTTPServerSocket.{h,cpp}`; `JSNodeHTTPServerSocketPrototype.{h,cpp}`; `src/runtime/node/node_http_binding.rs`; `src/runtime/server/NodeHTTPResponse.rs` | 6,186 | http.ts:138/138; NodeHTTP.cpp:1023/1023; NodeHTTP.h:8/8; NodeHTTPRequestHeaderValues.h:48/48; socket:216/216+1141/1141; prototype:46/46+631/631; node_http_binding.rs:110/110; NodeHTTPResponse.rs:2825/2825 | public request/server facade and native HTTP dispatch/socket/response lifecycle mapped; fallback response length checks and the parser binding/ConnectionsList API are represented; incremental llhttp grammar, raw socket framing, TLS/uWS callbacks, GC pinning, and engine ownership remain approximate or host-bound | Go standard `net/http`, `net`, `time`; local `_http_*`, stream, and event adapters |
 | `node:https` | `src/js/node/https.ts` | 636 | 636 | HTTPS request/server facade, TLS agent session keys, proxy CONNECT handshake, and global agent mapped over Go TLS/net adapters | `node:http`, `node:tls`, `node:net`, `internal/http`, URL and validation helpers |
 | `node:fs` | `src/js/node/fs.ts`; `src/js/node/fs.promises.ts` | 3183 | fs.ts:1509/1509; fs.promises.ts:1674/1674 | callback, sync, Promise, directory, watcher, copy, stream, glob, FileHandle, readLines, and disposable APIs map onto shared Go filesystem helpers; FileHandle pulls and writer APIs route through `internal/streams/iter/pull`; handle locking and write backpressure are approximated | Go filesystem operation, stream, watcher, directory, glob, copy, and handle adapters |
 | `node:readline` | `src/js/node/readline.js` | 546 | 546 | legacy and promise-question interfaces, compatibility accessors, terminal callbacks, keypress events, and async line iteration adapted | `internal/readline/*`, history, events, validators, string decoder |
@@ -66,23 +79,25 @@ The stream dependency pass has mapped `internal/abort_listener.ts` through line 
 | `node:tty` | `src/js/node/tty.ts` | 204 | 204 | ReadStream/WriteStream wrappers, ref methods, cursor controls, color depth, and TTY predicates exposed; raw mode and terminal sizing are simplified | `internal/fs/streams`, `internal/tty`, validators, `node:readline` |
 | `node:repl` | `src/js/node/repl.js` | 1543 | 1543 | Bun’s REPL entry point and internal dependency stack embedded and routed through the local VM; runtime behavior remains unverified | `node:vm`, `node:readline`, `node:console`, `node:async_hooks`, `node:path`, `node:fs`, internal REPL helpers |
 | `node:wasi` | `src/js/node/wasi.ts` | 1775 | 1775 | `WASI` constructor and all 47 preview1 imports exposed; common memory, clock, random, descriptor, and path calls mapped, with sockets and several semantics approximated | Go `os`, `filepath`, `time`, `crypto/rand`; `node:tty`, `node:fs`, `node:path` |
-| `node:v8` | `src/js/node/v8.ts` | 450 | 450 | heap counters, GCProfiler shape, snapshot entry points, and all exports exposed; serializer preserves common JS graphs in a local format that is not V8 wire compatible | Go runtime/JSON, `node:stream`, `node:os`, `node:worker_threads`, `internal/serialization_buffers` |
+| `node:v8` | `src/js/node/v8.ts`; `NodeV8.cpp` | 558 | v8.ts:450/450; NodeV8.cpp:108/108 | heap counters, the GCProfiler surface and native binding checks are mapped; GCProfiler reports Go runtime GC cycles rather than JSC heap events, and serialization uses a local format that is not V8 wire compatible | Go runtime/JSON, `node:stream`, `node:os`, `node:worker_threads`, `internal/serialization_buffers` |
+| `node:vm` | `src/js/node/vm.ts`; `NodeVM.cpp/.h`; `NodeVMScript.cpp/.h`; `NodeVMModule.cpp/.h`; `NodeVMSourceTextModule.cpp/.h`; `NodeVMSyntheticModule.cpp/.h`; VM fetcher, option, termination, and code-generation headers | 6002 | vm.ts:674/674; NodeVM.cpp:2056/2056; NodeVM.h:184/184; NodeVMScript.h:119/119; NodeVMScript.cpp:679/679; NodeVMModule.h:130/130; NodeVMModule.cpp:818/818; NodeVMSourceTextModule.h:70/70; NodeVMSourceTextModule.cpp:566/566; NodeVMSyntheticModule.h:60/60; NodeVMSyntheticModule.cpp:254/254; NodeVMScriptFetcher.h:104/104; NodeVMOptionNames.h:47/47; NodeVMRunTermination.h:62/62; NodeVMRunTermination.cpp:109/109; CodeGenerationFromStrings.h:70/70 | context/script options, module request attributes, recursive linking, status transitions, synthetic exports, import.meta callbacks, and evaluation lifecycle mapped; the Go source scanner and evaluator do not replace JSC parsing/compilation, bytecode caches, real microtask queues, TLA, or SIGINT/time-bound execution | Go runtime values, local Promise/event loop, `node:util`, `node:stream`, validators |
 | `node:inspector` | `src/js/node/inspector.ts` | 760 | 760 | Session and CDP command surface, console notifications, inspector WebSocket listener, lifecycle, and profiler/coverage entry points exposed; engine-backed debugging and profile data are approximated | Go `net`, WebSocket framing, `node:events`, `node:worker_threads`, `internal/trace_events` |
 | `node:inspector/promises` | `src/js/node/inspector.promises.ts` | 28 | 28 | Promise-based Session facade exposed | `node:inspector` |
-| `node:http2` | `src/js/node/http2.ts`; `src/js/node/_http2_upgrade.ts` | 7199 | 6794/6794; 405/405 | constants, settings, headers, sessions, streams, requests, responses, servers, and TLS upgrade surfaces exposed; Bun's native HTTP/2 frame engine is not translated and protocol behavior is an API-shaped prototype | Go streams, `crypto/tls`, sockets, `node:events`, private upgrade helper |
+| `node:http2` | `src/js/node/http2.ts`; `src/js/node/_http2_upgrade.ts`; `src/runtime/api/bun/h2*`; HPACK FFI | 19918 | wrappers 7199/7199; wire 350/350; settings 120/120; flow control 153/153; HPACK wrapper 350/350; stream state 145/145; connection production methods 2117/2462; h2.classes.ts 151/151; parser reviewed 7873, selected host methods and SETTINGS frame 270/7873; Rust test fixtures read but not translated | constants, settings, headers, sessions, streams, requests, responses, servers, and TLS upgrade surfaces exposed; Go maps protocol framing/control handlers and bridges the connection preface, explicit-only initial SETTINGS, retained frame input, session callbacks, flow-controlled DATA output, padding, request priority frames, and parser-backed settings limits to sockets. The Go header materializer now applies Bun's Latin-1, raw-header, sensitive-header, duplicate, cookie, set-cookie, status, and trailer rules. The generated host-method registration is mapped, including stream read backpressure and trailer completion behavior. A literal HPACK encoder is present; Huffman/dynamic-table decoding, Bun's native cork/vectored writes, most parser host methods, and several lifecycle/error semantics remain open | Go streams, `crypto/tls`, sockets, `node:events`, private upgrade helper; HPACK decoder remains a codec boundary |
 | `node:quic` | `src/js/node/quic.ts`; `src/js/internal/quic/{binding,diagnostics,http2util,quic,state,stats,symbols}.ts` | 7828 | 55/55; 2/2; 70/70; 197/197; 5565/5565; 886/886; 983/983; 70/70 | public classes, state/stat objects, callback names, diagnostics channels, settings/header helpers, and internal binding constants mapped; wire protocol and native transport are unavailable | Go `crypto/tls`, local streams, diagnostics channels; transport placeholder |
-| `node:sqlite` | `src/jsc/modules/NodeSqliteModule.h`; `src/jsc/bindings/sqlite/NodeSqlite.{h,cpp}`, `JSSQLStatement.{h,cpp}`, SQLite engine | 293,545 | NodeSqliteModule.h:38/38; native binding:0 | DatabaseSync/StatementSync/Session/SQLTagStore and module exports are exposed over an in-memory SQL subset; the native SQLite engine is unavailable in the Go standard library | local SQL facade; no third-party Go driver |
+| `node:sqlite` | `src/jsc/modules/NodeSqliteModule.h`; `src/jsc/bindings/sqlite/NodeSqlite.{h,cpp}`, `JSSQLStatement.{h,cpp}`, SQLite engine | 293,545 | NodeSqliteModule.h:38/38; NodeSqlite.cpp:4135/4135; NodeSqlite.h:902/902; JSSQLStatement.cpp/.h:3166/3166 (Bun `bun:sqlite` binding, shared engine setup only); SQLite engine:0 | DatabaseSync/StatementSync/Session/SQLTagStore and module exports are exposed over an in-memory SQL subset; SQLite setup, conversion, errors, state guards, UDFs, sessions, authorizers, changesets, serialization, SQLTagStore LRU, backup validation, DatabaseSync validation, and StatementSync methods are mapped; native engine is unavailable in the Go standard library | local SQL facade; no third-party Go driver |
 | `node:test` | `src/js/node/test.ts`; `src/js/internal/test_runner/mock_timers.ts`; `src/js/internal/assert/utils.ts` | 3,690 | 2874/2874; 781/781; 35/35 | test/suite/hook/context/mock/assert and run stream surfaces mapped; file subprocess runner and snapshot persistence stubbed | local `node:stream`, `node:assert`, `node:async_hooks`, timer scheduler |
 | `node:dgram` | `src/js/node/dgram.ts` | 1546 | 1546 | broad UDP Socket API adapter mapped onto Go `net.UDPConn` and `syscall`; broadcast, TTL, loopback, interface, and common membership options are wired, while cluster sharing, native queue behavior, custom async lookup, and source-specific membership remain approximations | `internal/dgram` (146/146), validators, `net.BlockList`, events, DNS, diagnostics channel |
 | `node:dns` | `src/js/node/dns.ts`; `src/js/node/dns.promises.ts` | 1073 | 1071/1071; 2/2 | callback and Promise resolver APIs, per-instance resolver state, server configuration, callback promisify hooks, and result ordering mapped over Go’s standard resolver; unsupported record types return Node-shaped errors | Go standard `net.Resolver`, local validators and IP helpers |
 | `node:_http_incoming` | `src/js/node/_http_incoming.ts` | 737 | 737 | IncomingMessage constructor, lazy headers/trailers, read and destroy lifecycle, and header folding mapped onto local streams | `internal/streams/readable`, EOS, `internal/http`; local stream and native handle adapters |
-| `node:_http_common` | `src/js/node/_http_common.ts` | 361 | 361 | validation, parser pool, callback lifecycle, leniency flags, and parser interface exposed; native llhttp behavior and ConnectionsList are approximated | `internal/validators`, `internal/freelist`, `node:_http_incoming`; Go byte/string parser adapter |
+| `node:_http_common` | `src/js/node/_http_common.ts`; `ProcessBindingHTTPParser.cpp`; `node/http/JSHTTPParser*.{cpp,h}`; `node/http/JSConnectionsList*.{cpp,h}`; `node/http/NodeHTTPParser.{cpp,h}`; `node/http/llhttp/{llhttp.h,api.c,http.c}` | 4,209 | _http_common.ts:361/361; process binding:117/117; HTTPParser and ConnectionsList bindings/impl:2101/2101; llhttp.h:925/925; api.c:517/517; http.c:170/170; generated llhttp.c:0/10269 (entire file reviewed) | parser methods/constants, separate 35/47 method arrays, private ConnectionsList sets, parser connection deadlines, header-pair flushes/limits, callback lifecycle, duplicate Content-Length rejection, transfer-encoding ordering and conflict checks, supported HTTP versions and HTTP/RTSP/ICE method constraints, incremental body delivery, same-buffer message dispatch, strict/lenient post-close handling, chunk size overflow checks, chunk-extension token/quoted-value validation, trailer validation, and optional CR/LF chunk framing flags are represented; the generated llhttp machine's exact state/error behavior remains untranslated, including HTTP/2 preface handling, URL grammar, chunk-boundary callback segmentation, close-delimited EOF edge cases, callback offsets, and exact error positions | `internal/validators`, `internal/freelist`, `node:_http_incoming`; Go byte/string parser adapter and standard HTTP framing |
 | `node:_http_outgoing` | `src/js/node/_http_outgoing.ts` | 1335 | 1335 | OutgoingMessage construction, header APIs, serialization, write buffering, trailers, finish/flush, and socket accessors mapped; deprecation warnings and exact error behavior are approximate | `internal/stream`, validators, HTTP shared symbols, `_http_common`, `internal/http/FakeSocket`, events |
-| `node:diagnostics_channel` | `src/js/node/diagnostics_channel.ts` | 419 | 419 | channel and tracing APIs adapted; weak cleanup partial | generated runtime values |
-| `node:trace_events` | `src/js/node/trace_events.ts`; `src/js/internal/trace_events.ts` | 961 | 87/87; agent API mapped | category buffers, trace writing, and common instrumentation adapted; worker/native hooks partial | Go file and crypto/zlib instrumentation, generated runtime |
-| `node:assert` | `src/js/node/assert.ts` | 981 | 981 | public assertion APIs adapted; deep comparison and CallTracker partial | `node:util/types`, generated errors and promises |
+| `node:diagnostics_channel` | `src/js/node/diagnostics_channel.ts` | 425 | 425 | channel and tracing APIs adapted; copy-on-write subscriber updates and captured publish lists; weak cleanup partial | generated runtime values |
+| `node:trace_events` | `src/js/node/trace_events.ts`; `src/js/internal/trace_events.ts` | 961 | 87/87; 874/874 | category buffers, monotonic trace timestamps, trace writing, instrumentation, and inspector event collection adapted; separate worker VMs and native hooks remain partial | Go file and crypto/zlib instrumentation, generated runtime |
+| `node:worker_threads` | `src/js/node/worker_threads.ts`; `src/js/internal/worker/stdio.ts`; `src/js/internal/worker/messaging.ts`; `src/js/internal/trace_events.ts` | 2623 | 1296/1296; 152/152; 301/301; 874/874 | Worker API, MessagePort/MessageChannel/BroadcastChannel, environment data, messaging routing, stdio, and profiler-shaped methods exposed; workers do not execute in separate JavaScript VMs, and transfer/structured-clone behavior is limited | local event/stream adapters, Go worker messaging and filesystem helpers |
+| `node:assert` | `src/js/node/assert.ts` | 981 | 981 | public assertion APIs adapted; deep comparison remains a local structural comparator; AssertionError formatting and CallTracker behavior use mapped helpers | `node:util/types`, generated errors and promises, assertion error/diff helpers |
 | `node:assert/strict` | `src/js/node/assert.strict.ts` | 2 | 2 | strict facade translated | `node:assert` |
-| `node:async_hooks` | `src/js/node/async_hooks.ts` | 634 | 634 | AsyncLocalStorage and AsyncResource adapted; native hook callbacks partial | event-loop async-context frames |
+| `node:async_hooks` | `src/js/node/async_hooks.ts` | 634 | 634 | AsyncLocalStorage and AsyncResource adapted; `TickObject` init hooks run synchronously for `process.nextTick`; other hook phases remain unsupported | event-loop async-context frames, `internal/async_hooks_tick` |
 | `node:constants` | `src/jsc/modules/NodeConstantsModule.h` | 981 | 981 | source translated; host POSIX and crypto tables emitted; platform-conditional symbols vary by host | Go standard `syscall` constants |
 | `node:process` | `src/jsc/modules/NodeProcessModule.h`; `src/runtime/node/node_process.rs`; `src/jsc/bindings/BunProcess.cpp`; `src/jsc/bindings/ProcessBindingConstants.cpp`; `.h` | 7092 | 24/24; 595/595; BunProcess.cpp:5172/5172; binding constants:1301/1301 | source sweep complete; process APIs adapted, some platform and engine host APIs remain approximations or stubs | Go standard `os`, `runtime`, `syscall`, `os/user`; local events runtime |
 | `node:buffer` | `src/jsc/modules/NodeBufferModule.cpp`; `.h`; `src/runtime/node/buffer.rs`; `src/jsc/bindings/JSBuffer.cpp`; `.h`; `JSBufferEncodingType.cpp`; `.h`; `BufferEncodingType.h`; `src/js/builtins/JSBufferConstructor.ts`; `JSBufferPrototype.ts` | 5011 | NodeBufferModule.cpp:282/282; .h:210/210; buffer.rs:141/141; JSBuffer.cpp:4016/4016; JSBuffer.h:100/100; encoding sources:196/196; TS sources:66/66 | source sweep complete; API mapped with noted runtime approximations | Go typed arrays, standard `bytes`, `encoding/*`, `math/big`, and local buffer methods |
@@ -90,12 +105,19 @@ The stream dependency pass has mapped `internal/abort_listener.ts` through line 
 | `node:path` | `src/js/node/path.ts`; `src/jsc/bindings/Path.cpp`; `src/runtime/node/path.rs`; `src/node_path/lib.rs` | 3919 | 81/81; 168/168; 956/956; 2714/2714 | source sweep complete; all exported POSIX/Windows operations mapped, host cwd and glob behavior adapted | Go standard `os`, `path`, `filepath`, `strings`, `unicode/utf16`; local path validation and glob matcher |
 | `node:path/posix` | `src/js/node/path.posix.ts` | 2 | 2 | source translated; routes to `node:path`.posix | `node:path` |
 | `node:path/win32` | `src/js/node/path.win32.ts` | 2 | 2 | source translated; routes to `node:path`.win32 | `node:path` |
-| `node:crypto` | `src/js/node/crypto.ts` | 562 | 562 | API surface mapped onto Go standard crypto; unsupported native facilities remain explicit stubs | Go standard `crypto/*`; no OpenSSL/cgo |
+| `node:crypto` | `src/js/node/crypto.ts`; `src/jsc/bindings/node/crypto/node_crypto_binding.cpp`; `src/runtime/node/node_crypto_binding.rs` | 2,715 | 562/562; 403/403; 1,750/1,750 | wrapper and direct binding sources mapped; Go standard crypto covers common hashes, ciphers, keys, signatures, ECDH, PBKDF2, HKDF, random operations, and scrypt; Argon2, SPKAC, classic DH, full OpenSSL algorithm enumeration, FIPS/secure heap, and subtle WebCrypto remain partial or unavailable | Go standard `crypto/*`, `crypto/rand`, `crypto/x509`; no OpenSSL/cgo |
+| `node:_stream_duplex` | `src/js/node/_stream_duplex.ts` | 3 | 3/3 | exports the mapped internal Duplex constructor | `internal/streams/duplex` |
+| `node:_stream_passthrough` | `src/js/node/_stream_passthrough.ts` | 3 | 3/3 | exports the mapped internal PassThrough constructor | `internal/streams/passthrough` |
+| `node:_stream_readable` | `src/js/node/_stream_readable.ts` | 3 | 3/3 | exports the mapped internal Readable constructor | `internal/streams/readable` |
+| `node:_stream_transform` | `src/js/node/_stream_transform.ts` | 3 | 3/3 | exports the mapped internal Transform constructor | `internal/streams/transform` |
+| `node:_stream_wrap` | `src/js/node/_stream_wrap.ts` | 5 | 5/5 | exports `node:stream` and emits the `DEP0125` deprecation warning once | `node:stream`, `node:process` |
+| `node:_stream_writable` | `src/js/node/_stream_writable.ts` | 3 | 3/3 | exports the mapped internal Writable constructor | `internal/streams/writable` |
 | `node:stream` | `src/js/node/stream.ts`; `src/js/internal/stream.ts` | 120 | 120 | classic stream facade, constructors, predicates, pipeline, operators, and pairing adapted; concurrency and scheduling are approximate | mapped internal stream runtime |
 | `node:stream/promises` | `src/js/node/stream.promises.ts`; `src/js/internal/stream.promises.ts` | 47 | 47 | promise `pipeline` and `finished` entry points exposed | `node:stream`, EOS, pipeline |
 | `node:stream/consumers` | `src/js/node/stream.consumers.ts` | 54 | 54 | six consume methods exposed; Blob construction and decoding use local runtime values | async iterator, Buffer, Blob |
 | `node:stream/web` | `src/js/node/stream.web.ts` | 20 | 20 | Web Stream constructor names forwarded from the global object | generated Web Stream values |
-| `node:zlib/iter` | `src/js/node/zlib.iter.ts`; `src/js/internal/streams/iter/transform.ts` | 811 | 51/51; 760/760 | 16 async/sync gzip, deflate, Brotli, and Zstd transform factories exposed; Go standard library handles gzip/deflate, while Brotli/Zstd report unsupported codec errors and native streaming behavior is approximated | Go standard `compress/gzip`, `compress/zlib`, `compress/flate`; `node:buffer`, `node:util/types` |
+| `node:zlib/iter` | `src/js/node/zlib.iter.ts`; `src/js/internal/streams/iter/transform.ts` | 811 | 51/51; 760/760 | 16 async/sync gzip, deflate, Brotli, and Zstd transform factories exposed; Go standard library handles gzip/deflate, the existing `klauspost/compress` dependency handles Zstd, and Brotli remains unavailable; streaming/backpressure is approximate | Go standard `compress/gzip`, `compress/zlib`, `compress/flate`; existing `github.com/klauspost/compress/zstd`; `node:buffer`, `node:util/types` |
+| `node:zlib` | `src/js/node/zlib.ts`; `src/runtime/node/node_zlib_binding.rs`; `src/runtime/node/zlib/NativeZlib.rs`; `src/runtime/node/zlib/NativeBrotli.rs`; `src/runtime/node/zlib/NativeZstd.rs` | 4165 | 1021/1021; 1066/1066; 654/654; 737/737; 687/687 | All wrapper and native source ranges mapped. Go standard deflate/gzip plus the already-declared `klauspost/compress` Zstd codec back the public API; Brotli remains unsupported. Native worker scheduling, exact zlib window/memory/strategy controls, Brotli parameter behavior, and incremental decompression remain gaps | Go standard `compress/gzip`, `compress/zlib`, `compress/flate`; existing `github.com/klauspost/compress/zstd`; `node:buffer`, `node:stream`, `internal/validators` |
 | `node:stream/iter` | `src/js/node/stream.iter.ts` and `src/js/internal/streams/iter/{types,utils,from,pull,consumers,classic,ringbuffer,push,duplex,broadcast,share}.ts` | 6,021 | entry 165/165; types 87/87; utils 270/270; from 576/576; pull 977/977; consumers 495/495; classic 898/898; ringbuffer 147/147; push 747/747; duplex 142/142; broadcast 785/785; share 732/732 | exports, push/duplex/consumer/classic adapters, and broadcast/share cursor buffers mapped; backpressure and scheduling remain approximate | local iterator, timer, stream, validator, and Buffer runtimes |
 
 ## What counts as a module source
@@ -376,13 +398,13 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | Source file | Lines | Through |
 |---|---:|---:|
 | `src/js/internal/abort_listener.ts` | 31 | 31 |
-| `src/js/internal/assert/assertion_error.ts` | 448 | 0 |
-| `src/js/internal/assert/calltracker.ts` | 136 | 0 |
-| `src/js/internal/assert/myers_diff.ts` | 42 | 0 |
+| `src/js/internal/assert/assertion_error.ts` | 448 | 448 |
+| `src/js/internal/assert/calltracker.ts` | 136 | 136 |
+| `src/js/internal/assert/myers_diff.ts` | 42 | 42 |
 | `src/js/internal/assert/utils.ts` | 35 | 35 |
-| `src/js/internal/async_context_frame.ts` | 61 | 0 |
+| `src/js/internal/async_context_frame.ts` | 61 | 61 |
 | `src/js/internal/async_hooks.ts` | 28 | 28 |
-| `src/js/internal/async_hooks_tick.ts` | 20 | 0 |
+| `src/js/internal/async_hooks_tick.ts` | 20 | 20 |
 | `src/js/internal/cluster/RoundRobinHandle.ts` | 222 | 222 |
 | `src/js/internal/cluster/SharedHandle.ts` | 71 | 71 |
 | `src/js/internal/cluster/Worker.ts` | 60 | 60 |
@@ -391,9 +413,9 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/internal/cluster/primary.ts` | 380 | 380 |
 | `src/js/internal/dgram.ts` | 146 | 146 |
 | `src/js/internal/errors.ts` | 23 | 23 |
-| `src/js/internal/fixed_queue.ts` | 130 | 0 |
+| `src/js/internal/fixed_queue.ts` | 130 | 130 |
 | `src/js/internal/freelist.ts` | 27 | 27 |
-| `src/js/internal/fs/binding.ts` | 123 | 0 |
+| `src/js/internal/fs/binding.ts` | 123 | 123 |
 | `src/js/internal/fs/cp-sync.ts` | 555 | 555 |
 | `src/js/internal/fs/cp.ts` | 404 | 404 |
 | `src/js/internal/fs/glob.ts` | 2982 | 2982 |
@@ -405,11 +427,11 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/internal/http1_server_fallback.ts` | 732 | 732 |
 | `src/js/internal/linkedlist.ts` | 47 | 47 |
 | `src/js/internal/net/isIP.ts` | 37 | 37 |
-| `src/js/internal/net/server_abort_signal.ts` | 26 | 0 |
-| `src/js/internal/net/symbols.ts` | 15 | 0 |
+| `src/js/internal/net/server_abort_signal.ts` | 26 | 26 |
+| `src/js/internal/net/symbols.ts` | 15 | 15 |
 | `src/js/internal/perf_hooks/monitorEventLoopDelay.ts` | 71 | 71 |
 | `src/js/internal/primordials.js` | 176 | 176 |
-| `src/js/internal/promisify.ts` | 81 | 1 |
+| `src/js/internal/promisify.ts` | 81 | 81 |
 | `src/js/internal/quic/binding.ts` | 2 | 2 |
 | `src/js/internal/quic/diagnostics.ts` | 70 | 70 |
 | `src/js/internal/quic/http2util.ts` | 197 | 197 |
@@ -464,7 +486,7 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/internal/streams/iter/utils.ts` | 270 | 270 |
 | `src/js/internal/streams/lazy_transform.ts` | 53 | 53 |
 | `src/js/internal/streams/legacy.ts` | 146 | 146 |
-| `src/js/internal/shared.ts` | 456 | 62 |
+| `src/js/internal/shared.ts` | 456 | 456 |
 | `src/js/internal/streams/native-readable.ts` | 306 | 306 |
 | `src/js/internal/streams/operators.ts` | 374 | 374 |
 | `src/js/internal/streams/passthrough.ts` | 20 | 20 |
@@ -473,23 +495,23 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/internal/streams/state.ts` | 52 | 52 |
 | `src/js/internal/streams/transform.ts` | 173 | 173 |
 | `src/js/internal/streams/utils.ts` | 305 | 305 |
-| `src/js/internal/validators.ts` | 180 | 140 |
+| `src/js/internal/validators.ts` | 180 | 180 |
 | `src/js/internal/streams/writable.ts` | 1118 | 1118 |
 | `src/js/internal/test_runner/mock_timers.ts` | 781 | 781 |
 | `src/js/internal/timers.ts` | 32 | 32 |
-| `src/js/internal/tls.ts` | 476 | 0 |
-| `src/js/internal/trace_events.ts` | 874 | 0 |
+| `src/js/internal/tls.ts` | 476 | 476 |
+| `src/js/internal/trace_events.ts` | 874 | 874 |
 | `src/js/internal/tty.ts` | 205 | 205 |
 | `src/js/internal/url.ts` | 33 | 33 |
 | `src/js/internal/util/colors.ts` | 38 | 38 |
 | `src/js/internal/util/comparisons.ts` | 9 | 9 |
-| `src/js/internal/util/deprecate.ts` | 60 | 0 |
-| `src/js/internal/util/inspect.js` | 2828 | 2828 |
-| `src/js/internal/util/mime.ts` | 6 | 0 |
-| `src/js/internal/validators.ts` | 180 | 140 |
+| `src/js/internal/util/deprecate.ts` | 60 | 60 |
+| `src/js/internal/util/inspect.js` | 2830 | 2830 |
+| `src/js/internal/util/mime.ts` | 6 | 6 |
+| `src/js/internal/validators.ts` | 180 | 180 |
 | `src/js/internal/webstreams_adapters.ts` | 864 | 864 |
-| `src/js/internal/worker/messaging.ts` | 301 | 0 |
-| `src/js/internal/worker/stdio.ts` | 152 | 0 |
+| `src/js/internal/worker/messaging.ts` | 301 | 301 |
+| `src/js/internal/worker/stdio.ts` | 152 | 152 |
 | `src/js/node/_http2_upgrade.ts` | 405 | 405 |
 | `src/js/node/_http_agent.ts` | 626 | 626 |
 | `src/js/node/_http_client.ts` | 1187 | 1187 |
@@ -497,24 +519,24 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/node/_http_incoming.ts` | 737 | 737 |
 | `src/js/node/_http_outgoing.ts` | 1335 | 1335 |
 | `src/js/node/_http_server.ts` | 4306 | 4306 |
-| `src/js/node/_stream_duplex.ts` | 3 | 0 |
-| `src/js/node/_stream_passthrough.ts` | 3 | 0 |
-| `src/js/node/_stream_readable.ts` | 3 | 0 |
-| `src/js/node/_stream_transform.ts` | 3 | 0 |
-| `src/js/node/_stream_wrap.ts` | 5 | 0 |
-| `src/js/node/_stream_writable.ts` | 3 | 0 |
-| `src/js/node/_tls_common.ts` | 43 | 0 |
-| `src/js/node/_tls_wrap.ts` | 14 | 0 |
+| `src/js/node/_stream_duplex.ts` | 3 | 3 |
+| `src/js/node/_stream_passthrough.ts` | 3 | 3 |
+| `src/js/node/_stream_readable.ts` | 3 | 3 |
+| `src/js/node/_stream_transform.ts` | 3 | 3 |
+| `src/js/node/_stream_wrap.ts` | 5 | 5 |
+| `src/js/node/_stream_writable.ts` | 3 | 3 |
+| `src/js/node/_tls_common.ts` | 43 | 43 |
+| `src/js/node/_tls_wrap.ts` | 14 | 14 |
 | `src/js/node/assert.strict.ts` | 2 | 2 |
 | `src/js/node/assert.ts` | 981 | 981 |
 | `src/js/node/async_hooks.ts` | 634 | 634 |
-| `src/js/node/child_process.ts` | 2071 | 0 |
+| `src/js/node/child_process.ts` | 2071 | 2071 |
 | `src/js/node/cluster.ts` | 23 | 23 |
 | `src/js/node/console.ts` | 1 | 1 |
 | `src/js/node/crypto.ts` | 562 | 562 |
 | `src/js/internal/streams/lazy_transform.ts` | 53 | 53 |
 | `src/js/node/dgram.ts` | 1546 | 1546 |
-| `src/js/node/diagnostics_channel.ts` | 419 | 419 |
+| `src/js/node/diagnostics_channel.ts` | 425 | 425 |
 | `src/js/node/dns.promises.ts` | 2 | 2 |
 | `src/js/node/dns.ts` | 1071 | 1071 |
 | `src/js/node/domain.ts` | 96 | 96 |
@@ -526,7 +548,7 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/node/https.ts` | 636 | 636 |
 | `src/js/node/inspector.promises.ts` | 28 | 28 |
 | `src/js/node/inspector.ts` | 760 | 760 |
-| `src/js/node/net.ts` | 4634 | 447 |
+| `src/js/node/net.ts` | 4634 | 4634 |
 | `src/js/node/os.ts` | 179 | 179 |
 | `src/js/node/path.posix.ts` | 2 | 2 |
 | `src/js/node/path.ts` | 81 | 81 |
@@ -554,9 +576,9 @@ These are the reachable files to translate from Bun’s JavaScript module layer.
 | `src/js/node/v8.ts` | 450 | 450 |
 | `src/js/node/vm.ts` | 674 | 674 |
 | `src/js/node/wasi.ts` | 1775 | 1775 |
-| `src/js/node/worker_threads.ts` | 1296 | 0 |
+| `src/js/node/worker_threads.ts` | 1296 | 1296 |
 | `src/js/node/zlib.iter.ts` | 51 | 51 |
-| `src/js/node/zlib.ts` | 1021 | 0 |
+| `src/js/node/zlib.ts` | 1021 | 1021 |
 
 ## Direct native bridge references
 
@@ -577,6 +599,10 @@ These rows come from `$cpp`, `$newCppFunction`, and `$rust` source literals in r
 | `src/js/internal/streams/iter/transform.ts` | Rust | `node_zlib_binding.rs` | `src/runtime/node/node_zlib_binding.rs` |
 | `src/js/internal/streams/native-readable.ts` | C++ | `streams/BunStreamConsumers.cpp` | `src/jsc/bindings/webcore/streams/BunStreamConsumers.cpp` |
 | `src/js/internal/streams/readable.ts` | C++ | `NodeModuleModule.cpp` | `src/jsc/modules/NodeModuleModule.cpp` |
+| `src/js/internal/cluster/SharedHandle.ts` | Rust | `node_cluster_binding.rs` | `src/runtime/node/node_cluster_binding.rs` |
+| `src/js/internal/cluster/child.ts` | Rust | `node_cluster_binding.rs` | `src/runtime/node/node_cluster_binding.rs` |
+| `src/js/internal/cluster/primary.ts` | Rust | `node_cluster_binding.rs` | `src/runtime/node/node_cluster_binding.rs` |
+| `src/js/internal/cluster/RoundRobinHandle.ts` | Rust | `node_cluster_binding.rs` | `src/runtime/node/node_cluster_binding.rs` |
 | `src/js/internal/tls.ts` | Rust | `SecureContext.rs` | `src/runtime/api/bun/SecureContext.rs` |
 | `src/js/internal/url.ts` | C++ | `NodeURL.cpp` | `src/jsc/bindings/NodeURL.cpp` |
 | `src/js/internal/util/comparisons.ts` | C++ | `NodeUtilTypesModule.cpp` | `src/jsc/modules/NodeUtilTypesModule.cpp` |
@@ -631,12 +657,12 @@ These seven resolver entries have no `src/js/node` wrapper. Each source row has 
 | `node:process` | `src/jsc/modules/NodeProcessModule.h` | 24 | 24 |
 | `node:process` | `src/runtime/node/node_process.rs` | 595 | 595 |
 | `node:sqlite` | `src/jsc/modules/NodeSqliteModule.h` | 38 | 38 |
-| `node:sqlite` | `src/jsc/bindings/sqlite/NodeSqlite.cpp` | 4135 | 0 |
-| `node:sqlite` | `src/jsc/bindings/sqlite/NodeSqlite.h` | 902 | 0 |
-| `node:sqlite` | `src/jsc/bindings/sqlite/JSSQLStatement.cpp` | 3077 | 0 |
-| `node:sqlite` | `src/jsc/bindings/sqlite/JSSQLStatement.h` | 89 | 0 |
+| `node:sqlite` | `src/jsc/bindings/sqlite/NodeSqlite.cpp` | 4135 | 4135 |
+| `node:sqlite` | `src/jsc/bindings/sqlite/NodeSqlite.h` | 902 | 902 |
+| `node:sqlite` | `src/jsc/bindings/sqlite/JSSQLStatement.cpp` | 3077 | 3077 |
+| `node:sqlite` | `src/jsc/bindings/sqlite/JSSQLStatement.h` | 89 | 89 |
 | `node:sqlite` | `src/jsc/bindings/sqlite/sqlite3.c` | 269669 | 0 |
-| `node:sqlite` | `src/jsc/bindings/sqlite/sqlite3_local.h` | 14350 | 0 |
+| `node:sqlite` | `src/jsc/bindings/sqlite/sqlite3_local.h` | 14350 | 3500 |
 | `node:sqlite` | `src/jsc/bindings/sqlite/sqlite3_error_codes.h` | 764 | 0 |
 | `node:sqlite` | `src/jsc/bindings/sqlite/lazy_sqlite3.h` | 521 | 0 |
 | `node:string_decoder` | `src/jsc/modules/NodeStringDecoderModule.h`; `src/jsc/bindings/JSStringDecoder.h`; `.cpp` | 774 | NodeStringDecoderModule.h:17/17; JSStringDecoder.h:126/126; JSStringDecoder.cpp:631/631 | source sweep complete; stateful decoder API adapted | Go UTF-8/UTF-16 decoders, Buffer encoding helpers |
@@ -644,7 +670,7 @@ These seven resolver entries have no `src/js/node` wrapper. Each source row has 
 | `node:stream/consumers` | `src/js/node/stream.consumers.ts` | 54 | 54/54 | arrayBuffer, bytes, text, JSON, Buffer, and Blob consumer methods exposed; stream errors/decoding edge cases are approximate | async iterator, Buffer, global Blob |
 | `node:stream/promises` | `src/js/node/stream.promises.ts` | 2 | 2/2 | default exports promise `pipeline` and `finished` | `node:stream` |
 | `node:stream/web` | `src/js/node/stream.web.ts` | 20 | 20/20 | constructor exports forward global Web Stream values; unavailable globals stay undefined | global Web Stream values |
-| `node:crypto` | `src/js/node/crypto.ts` | 562 | 562/562 | exported wrapper API mapped; unsupported Argon2/scrypt, classic DH, SPKAC, FIPS/secure heap, and subtle WebCrypto remain stubs or explicit errors | Go standard `crypto/*`, random source, hash and key formats; C++/Rust binding behavior replaced rather than line-translated |
+| `node:crypto` | `src/js/node/crypto.ts` | 562 | 562/562 | exported wrapper API mapped; Argon2, classic DH, SPKAC, FIPS/secure heap, and subtle WebCrypto remain stubs or explicit errors; scrypt and random callbacks use Go implementations | Go standard `crypto/*`, random source, hash and key formats; C++/Rust binding behavior replaced rather than line-translated |
 | `internal/streams/lazy_transform` | `src/js/internal/streams/lazy_transform.ts` | 53 | 53/53 | lazy Transform initialization, accessors, and constructor surface adapted | `internal/streams/transform` |
 | `internal/streams/transform` | `src/js/internal/streams/transform.ts` | 173 | 173/173 | constructor, flush, prefinish, callback backpressure, and read/write hooks adapted | `internal/streams/duplex`, `internal/streams/state` |
 | `internal/streams/duplex` | `src/js/internal/streams/duplex.ts` | 166 | 166/166 | constructor, combined prototype, duplex-side flags, and Web statics adapted | `internal/streams/legacy`, Readable, Writable, Web adapters, Duplexify |
@@ -654,7 +680,9 @@ These seven resolver entries have no `src/js/node` wrapper. Each source row has 
 | `internal/webstreams_adapters` | `src/js/internal/webstreams_adapters.ts` | 864 | 864/864 | all six classic/Web conversion entry points exposed; strategy and native transfer behavior are approximate | Writable, Readable, Duplex, destroy, utils, shared, validators, util/types, EOS, native-readable |
 | `internal/streams/legacy` | `src/js/internal/streams/legacy.ts` | 146 | 146/146 | source mapped; EventEmitter bridge, pipe, and Buffer helpers adapted | `node:events`, `node:util/types`, Buffer |
 | `internal/abort_listener` | `src/js/internal/abort_listener.ts` | 31 | 31/31 | addAbortListener and Disposable removal adapted | AbortSignal event methods, shared stop-propagation option |
-| `internal/async_hooks` (private) | `src/js/internal/async_hooks.ts` | 28 | 28/28 | enabled hook counter and owner symbol adapted; public hook callbacks remain stubs | `node:async_hooks` adapter state |
+| `internal/async_hooks` (private) | `src/js/internal/async_hooks.ts` | 28 | 28/28 | enabled hook counter and owner symbol adapted; `TickObject` init delivery is wired through `node:async_hooks`; other hook phases remain unsupported | `node:async_hooks` adapter state |
+| `internal/async_hooks_tick` | `src/js/internal/async_hooks_tick.ts` | 20 | 20/20 | stable hook array and incrementing async ID helper mapped; `process.nextTick` delivers snapshotted init hooks before enqueueing | `node:async_hooks`, `node:process` next-tick queue |
+| `internal/fixed_queue` | `src/js/internal/fixed_queue.ts` | 130 | 130/130 | segmented 2,048-slot circular buffers, null sentinel behavior, buffer links, queue push/shift, and exported `FixedQueue` class mapped | `node:events` |
 | `internal/errors` | `src/js/internal/errors.ts` | 23 | 23/23 | aggregateTwoErrors mapped to local AggregateError values | internal primordials surface |
 | `internal/streams/destroy` | `src/js/internal/streams/destroy.ts` | 343 | 343/343 | destroy, construct, error/close scheduling, and legacy destroyer mapped | `internal/errors`, stream flags, process nextTick |
 | `internal/streams/state` | `src/js/internal/streams/state.ts` | 52 | 52/52 | default and per-stream high-water marks mapped | validators, process platform |
@@ -672,7 +700,7 @@ These seven resolver entries have no `src/js/node` wrapper. Each source row has 
 | `internal/util/colors` | `src/js/internal/util/colors.ts` | 38 | 38/38 | source sweep complete; stream color detection and ANSI values adapted | `internal/tty`, `node:process`, inspect color tables |
 | `node:module` | `NodeModuleModule.cpp/.h`, `NodeModuleModule.rs`, `NodeModuleModule.bind.ts` | 1549 | 1549/1549 | source sweep complete; builtin table, Module facade, wrapper/cache/lookup APIs adapted; resolver and engine hooks are approximations | Go `path/filepath`, `os`, generated builtin registry |
 | `node:url` | `src/js/node/url.ts`; `src/js/internal/url.ts`; NodeURL C++ bridge and helper headers | 1969 | 1382/1382; 33/33; 308/308; 10/10; 14/14; 222/222 | source sweep complete; WHATWG and legacy URL surfaces adapted; ICU UTS #46 and detailed URLPattern matching approximated | Go `net/url`, `path/filepath`, local punycode and Buffer runtimes |
-| `internal/util/inspect` | `src/js/internal/util/inspect.js` | 2828 | 2828/2828 | source sweep complete; object formatting, printf formats, error stacks, ANSI stripping, custom inspection, and helper APIs adapted; exact grapheme widths and some property details remain approximate | primordials, `node:util/types`, validators, `node:module`, `node:url`, `node:buffer`, `UtilInspect.cpp`, `stringWidth.cpp` |
+| `internal/util/inspect` | `src/js/internal/util/inspect.js` | 2830 | 2830/2830 | source sweep complete; object formatting, Map/Set iterator previews via private runtime tags, printf formats, error stacks, ANSI stripping, custom inspection, and helper APIs adapted; exact grapheme widths and some property details remain approximate | primordials, `node:util/types`, validators, `node:module`, `node:url`, `node:buffer`, `UtilInspect.cpp`, `stringWidth.cpp` |
 | `node:util` | `src/js/node/util.ts` | 786 | 786/786 | source sweep complete; debug, style, callback, signal, error, codec, inspect, MIME, and legacy predicate exports adapted; call-site capture, decoder state, and weak finalization are approximations | `node:util/types`, `internal/promisify`, `internal/validators`, `internal/shared`, MIME, deprecation, primordials, comparisons, inspect, streams, colors, `node:os`, `node_util_binding.rs` |
 | `node:util` parseArgs binding | `src/runtime/node/util/parse_args.rs` | 1049 | 1049/1049 | source sweep complete; tokenization, option checks, defaults, and token records adapted | `parse_args_utils.rs`, validators, process argv |
 | `internal/parse_args_utils` | `src/runtime/node/util/parse_args_utils.rs` | 149 | 149/149 | option metadata and token-kind classifier mapped | `parse_args.rs` |
@@ -685,7 +713,7 @@ These seven resolver entries have no `src/js/node` wrapper. Each source row has 
 | `internal/util/deprecate` | `src/js/internal/util/deprecate.ts` | 60 | 60/60 | source mapped; warning-code suppression and wrapper calls adapted | validators, process warnings |
 | `internal/streams/utils` | `src/js/internal/streams/utils.ts` | 305 | 305/305 | source mapped; state symbols, flags and stream predicates adapted | stream values, Web streams, shared Symbol registry |
 | `node:util/types` | `src/jsc/modules/NodeUtilTypesModule.cpp` | 1289 | 1289 |
-| `node:util/types` | `src/jsc/modules/NodeUtilTypesModule.h` | 25 | 25 |
+| `node:util/types` | `src/jsc/modules/NodeUtilTypesModule.h` | 33 | 33 |
 
 
 ### Direct bridge target line checkpoints
@@ -708,14 +736,64 @@ Unique files directly named by `$cpp`, `$newCppFunction`, and `$rust` in the rea
 | `src/jsc/bindings/JSNodePerformanceHooksHistogramPrototype.cpp` | 529 | 0 |
 | `src/jsc/bindings/ModuleGraph.cpp` | 855 | 0 |
 | `src/jsc/bindings/NodeAsyncHooks.cpp` | 21 | 0 |
-| `src/jsc/bindings/NodeHTTP.cpp` | 1023 | 0 |
-| `src/jsc/bindings/NodeTLS.cpp` | 362 | 0 |
+| `src/jsc/bindings/NodeDirent.cpp` | 375 | 375 |
+| `src/jsc/bindings/NodeFSStatBinding.cpp` | 967 | 967 |
+| `src/jsc/bindings/NodeFSStatFSBinding.cpp` | 465 | 465 |
+| `src/jsc/bindings/ProcessBindingFs.cpp` | 216 | 216 |
+| `src/jsc/bindings/ProcessBindingFs.h` | 36 | 36 |
+| `src/jsc/bindings/NodeHTTP.cpp` | 1023 | 1023 |
+| `src/jsc/bindings/NodeHTTP.h` | 8 | 8 |
+| `src/jsc/bindings/NodeHTTPRequestHeaderValues.h` | 48 | 48 |
+| `src/jsc/bindings/ProcessBindingHTTPParser.cpp` | 84 | 84 |
+| `src/jsc/bindings/ProcessBindingHTTPParser.h` | 33 | 33 |
+| `src/jsc/bindings/node/JSNodeHTTPServerSocket.cpp` | 1141 | 1141 |
+| `src/jsc/bindings/node/JSNodeHTTPServerSocket.h` | 216 | 216 |
+| `src/jsc/bindings/node/JSNodeHTTPServerSocketPrototype.cpp` | 631 | 631 |
+| `src/jsc/bindings/node/JSNodeHTTPServerSocketPrototype.h` | 46 | 46 |
+| `src/jsc/bindings/node/http/JSHTTPParser.cpp` | 52 | 52 |
+| `src/jsc/bindings/node/http/JSHTTPParser.h` | 66 | 66 |
+| `src/jsc/bindings/node/http/JSHTTPParserConstructor.cpp` | 61 | 61 |
+| `src/jsc/bindings/node/http/JSHTTPParserConstructor.h` | 46 | 46 |
+| `src/jsc/bindings/node/http/JSHTTPParserPrototype.cpp` | 381 | 381 |
+| `src/jsc/bindings/node/http/JSHTTPParserPrototype.h` | 44 | 44 |
+| `src/jsc/bindings/node/http/JSConnectionsList.cpp` | 192 | 192 |
+| `src/jsc/bindings/node/http/JSConnectionsList.h` | 67 | 67 |
+| `src/jsc/bindings/node/http/JSConnectionsListConstructor.cpp` | 35 | 35 |
+| `src/jsc/bindings/node/http/JSConnectionsListConstructor.h` | 50 | 50 |
+| `src/jsc/bindings/node/http/JSConnectionsListPrototype.cpp` | 123 | 123 |
+| `src/jsc/bindings/node/http/JSConnectionsListPrototype.h` | 44 | 44 |
+| `src/jsc/bindings/node/http/NodeHTTPParser.cpp` | 725 | 725 |
+| `src/jsc/bindings/node/http/NodeHTTPParser.h` | 215 | 215 |
+| `src/jsc/bindings/node/http/llhttp/README.md` | 18 | 18 |
+| `src/jsc/bindings/node/http/llhttp/llhttp.h` | 925 | 925 |
+| `src/jsc/bindings/node/http/llhttp/api.c` | 517 | 517 |
+| `src/jsc/bindings/node/http/llhttp/http.c` | 170 | 170 |
+| `src/jsc/bindings/node/http/llhttp/llhttp.c` | 10269 | 0 |
+| `src/jsc/bindings/NodeTLS.cpp` | 362 | 362 |
+| `src/runtime/api/bun/SecureContext.rs` | 460 | 460 |
+| `src/runtime/socket/SSLConfig.rs` | 531 | 531 |
+| `src/http/ssl_config.rs` | 699 | 699 |
+| `src/runtime/socket/SSLConfig.bindv2.ts` | 116 | 116 |
 | `src/jsc/bindings/NodeURL.cpp` | 308 | 308 |
 | `src/jsc/bindings/NodeURL.h` | 10 | 10 |
 | `src/jsc/bindings/NodeURLHelpers.h` | 14 | 14 |
 | `src/jsc/bindings/ASCIIHostPunycodeCheck.h` | 222 | 222 |
-| `src/jsc/bindings/NodeV8.cpp` | 108 | 0 |
-| `src/jsc/bindings/NodeVM.cpp` | 2056 | 0 |
+| `src/jsc/bindings/NodeV8.cpp` | 108 | 108 |
+| `src/jsc/bindings/NodeVM.cpp` | 2056 | 2056 |
+| `src/jsc/bindings/NodeVM.h` | 184 | 184 |
+| `src/jsc/bindings/CodeGenerationFromStrings.h` | 70 | 70 |
+| `src/jsc/bindings/NodeVMScript.h` | 119 | 119 |
+| `src/jsc/bindings/NodeVMScript.cpp` | 679 | 679 |
+| `src/jsc/bindings/NodeVMModule.h` | 130 | 130 |
+| `src/jsc/bindings/NodeVMModule.cpp` | 818 | 818 |
+| `src/jsc/bindings/NodeVMSourceTextModule.h` | 70 | 70 |
+| `src/jsc/bindings/NodeVMSourceTextModule.cpp` | 566 | 566 |
+| `src/jsc/bindings/NodeVMSyntheticModule.h` | 60 | 60 |
+| `src/jsc/bindings/NodeVMSyntheticModule.cpp` | 254 | 254 |
+| `src/jsc/bindings/NodeVMScriptFetcher.h` | 104 | 104 |
+| `src/jsc/bindings/NodeVMOptionNames.h` | 47 | 47 |
+| `src/jsc/bindings/vm/NodeVMRunTermination.h` | 62 | 62 |
+| `src/jsc/bindings/vm/NodeVMRunTermination.cpp` | 109 | 109 |
 | `src/jsc/bindings/NodeValidator.cpp` | 655 | 655 |
 | `src/jsc/bindings/NodeValidator.h` | 48 | 48 |
 | `src/runtime/node/node_util_binding.rs` | 246 | 246 |
@@ -724,7 +802,7 @@ Unique files directly named by `$cpp`, `$newCppFunction`, and `$rust` in the rea
 | `src/jsc/bindings/Path.cpp` | 168 | 168 |
 | `src/jsc/bindings/ProcessBindingTTYWrap.cpp` | 533 | 0 |
 | `src/jsc/bindings/UtilInspect.cpp` | 121 | 121 |
-| `src/jsc/bindings/node/crypto/node_crypto_binding.cpp` | 403 | 0 |
+| `src/jsc/bindings/node/crypto/node_crypto_binding.cpp` | 403 | 403 |
 | `src/jsc/bindings/stringWidth.cpp` | 1178 | 1178 |
 | `src/jsc/bindings/webcore/JSEventTarget.cpp` | 370 | 0 |
 | `src/jsc/bindings/webcore/JSEventTargetNode.cpp` | 49 | 0 |
@@ -736,16 +814,26 @@ Unique files directly named by `$cpp`, `$newCppFunction`, and `$rust` in the rea
 | `src/jsc/bindings/webcore/streams/BunStreamConsumers.cpp` | 1770 | 0 |
 | `src/jsc/modules/NodeModuleModule.cpp` | 1257 | 0 |
 | `src/jsc/modules/NodeUtilTypesModule.cpp` | 1289 | 0 |
-| `src/runtime/api/bun/SecureContext.rs` | 460 | 0 |
-| `src/runtime/api/bun/h2_frame_parser.rs` | 7873 | 0 |
-| `src/runtime/node/node_assert_binding.rs` | 147 | 0 |
-| `src/runtime/node/node_crypto_binding.rs` | 1750 | 0 |
-| `src/runtime/node/node_fs_binding.rs` | 527 | 0 |
+| `src/runtime/api/bun/h2_frame_parser.rs` | 7873 | 270 |
+| `src/runtime/api/h2.classes.ts` | 151 | 151 |
+| `src/jsc/bindings/H2HeadersMaterializer.cpp` | 210 | 210 |
+| `src/runtime/api/bun/h2/mod.rs` | 12 | 0 |
+| `src/runtime/api/bun/h2/wire.rs` | 350 | 350 |
+| `src/runtime/api/bun/h2/settings.rs` | 120 | 120 |
+| `src/runtime/api/bun/h2/flow_control.rs` | 153 | 153 |
+| `src/runtime/api/bun/h2/hpack.rs` | 112 | 112 |
+| `src/runtime/api/bun/h2/stream.rs` | 145 | 145 |
+| `src/runtime/api/bun/h2/connection.rs` | 2462 | 2117 |
+| `src/http/lshpack.rs` | 238 | 238 |
+| `src/jsc/bindings/c-bindings.cpp` | 1254 | 0 |
+| `src/runtime/node/node_assert_binding.rs` | 147 | 147 |
+| `src/runtime/node/node_crypto_binding.rs` | 1750 | 1750 |
+| `src/runtime/node/node_fs_binding.rs` | 527 | 527 |
 | `src/runtime/node/node_net_binding.rs` | 184 | 184 |
-| `src/runtime/node/node_os.rs` | 1614 | 0 |
+| `src/runtime/node/node_os.rs` | 1614 | 1614 |
 | `src/runtime/node/path.rs` | 956 | 956 |
 | `src/runtime/node/node_quic_binding.rs` | 284 | 0 |
-| `src/runtime/node/node_zlib_binding.rs` | 1066 | 0 |
+| `src/runtime/node/node_zlib_binding.rs` | 1066 | 1066 |
 
 ## Node runtime Rust source index
 
@@ -753,34 +841,36 @@ The Rust files below are Bun’s Node host integration layer. A module’s concr
 
 | Source file | Lines | Through |
 |---|---:|---:|
-| `src/runtime/node/Stat.rs` | 212 | 0 |
-| `src/runtime/node/StatFS.rs` | 160 | 0 |
-| `src/runtime/node/assert/myers_diff.rs` | 512 | 0 |
+| `src/runtime/node/Stat.rs` | 212 | 212 |
+| `src/runtime/node/StatFS.rs` | 160 | 160 |
+| `src/runtime/node/assert/myers_diff.rs` | 512 | 512 |
 | `src/runtime/node/buffer.rs` | 141 | 141 |
-| `src/runtime/node/dir_iterator.rs` | 821 | 0 |
-| `src/runtime/node/fs_events.rs` | 939 | 0 |
+| `src/runtime/node/dir_iterator.rs` | 821 | 821 |
+| `src/runtime/node/fs_events.rs` | 939 | 939 |
 | `src/runtime/node/memory_pressure.rs` | 582 | 0 |
-| `src/runtime/node/net/BlockList.rs` | 524 | 0 |
-| `src/runtime/node/node.classes.ts` | 384 | 0 |
-| `src/runtime/node/node_assert.rs` | 383 | 0 |
-| `src/runtime/node/node_assert_binding.rs` | 147 | 0 |
-| `src/runtime/node/node_cluster_binding.rs` | 810 | 0 |
-| `src/runtime/node/node_crypto_binding.rs` | 1750 | 0 |
-| `src/runtime/node/node_fs.rs` | 10116 | 0 |
-| `src/runtime/node/node_fs_binding.rs` | 527 | 0 |
-| `src/runtime/node/node_fs_constant.rs` | 32 | 0 |
-| `src/runtime/node/node_fs_stat_watcher.rs` | 1110 | 0 |
-| `src/runtime/node/node_fs_watcher.rs` | 1256 | 0 |
-| `src/runtime/node/node_http_binding.rs` | 110 | 0 |
+| `src/runtime/node/net/BlockList.rs` | 524 | 524 |
+| `src/runtime/socket/SocketAddress.rs` | 1084 | 1084 |
+| `src/runtime/node/node.classes.ts` | 384 | 384 |
+| `src/runtime/node/node_assert.rs` | 365 | 365 |
+| `src/runtime/node/node_assert_binding.rs` | 147 | 147 |
+| `src/runtime/node/node_cluster_binding.rs` | 810 | 810 |
+| `src/runtime/node/node_crypto_binding.rs` | 1750 | 1750 |
+| `src/runtime/node/node_fs.rs` | 10116 | 10116 |
+| `src/runtime/node/node_fs_binding.rs` | 527 | 527 |
+| `src/runtime/node/node_fs_constant.rs` | 32 | 32 |
+| `src/runtime/node/node_fs_stat_watcher.rs` | 1110 | 1110 |
+| `src/runtime/node/node_fs_watcher.rs` | 1256 | 1256 |
+| `src/runtime/node/node_http_binding.rs` | 110 | 110 |
+| `src/runtime/server/NodeHTTPResponse.rs` | 2825 | 2825 |
 | `src/runtime/node/node_net_binding.rs` | 184 | 184 |
-| `src/runtime/node/node_os.bind.ts` | 94 | 0 |
-| `src/runtime/node/node_os.rs` | 1614 | 0 |
-| `src/runtime/node/node_process.rs` | 595 | 0 |
+| `src/runtime/node/node_os.bind.ts` | 94 | 94 |
+| `src/runtime/node/node_os.rs` | 1614 | 1614 |
+| `src/runtime/node/node_process.rs` | 595 | 595 |
 | `src/runtime/node/node_quic_binding.rs` | 284 | 0 |
-| `src/runtime/node/node_util_binding.rs` | 246 | 0 |
-| `src/runtime/node/node_zlib_binding.rs` | 1066 | 0 |
+| `src/runtime/node/node_util_binding.rs` | 246 | 246 |
+| `src/runtime/node/node_zlib_binding.rs` | 1066 | 1066 |
 | `src/runtime/node/path.rs` | 956 | 0 |
-| `src/runtime/node/path_watcher.rs` | 1618 | 0 |
+| `src/runtime/node/path_watcher.rs` | 1618 | 1618 |
 | `src/runtime/node/quic/endpoint.rs` | 2661 | 0 |
 | `src/runtime/node/quic/ffi.rs` | 103 | 0 |
 | `src/runtime/node/quic/mod.rs` | 44 | 0 |
@@ -789,15 +879,15 @@ The Rust files below are Bun’s Node host integration layer. A module’s concr
 | `src/runtime/node/quic/stream.rs` | 1188 | 0 |
 | `src/runtime/node/quic/tls.rs` | 725 | 0 |
 | `src/runtime/node/time_like.rs` | 125 | 0 |
-| `src/runtime/node/types.rs` | 1779 | 0 |
+| `src/runtime/node/types.rs` | 1779 | 1779 |
 | `src/runtime/node/util/parse_args.rs` | 1049 | 1049 |
 | `src/runtime/node/util/parse_args_utils.rs` | 149 | 149 |
-| `src/runtime/node/util/validators.rs` | 486 | 0 |
+| `src/runtime/node/util/validators.rs` | 486 | 486 |
 | `src/runtime/node/uv_signal_handle_windows.rs` | 66 | 0 |
-| `src/runtime/node/win_watcher.rs` | 547 | 0 |
-| `src/runtime/node/zlib/NativeBrotli.rs` | 737 | 0 |
-| `src/runtime/node/zlib/NativeZlib.rs` | 654 | 0 |
-| `src/runtime/node/zlib/NativeZstd.rs` | 687 | 0 |
+| `src/runtime/node/win_watcher.rs` | 547 | 547 |
+| `src/runtime/node/zlib/NativeBrotli.rs` | 737 | 737 |
+| `src/runtime/node/zlib/NativeZlib.rs` | 654 | 654 |
+| `src/runtime/node/zlib/NativeZstd.rs` | 687 | 687 |
 
 ## `node:path` Rust algorithm crate
 
@@ -836,6 +926,6 @@ These clusters keep shared dependencies together while leaving each resolver ent
 | Network and HTTP | `node:net`, `node:dgram`, `node:dns*`, `node:http*`, `node:https`, `node:tls`, private wrappers | `internal/net/*`, `internal/http*`, streams, TLS, Rust network/HTTP bindings |
 | Process and workers | `node:process`, `node:child_process`, `node:cluster`, `node:worker_threads`, `node:os` | process/worker internals, OS/process bindings |
 | Developer tools | `node:util`, `node:assert*`, `node:inspector*`, `node:repl`, `node:readline*`, `node:test`, `node:v8`, `node:vm` | inspect/assert/repl internals and native util/VM/inspector bindings |
-| Remaining focused modules | `node:sqlite`, `node:test`, `node:zlib/iter` | module-specific wrapper/native route in the tables above |
+| Remaining focused modules | `node:sqlite`, `node:test`, `node:zlib`, `node:zlib/iter` | module-specific wrapper/native route in the tables above |
 
 No tests were run to produce this inventory.

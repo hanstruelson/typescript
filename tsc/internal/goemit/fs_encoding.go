@@ -45,7 +45,7 @@ func tsFSEncode(text *tsString, encoding string) []byte {
         for i,c:=range text.units {binary.LittleEndian.PutUint16(data[i*2:],c)}
         return data
     case "latin1","ascii":
-        data:=make([]byte,len(text.units));for i,c:=range text.units{data[i]=byte(c)};return data
+        data:=make([]byte,len(text.units));for i,c:=range text.units{if encoding=="ascii"{c&=127};data[i]=byte(c)};return data
     case "hex":
         source:=text.String();data:=make([]byte,0,len(source)/2)
         for i:=0;i+1<len(source);i+=2 {pair,err:=hex.DecodeString(source[i:i+2]);if err!=nil{break};data=append(data,pair[0])};return data
@@ -62,6 +62,10 @@ func tsFSBytes(value tsValue) []byte {
     if value.kind==tsTypedArrayKind {
         array:=(*tsTypedArray)(value.ref)
         return array.buffer.data[array.offset:array.offset+array.length*array.bytes]
+    }
+    if value.kind==tsDataViewKind {
+        view:=(*tsDataView)(value.ref)
+        return view.buffer.data[view.offset:view.offset+view.length]
     }
     if value.kind==tsArrayBufferKind {return (*tsArrayBuffer)(value.ref).data}
     tsFSInvalid("buffer","a Buffer or typed array")

@@ -73,7 +73,7 @@ func(stream *tsFSStream)pumpRead(){
     size:=stream.highWaterMark;if stream.position>=0&&stream.end!=math.MaxInt64{remaining:=stream.end-stream.position+1;if remaining<int64(size){size=int(remaining)}}
     if size<=0{stream.finishRead();return};stream.busy=true
     buffer:=tsNodeBuffer(make([]byte,size));position:=tsNull;if stream.position>=0{position=tsNumberValue(float64(stream.position))}
-    loop.submit(func()tsResult{return tsFSDescriptorIO("read",[]tsValue{stream.descriptor,buffer,tsNumberValue(0),tsNumberValue(float64(size)),position})},func(result tsResult){
+    loop.submit(func()tsResult{return tsFSDescriptorIO(loop,"read",[]tsValue{stream.descriptor,buffer,tsNumberValue(0),tsNumberValue(float64(size)),position})},func(result tsResult){
         stream.busy=false;if stream.destroyed{stream.closeStream();return};if result.rejected{stream.destroyStream(result.value);return}
         n:=int(tsNumber(tsFSProperty(result.value,"bytesRead")));if n==0{stream.finishRead();return};stream.count+=int64(n);if stream.position>=0{stream.position+=int64(n)};stream.events.object.set("bytesRead",tsNumberValue(float64(stream.count)))
         data:=tsNodeBuffer(tsFSBytes(buffer)[:n]);if stream.encoding!=""{bytes:=append(stream.decoderTail,tsFSBytes(data)...);cut:=len(bytes);switch stream.encoding{case "utf8":for start:=len(bytes)-1;start>=0&&start>=len(bytes)-4;start--{if utf8.RuneStart(bytes[start]){if !utf8.FullRune(bytes[start:]){cut=start};break}};case "utf16le":cut-=cut%2;if cut>=2{last:=binary.LittleEndian.Uint16(bytes[cut-2:]);if last>=0xd800&&last<=0xdbff{cut-=2}};case "base64","base64url":cut-=cut%3};stream.decoderTail=append([]byte{},bytes[cut:]...);if cut==0{stream.pumpRead();return};data=tsFSDecode(bytes[:cut],stream.encoding)}

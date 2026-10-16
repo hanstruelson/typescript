@@ -43,6 +43,16 @@ func tsNodeInspectError(loop *tsLoop,value tsValue,o tsNodeInspectOptions,depth 
 	keys:=tsObjectKeys(value);extras:=[]string{};for _,key:=range keys.values{name:=tsPropertyKey(key);if name=="stack"||name=="message"||name=="name"{continue};extras=append(extras,name+": "+tsNodeInspectValue(loop,tsGet(loop,value,tsStringReference(tsStringUTF8(name))),o,depth+1,seen))}
 	if len(extras)>0{text+=" { "+strings.Join(extras,", ")+" }"};return tsNodeInspectStyle(text,"special",o.colors)
 }
+func tsNodeInspectIsMapIterator(value tsValue)bool{return value.kind==tsIteratorKind&&value.ref!=nil&&(*tsIterator)(value.ref).collectionIterator&&!(*tsIterator)(value.ref).collectionSet}
+func tsNodeInspectIsSetIterator(value tsValue)bool{return value.kind==tsIteratorKind&&value.ref!=nil&&(*tsIterator)(value.ref).collectionIterator&&(*tsIterator)(value.ref).collectionSet}
+func tsNodeInspectCollectionIterator(loop *tsLoop,value tsValue,o tsNodeInspectOptions,depth int,seen map[unsafe.Pointer]bool)(string,bool){
+	if !tsNodeInspectIsMapIterator(value)&&!tsNodeInspectIsSetIterator(value){return "",false}
+	iterator:=(*tsIterator)(value.ref);collection:=iterator.collection;if collection==nil{return "",false};kind:="Map";if collection.set{kind="Set"};label:=kind+" Iterator";entries:=iterator.collectionMode=="entries";if entries{label=kind+" Entries"}
+	parts:=[]string{};count,total:=0,0
+	for _,entry:=range collection.entries{if !entry.live{continue};total++;if count>=o.maxArrayLength{continue};if entries{parts=append(parts,tsNodeInspectValue(loop,entry.key,o,depth+1,seen)+" => "+tsNodeInspectValue(loop,entry.value,o,depth+1,seen))}else{item:=entry.key;if !collection.set&&iterator.collectionMode=="values"{item=entry.value};parts=append(parts,tsNodeInspectValue(loop,item,o,depth+1,seen))};count++}
+	if remaining:=total-count;remaining>0{parts=append(parts,fmt.Sprintf("... %d more items",remaining))}
+	return tsNodeInspectContainer(parts,"["+label+"] {","}",depth,o),true
+}
 func tsNodeInspectValue(loop *tsLoop,value tsValue,o tsNodeInspectOptions,depth int,seen map[unsafe.Pointer]bool)string{
 	style:=func(s,k string)string{return tsNodeInspectStyle(s,k,o.colors)}
 	switch value.kind{
@@ -62,6 +72,7 @@ func tsNodeInspectValue(loop *tsLoop,value tsValue,o tsNodeInspectOptions,depth 
 	if custom,ok:=tsNodeInspectCustomValue(loop,value,o,depth,seen);ok{return custom}
 	if depth>o.depth&&o.depth>=0{return "[Object]"}
 	if value.ref!=nil{if seen[value.ref]{return style("[Circular]","special")};seen[value.ref]=true;defer delete(seen,value.ref)}
+	if value.kind==tsIteratorKind{if formatted,ok:=tsNodeInspectCollectionIterator(loop,value,o,depth,seen);ok{return formatted}}
 	if value.kind==tsArrayKind{
 		a:=(*tsArray)(value.ref);n:=a.length();if n>o.maxArrayLength{n=o.maxArrayLength};items:=[]string{}
 		for i:=0;i<n;i++{if a.holes[i]{items=append(items,style("<empty>","undefined"))}else{items=append(items,tsNodeInspectValue(loop,a.at(i),o,depth+1,seen))}}

@@ -19,6 +19,7 @@ type tsHTTP1FallbackResponseState struct {
 	finished bool
 	ended bool
 	aborted bool
+	bytesWritten uint64
 }
 
 var tsInternalHTTP1FallbackSingleton struct {
@@ -135,6 +136,20 @@ func tsInternalHTTP1FallbackHandleGet(loop *tsLoop, value tsValue, name string) 
 func tsInternalHTTP1FallbackEndWritten(loop *tsLoop, state *tsHTTP1FallbackResponseState, err tsValue) {
 	if !tsTruthy(err) && !tsTruthy(tsInternalHTTP1FallbackGet(loop, state.socket, "destroyed")) { tsInternalHTTP1FallbackFlush(loop, state) }
 }
+func tsInternalHTTP1FallbackCountBodyBytes(loop *tsLoop, state *tsHTTP1FallbackResponseState, buffer, expected tsValue, fromEnd bool) int {
+	length := 0
+	if !tsNullish(buffer) { length = len(tsNodeBufferVisibleBytes(buffer)) }
+	written := state.bytesWritten + uint64(length)
+	if tsIsNumeric(expected) {
+		want := uint64(math.Max(0, math.Trunc(tsNumber(expected))))
+		if fromEnd && written != want || !fromEnd && written > want {
+			message := fmt.Sprintf("Response body's content-length of %d byte(s) does not match the content-length of %d byte(s) set in header", written, want)
+			panic(tsThrown{tsFSException("Error", "ERR_HTTP_CONTENT_LENGTH_MISMATCH", message)})
+		}
+	}
+	state.bytesWritten = written
+	return length
+}
 func tsInternalHTTP1FallbackWriteHead(loop *tsLoop, state *tsHTTP1FallbackResponseState, contentLength tsValue) {
 	if state.headWritten { return }
 	state.headWritten = true
@@ -216,13 +231,13 @@ func tsInternalHTTP1FallbackHandleMethod(loop *tsLoop, state *tsHTTP1FallbackRes
 		message:=arg(1); common:=tsNodeHTTPCommonModule(loop);invalid:=tsNodeHTTPCommonGet(loop,common,"_checkInvalidHeaderChar");if message.kind==tsStringKind&&tsTruthy(tsCall(loop,invalid,message)){panic(tsThrown{tsFSException("TypeError","ERR_INVALID_CHAR","Invalid character in statusMessage")})}
 		head:=tsNewObject();head.set("statusCode",tsNumberValue(float64(status)));head.set("statusMessage",message);head.set("headers",arg(2));head.set("autoHeaderBits",arg(3));head.set("keepAliveTimeoutSecs",arg(4));state.head=tsObjectValue(head);return tsU
 	case "flushHeaders": tsInternalHTTP1FallbackWriteHead(loop,state,tsNull);return tsU
-	case "writeHeadAndEnd": tsInternalHTTP1FallbackHandleMethod(loop,state,"writeHead",[]tsValue{arg(0),arg(1),arg(2),arg(6),arg(7)});return tsInternalHTTP1FallbackHandleMethod(loop,state,"end",[]tsValue{arg(3),arg(4),tsU,arg(7)})
+	case "writeHeadAndEnd": tsInternalHTTP1FallbackHandleMethod(loop,state,"writeHead",[]tsValue{arg(0),arg(1),arg(2),arg(6),arg(7)});return tsInternalHTTP1FallbackHandleMethod(loop,state,"end",[]tsValue{arg(3),arg(4),tsU,arg(5)})
 	case "write":
-		buffer:=tsInternalHTTP1FallbackToBuffer(loop,arg(0),arg(1));tsInternalHTTP1FallbackWriteHead(loop,state,tsNull);length:=tsInternalHTTP1FallbackWriteBody(loop,state,buffer,tsU)
+		buffer:=tsInternalHTTP1FallbackToBuffer(loop,arg(0),arg(1));length:=tsInternalHTTP1FallbackCountBodyBytes(loop,state,buffer,arg(3),false);tsInternalHTTP1FallbackWriteHead(loop,state,tsNull);tsInternalHTTP1FallbackWriteBody(loop,state,buffer,tsU)
 		if tsIsNull(buffer)||!tsTruthy(tsInternalHTTP1FallbackGet(loop,state.socket,"writableNeedDrain")){return tsNumberValue(float64(length))}
 		callback:=arg(2);if tsTruthy(callback){state.onWritable=callback;state.onWritableFrame=tsCall(loop,tsGet(loop,tsInternalAsyncContextFrameModule(loop),tsInternalHTTP1FallbackKey("current")))};if length>0{return tsNumberValue(float64(-length))};return tsNumberValue(-1)
 	case "end":
-		if state.ended{return tsNumberValue(0)};state.onWritable=tsNull;state.onWritableFrame=tsU;buffer:=tsInternalHTTP1FallbackToBuffer(loop,arg(0),arg(1));length:=0;if !tsNullish(buffer){length=len(tsNodeBufferVisibleBytes(buffer))};tsInternalHTTP1FallbackWriteHead(loop,state,tsNumberValue(float64(length)));terminated:=state.chunked&&!state.noBody
+		if state.ended{return tsNumberValue(0)};state.onWritable=tsNull;state.onWritableFrame=tsU;buffer:=tsInternalHTTP1FallbackToBuffer(loop,arg(0),arg(1));length:=tsInternalHTTP1FallbackCountBodyBytes(loop,state,buffer,arg(3),true);tsInternalHTTP1FallbackWriteHead(loop,state,tsNumberValue(float64(length)));terminated:=state.chunked&&!state.noBody
 		endCallback:=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{tsInternalHTTP1FallbackEndWritten(loop,state,tsArg(args,0));return tsU}))
 		tsInternalHTTP1FallbackWriteBody(loop,state,buffer,func()tsValue{if terminated{return tsU};return endCallback}());if terminated{tsInternalHTTP1FallbackSocketWrite(loop,state,tsInternalHTTP1FallbackKey("0\r\n\r\n"),endCallback)};state.ended=true
 		writableLength:=tsNumber(tsInternalHTTP1FallbackGet(loop,state.socket,"writableLength"));if writableLength>0&&!tsTruthy(tsInternalHTTP1FallbackGet(loop,state.socket,"destroyed")){if tsTruthy(tsInternalHTTP1FallbackGet(loop,state.socket,"writableEnded")){tsNodeHTTPServerCall(loop,state.socket,"once",tsInternalHTTP1FallbackKey("finish"),endCallback)}else if length==0&&!terminated{tsNodeHTTPServerCall(loop,state.socket,"write",tsInternalHTTP1FallbackKey(""),tsInternalHTTP1FallbackKey("latin1"),endCallback)}}else{state.finished=true}
