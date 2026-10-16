@@ -20,6 +20,7 @@ type tsModule struct {
  failure tsValue
 }
 func tsNewModule(loop *tsLoop,name string) *tsModule {module:= &tsModule{name:name,loop:loop,exports:make(map[string]*tsExport)};loop.modules=append(loop.modules,module);return module}
+func tsGlobSet(root tsValue,path []string,value tsValue){if root.kind!=tsObjectKind||len(path)==0{panic("Invalid glob import object path")};current:=(*tsObject)(root.ref);for _,name:=range path[:len(path)-1]{child:=current.get(name);if child.kind==tsUndefinedKind{next:=tsNewObject();current.set(name,tsObjectValue(next));current=next}else if child.kind==tsObjectKind{current=(*tsObject)(child.ref)}else{panic("Glob import path collides with a file name")}};current.set(path[len(path)-1],value)}
 // Initializers always run on the registry's owner loop. Requests from workers
 // wait through task completion, while sharing the same module and export cells.
 func(module *tsModule)load(loop *tsLoop)*tsPromise {

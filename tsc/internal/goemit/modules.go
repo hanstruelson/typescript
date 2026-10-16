@@ -10,15 +10,26 @@ import (
 )
 
 // ModuleInput uses the compiler's resolved import graph rather than resolving
-// paths independently. The resolver is borrowed only while this fragment emits.
+// paths independently. Glob imports are expanded by the compiler before emit.
+// The resolver is borrowed only while this fragment emits.
 type ModuleInput struct {
-	File     *ast.SourceFile
+	File    *ast.SourceFile
 	Resolver ReferenceResolver
-	Targets  map[*ast.Node]string
+	Targets map[*ast.Node]string
+	Globs   map[*ast.Node][]GlobFile
+}
+
+// GlobFile describes one source matched by a glob import. Key is the path
+// relative to the glob's fixed directory, without the source file extension.
+type GlobFile struct {
+	Key        []string
+	Name       string
+	HasDefault bool
+	Exports    []string
 }
 
 func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*ast.Diagnostic) {
-	e := &emitter{file: input.File, resolver: input.Resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), targets: input.Targets, implicitGlobals: make(map[string]bool)}
+	e := &emitter{file: input.File, resolver: input.Resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), targets: input.Targets, globs: input.Globs, implicitGlobals: make(map[string]bool)}
 	e.coerce = !options.CoerceAny.IsFalse()
 	e.strictNulls = options.GetStrictOptionValue(options.StrictNullChecks)
 	if options.SourceMap.IsTrue() || options.InlineSourceMap.IsTrue() {
@@ -44,6 +55,9 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 	builder.module = true
 	for _, node := range input.File.Statements.Nodes {
 		if node.Kind == ast.KindImportDeclaration && input.Targets[node] == "" {
+			if _, isGlob := input.Globs[node]; isGlob {
+				continue
+			}
 			builder.importDeclaration(node)
 		}
 	}
@@ -158,6 +172,105 @@ func (b *machineBuilder) localImport(node *ast.Node) {
 			b.emit(cell.name + ".init(tsNamespace{module:" + module + "})")
 		}
 	}
+}
+
+func (b *machineBuilder) globImport(node *ast.Node) bool {
+	targets, ok := b.e.globs[node]
+	if !ok {
+		return false
+	}
+	n := node.AsImportDeclaration()
+	clause := n.ImportClause
+	if clause != nil && clause.AsImportClause().PhaseModifier == ast.KindTypeKeyword {
+		return true
+	}
+	if len(targets) == 0 {
+		b.e.fail(node, "glob import matched no source files")
+		return true
+	}
+	if clause != nil {
+		c := clause.AsImportClause()
+		if c.NamedBindings != nil && c.NamedBindings.Kind == ast.KindNamedImports {
+			b.e.fail(node, "glob imports support a default or namespace import, not named imports")
+			return true
+		}
+	}
+	if !validGlobKeys(targets) {
+		b.e.fail(node, "glob import has colliding file paths")
+		return true
+	}
+
+	// Each target is a static dependency. The compiler expands the pattern and
+	// emits direct module references, so generated programs never scan the disk.
+	for _, target := range targets {
+		next := b.block()
+		b.emit(fmt.Sprintf("m.importModule(modules[%q],nil,true,%d);return", target.Name, next))
+		b.current = next
+	}
+	if clause == nil {
+		return true
+	}
+
+	root := b.temp("tsObjectValue(tsNewObject())")
+	for _, target := range targets {
+		module := "modules[" + strconv.Quote(target.Name) + "]"
+		file := b.temp("tsObjectValue(tsNewObject())")
+		defaultValue := "tsU"
+		if target.HasDefault {
+			defaultValue = "tsImportValue(tsImportRef{module:" + module + ",name:\"default\"})"
+		}
+		b.emit(fmt.Sprintf("tsGlobSet(%s,[]string{\"default\"},%s)", file, defaultValue))
+		items := b.temp("tsObjectValue(tsNewObject())")
+		for _, name := range target.Exports {
+			value := "tsImportValue(tsImportRef{module:" + module + ",name:" + strconv.Quote(name) + "})"
+			b.emit(fmt.Sprintf("tsGlobSet(%s,[]string{%q},%s)", items, name, value))
+		}
+		b.emit(fmt.Sprintf("tsGlobSet(%s,[]string{\"items\"},%s)", file, items))
+		b.emit(fmt.Sprintf("tsGlobSet(%s,[]string{%s},%s)", root, quotedStringSlice(target.Key), file))
+	}
+	if clause.Name() != nil {
+		if cell := b.e.bindings[clause]; cell != nil {
+			b.emit(cell.name + ".init(" + root + ")")
+		}
+	}
+	if namedBindings := clause.AsImportClause().NamedBindings; namedBindings != nil && namedBindings.Kind == ast.KindNamespaceImport {
+		if cell := b.e.bindings[namedBindings]; cell != nil {
+			b.emit(cell.name + ".init(" + root + ")")
+		}
+	}
+	return true
+}
+
+func quotedStringSlice(values []string) string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = strconv.Quote(value)
+	}
+	return strings.Join(quoted, ",")
+}
+
+func validGlobKeys(files []GlobFile) bool {
+	keys := make(map[string]bool, len(files))
+	for _, file := range files {
+		key := strings.Join(file.Key, "/")
+		if key == "" || keys[key] {
+			return false
+		}
+		keys[key] = true
+	}
+	for key := range keys {
+		for parent := key; ; {
+			index := strings.LastIndexByte(parent, '/')
+			if index < 0 {
+				break
+			}
+			parent = parent[:index]
+			if keys[parent] {
+				return false
+			}
+		}
+	}
+	return true
 }
 func (b *machineBuilder) exportDeclaration(node *ast.Node) {
 	n := node.AsExportDeclaration()

@@ -230,6 +230,15 @@ as an unresolved module dependency, rather than restarting modules or hanging.
 These demand-driven semantics intentionally follow this backend's module policy;
 they differ from standard JavaScript's eager module evaluation.
 
+The Go target also accepts glob imports such as `import words from "./words/**/*.ts"`.
+The compiler expands the pattern to source files in the project. The default
+import is keyed by each file's relative path without its extension; nested paths
+become nested objects. Each file entry has a `.default` property and an `.items`
+object containing its named exports. For example, `words.if.default` reads the
+default export from `words/if.ts`, and `words.if.items.description` reads its
+`description` export. `*` matches within one directory, while `**` also matches
+nested directories. A pattern with no matches or colliding file paths is an error.
+
 
 ## Classes
 

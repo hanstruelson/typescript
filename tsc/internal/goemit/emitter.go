@@ -36,6 +36,7 @@ type emitter struct {
 	diags               []*ast.Diagnostic
 	next                int
 	targets             map[*ast.Node]string
+	globs               map[*ast.Node][]GlobFile
 	classes             map[*ast.Node]*classInfo
 	classOrder          []*classInfo
 	classText           strings.Builder
@@ -175,7 +176,8 @@ func (e *emitter) collect(node, owner *ast.Node) {
 	case ast.KindImportEqualsDeclaration:
 		return
 	case ast.KindImportDeclaration:
-		if e.targets[node] != "" {
+		_, isGlob := e.globs[node]
+		if e.targets[node] != "" || isGlob {
 			clause := node.AsImportDeclaration().ImportClause
 			if clause != nil {
 				c := clause.AsImportClause()

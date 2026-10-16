@@ -21,6 +21,7 @@ import (
 	"github.com/microsoft/TypeScript/tsc/internal/tsoptions"
 	"github.com/microsoft/TypeScript/tsc/internal/tspath"
 	"github.com/microsoft/TypeScript/tsc/internal/vfs"
+	"github.com/microsoft/TypeScript/tsc/internal/vfs/vfsmatch"
 	"github.com/zeebo/xxh3"
 )
 
@@ -876,6 +877,36 @@ func (p *fileLoader) resolveImportsAndModuleAugmentations(t *parseTask) {
 				continue
 			}
 
+			importIndex := index - importsStart
+			if optionsForFile.Target == core.ScriptTargetGo && importIndex >= 0 && importIndex < len(file.Imports()) &&
+				ast.IsImportDeclaration(entry.Parent) && isGoGlobImport(moduleName) {
+				mode := getModeForUsageLocation(file.FileName(), meta, entry, optionsForFile)
+				resolutionsInFile[module.ModeAwareCacheKey{Name: moduleName, Mode: mode}] = &module.ResolvedModule{}
+				if !optionsForFile.NoResolve.IsTrue() {
+					pattern := goGlobImportPattern(file, moduleName)
+					root := tspath.ToRootedDirectoryPath(goGlobRoot(pattern), file.FileName().Directory())
+					matches := vfsmatch.ReadDirectory(p.host.FS(), root, slices.Concat(p.supportedExtensions...), nil, []string{goGlobstarExtensionPattern(pattern)}, vfsmatch.UnlimitedDepth)
+					for _, match := range matches {
+						if match.IsDeclarationFile() {
+							continue
+						}
+						resolvedPath := p.caseSensitivity.PathKey(match.AsPath())
+						t.addSubTask(resolvedRef{
+							fileName: match,
+							path:     resolvedPath,
+							includeReason: &FileIncludeReason{
+								kind: fileIncludeKindImport,
+								referencedFile: &referencedFileData{
+									file:  t.path,
+									index: importIndex,
+								},
+							},
+						}, nil)
+					}
+				}
+				continue
+			}
+
 			mode := getModeForUsageLocation(file.FileName(), meta, entry, optionsForFile)
 			var resolvedModule *module.ResolvedModule
 			var trace []module.DiagAndArgs
@@ -907,8 +938,6 @@ func (p *fileLoader) resolveImportsAndModuleAugmentations(t *parseTask) {
 			// - noResolve is falsy
 			// - module name comes from the list of imports
 			// - it's not a top level JavaScript module that exceeded the search max
-
-			importIndex := index - importsStart
 
 			shouldAddFile := moduleName != "" &&
 				module.GetResolutionDiagnostic(optionsForFile, resolvedModule, file) == nil &&

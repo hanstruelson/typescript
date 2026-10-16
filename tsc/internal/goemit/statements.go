@@ -393,6 +393,9 @@ func (b *machineBuilder) tryStatement(node *ast.Node) {
 func (b *machineBuilder) importDeclaration(node *ast.Node) {
 	n := node.AsImportDeclaration()
 	module := n.ModuleSpecifier.Text()
+	if b.globImport(node) {
+		return
+	}
 	if b.nodeImport(node) {
 		return
 	}

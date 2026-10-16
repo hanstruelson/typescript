@@ -14806,6 +14806,9 @@ func (c *Checker) getTargetOfImportClause(node *ast.Node) *ast.Symbol {
 		}
 		return links.immediateTarget
 	}
+	if c.isGoGlobImportSpecifier(getModuleSpecifierFromNode(node.Parent)) {
+		return c.goGlobImportTarget(node)
+	}
 	moduleSymbol := c.resolveExternalModuleName(node, getModuleSpecifierFromNode(node.Parent), false /*ignoreErrors*/, c.getTypeFromImportAttributes(ast.GetImportAttributes(node.Parent)))
 	if moduleSymbol != nil {
 		return c.getTargetOfModuleDefault(moduleSymbol, node, true /*dontResolveAlias*/)
@@ -14916,6 +14919,9 @@ func (c *Checker) resolveExportByName(moduleSymbol *ast.Symbol, name string, sou
 
 func (c *Checker) getTargetOfNamespaceImport(node *ast.Node) *ast.Symbol {
 	moduleSpecifier := c.getModuleSpecifierForImportOrExport(node)
+	if c.isGoGlobImportSpecifier(moduleSpecifier) {
+		return c.goGlobImportTarget(node)
+	}
 	immediate := c.resolveExternalModuleName(node, moduleSpecifier, false /*ignoreErrors*/, c.getTypeFromImportAttributes(ast.GetImportAttributes(node.Parent.Parent)))
 	resolved := c.resolveESModuleSymbol(immediate, node, moduleSpecifier)
 	c.markSymbolOfAliasDeclarationIfTypeOnly(node, nil)
@@ -14934,6 +14940,9 @@ func (c *Checker) getTargetOfNamespaceExport(node *ast.Node) *ast.Symbol {
 }
 
 func (c *Checker) getTargetOfImportSpecifier(node *ast.Node) *ast.Symbol {
+	if c.isGoGlobImportSpecifier(c.getModuleSpecifierForImportOrExport(node)) {
+		return c.goGlobImportTarget(node)
+	}
 	name := node.PropertyNameOrName()
 	if ast.IsImportSpecifier(node) && ast.ModuleExportNameIsDefault(name) {
 		specifier := c.getModuleSpecifierForImportOrExport(node)
@@ -14951,6 +14960,28 @@ func (c *Checker) getTargetOfImportSpecifier(node *ast.Node) *ast.Symbol {
 	resolved := c.getExternalModuleMember(root, node, true /*dontResolveAlias*/)
 	c.markSymbolOfAliasDeclarationIfTypeOnly(node, nil)
 	return resolved
+}
+
+func (c *Checker) isGoGlobImportSpecifier(moduleSpecifier *ast.Node) bool {
+	return c.compilerOptions.Target == core.ScriptTargetGo && moduleSpecifier != nil && moduleSpecifier.Kind == ast.KindStringLiteral &&
+		ast.IsImportDeclaration(moduleSpecifier.Parent) && strings.ContainsAny(moduleSpecifier.Text(), "*?[")
+}
+
+func (c *Checker) goGlobImportTarget(node *ast.Node) *ast.Symbol {
+	// Glob imports have a backend-defined aggregate shape that is not a physical
+	// TypeScript module. Let the Go emitter validate and construct that object.
+	alias := c.getSymbolOfDeclaration(node)
+	if alias == nil {
+		return nil
+	}
+	links := c.aliasSymbolLinks.Get(alias)
+	if links.immediateTarget == nil {
+		target := c.newSymbol(ast.SymbolFlagsFunctionScopedVariable, alias.Name)
+		target.Declarations = alias.Declarations
+		c.valueSymbolLinks.Get(target).resolvedType = c.anyType
+		links.immediateTarget = target
+	}
+	return links.immediateTarget
 }
 
 func (c *Checker) getExternalModuleMember(node *ast.Node, specifier *ast.Node, dontResolveAlias bool) *ast.Symbol {
@@ -15393,6 +15424,9 @@ func (c *Checker) markSymbolOfAliasDeclarationIfTypeOnly(aliasDeclaration *ast.N
 }
 
 func (c *Checker) resolveExternalModuleName(location *ast.Node, moduleReferenceExpression *ast.Node, ignoreErrors bool, importAttributesType *Type) *ast.Symbol {
+	if c.isGoGlobImportSpecifier(moduleReferenceExpression) {
+		return nil
+	}
 	errorMessage := c.getCannotResolveModuleNameErrorForSpecificModule(moduleReferenceExpression)
 	if errorMessage == nil {
 		errorMessage = diagnostics.Cannot_find_module_0_or_its_corresponding_type_declarations
