@@ -4,36 +4,28 @@ go 1.27
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
-	github.com/andybalholm/brotli v1.1.1
 	github.com/google/go-cmp v0.7.0
 	github.com/klauspost/compress v1.20.0
-	github.com/mattn/go-sqlite3 v1.14.24
 	github.com/mackerelio/go-osstat v0.2.8
 	github.com/peter-evans/patience v0.3.0
-	github.com/quic-go/qpack v0.6.0
-	github.com/quic-go/quic-go v0.64.0
 	github.com/zeebo/xxh3 v1.1.0
-	golang.org/x/net v0.56.0
+	golang.org/x/crypto v0.57.0
 	golang.org/x/sync v0.23.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.46.0
 	golang.org/x/text v0.42.0
 	gotest.tools/v3 v3.5.2
 )
 
-replace github.com/mattn/go-sqlite3 => ./third_party/go-sqlite3
-
 require (
-	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
-	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
 	github.com/matryer/moq v0.7.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/xyproto/randomstring v1.0.5 // indirect
-	golang.org/x/crypto v0.54.0
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/tools v0.50.0 // indirect
 )
+
+replace github.com/mattn/go-sqlite3 => ./third_party/go-sqlite3
 
 tool (
 	github.com/matryer/moq
