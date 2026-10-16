@@ -16,8 +16,10 @@ func tsNodeUtilType(name string, value tsValue) bool {
 	object := (*tsObject)(nil)
 	if value.kind == tsObjectKind { object = (*tsObject)(value.ref) }
 	switch name {
-	case "isExternal", "isWeakMap", "isWeakSet", "isSharedArrayBuffer", "isKeyObject", "isCryptoKey":
+	case "isExternal", "isWeakMap", "isWeakSet", "isSharedArrayBuffer", "isCryptoKey":
 		return false
+	case "isKeyObject":
+		return tsNodeCryptoKeyFor(value) != nil
 	case "isDate":
 		return object != nil && object.nativeDate
 	case "isArgumentsObject":
@@ -37,9 +39,9 @@ func tsNodeUtilType(name string, value tsValue) bool {
 	case "isRegExp":
 		return value.kind == tsRegExpKind
 	case "isAsyncFunction":
-		return value.kind == tsFunctionKind && (*tsFunction)(value.ref).asyncGeneratorFunction
+		return value.kind == tsFunctionKind && ((*tsFunction)(value.ref).async || (*tsFunction)(value.ref).asyncGeneratorFunction)
 	case "isGeneratorFunction":
-		return value.kind == tsFunctionKind && ((*tsFunction)(value.ref).generator || (*tsFunction)(value.ref).asyncGeneratorFunction)
+		return value.kind == tsFunctionKind && (*tsFunction)(value.ref).generator
 	case "isGeneratorObject":
 		if value.kind != tsIteratorKind { return false }
 		iterator := (*tsIterator)(value.ref)

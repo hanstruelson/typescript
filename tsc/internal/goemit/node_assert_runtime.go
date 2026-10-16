@@ -35,6 +35,192 @@ func tsNodeAssertDeep(loop *tsLoop,left,right tsValue,strict bool,seen map[tsNod
 	return true
 }
 
+func tsNodeAssertErrorValue(value tsValue) bool {
+	switch value.kind {
+	case tsErrorKind:
+		return true
+	case tsObjectKind:
+		return (*tsObject)(value.ref).nativeError
+	case tsInstanceKind:
+		return (*tsProperties)(value.ref).nativeError
+	default:
+		return false
+	}
+}
+
+func tsNodeAssertArrayIndex(name string) bool {
+	index, err := strconv.ParseUint(name, 10, 32)
+	return err == nil && index < 0xffffffff && strconv.FormatUint(index, 10) == name
+}
+
+func tsNodeAssertPartialProperties(loop *tsLoop, actual, expected tsValue, nonIndex bool, actualSeen, expectedSeen map[unsafe.Pointer]bool) bool {
+	actualKeys := map[string]bool{}
+	for _, key := range tsObjectKeys(actual).values {
+		name := tsPropertyKey(key)
+		if nonIndex && tsNodeAssertArrayIndex(name) { continue }
+		actualKeys[name] = true
+	}
+	for _, key := range tsObjectKeys(expected).values {
+		name := tsPropertyKey(key)
+		if nonIndex && tsNodeAssertArrayIndex(name) { continue }
+		if !actualKeys[name] || !tsNodeAssertPartialDeep(loop, tsGet(actual, key), tsGet(expected, key), actualSeen, expectedSeen) { return false }
+	}
+	return true
+}
+
+func tsNodeAssertPartialBytes(actual, expected []byte) bool {
+	if len(expected) > len(actual) { return false }
+	pos := 0
+	for i, item := range expected {
+		last := len(actual) - len(expected) + i
+		for pos <= last && actual[pos] != item { pos++ }
+		if pos > last { return false }
+		pos++
+	}
+	return true
+}
+
+func tsNodeAssertPartialTypedArray(loop *tsLoop, actual, expected tsValue, actualSeen, expectedSeen map[unsafe.Pointer]bool) bool {
+	a, b := (*tsTypedArray)(actual.ref), (*tsTypedArray)(expected.ref)
+	actualName, expectedName := a.name, b.name
+	if actualName == "Buffer" { actualName = "Uint8Array" }
+	if expectedName == "Buffer" { expectedName = "Uint8Array" }
+	if actualName != expectedName || b.length > a.length || a.buffer.detached || b.buffer.detached { return false }
+	pos := 0
+	for i := 0; i < b.length; i++ {
+		last := a.length - b.length + i
+		expectedValue := tsNumberValue(b.read(i)); if b.readValue != nil { expectedValue = b.readValue(i) }
+		matched := false
+		for pos <= last {
+			actualValue := tsNumberValue(a.read(pos)); if a.readValue != nil { actualValue = a.readValue(pos) }
+			pos++
+			if tsSameValue(actualValue, expectedValue) { matched = true; break }
+		}
+		if !matched { return false }
+	}
+	return tsNodeAssertPartialProperties(loop, actual, expected, true, actualSeen, expectedSeen)
+}
+
+func tsNodeAssertPartialCollection(loop *tsLoop, actual, expected tsValue, actualSeen, expectedSeen map[unsafe.Pointer]bool) bool {
+	a, b := (*tsCollection)(actual.ref), (*tsCollection)(expected.ref)
+	if a.set != b.set { return false }
+	actualCount, expectedCount := 0, 0
+	for _, entry := range a.entries { if entry.live { actualCount++ } }
+	for _, entry := range b.entries { if entry.live { expectedCount++ } }
+	if expectedCount > actualCount { return false }
+	used, identityUsed := make([]bool, len(a.entries)), make([]bool, len(a.entries))
+	for _, wanted := range b.entries {
+		if !wanted.live { continue }
+		match := -1
+		if !b.set {
+			for i, candidate := range a.entries {
+				if candidate.live && tsSameValueZero(candidate.key, wanted.key) && !used[i] {
+					if tsNodeAssertPartialDeep(loop, candidate.value, wanted.value, actualSeen, expectedSeen) { match = i; identityUsed[i] = true; break }
+				}
+			}
+		}
+		if match < 0 && !b.set && tsIsPrimitiveValue(wanted.key) { return false }
+		if match < 0 {
+			for i, candidate := range a.entries {
+				if !candidate.live || used[i] || identityUsed[i] { continue }
+				if b.set {
+					if tsNodeAssertPartialDeep(loop, candidate.key, wanted.key, actualSeen, expectedSeen) { match = i; break }
+				} else if tsNodeAssertPartialDeep(loop, candidate.key, wanted.key, actualSeen, expectedSeen) && tsNodeAssertPartialDeep(loop, candidate.value, wanted.value, actualSeen, expectedSeen) { match = i; break }
+			}
+		}
+		if match < 0 { return false }
+		used[match] = true
+	}
+	return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+}
+
+func tsNodeAssertPartialDeep(loop *tsLoop, actual, expected tsValue, actualSeen, expectedSeen map[unsafe.Pointer]bool) bool {
+	if tsIsPrimitiveValue(actual) || tsIsPrimitiveValue(expected) {
+		return tsSameValue(actual, expected)
+	}
+	if actual.kind == tsFunctionKind || actual.kind == tsClassKind || expected.kind == tsFunctionKind || expected.kind == tsClassKind {
+		return tsNodeAssertDeep(loop, actual, expected, true, map[tsNodeAssertPair]bool{})
+	}
+	if actual.kind == tsPromiseKind || expected.kind == tsPromiseKind { return false }
+	if actual.kind == expected.kind && actual.ref == expected.ref { return true }
+	if actual.ref == nil || expected.ref == nil { return false }
+	if actualSeen[actual.ref] && expectedSeen[expected.ref] { return true }
+	if actualSeen[actual.ref] || expectedSeen[expected.ref] { return false }
+	actualSeen[actual.ref], expectedSeen[expected.ref] = true, true
+	defer func() { delete(actualSeen, actual.ref); delete(expectedSeen, expected.ref) }()
+
+	if actual.kind == tsCollectionKind || expected.kind == tsCollectionKind {
+		if actual.kind != tsCollectionKind || expected.kind != tsCollectionKind { return false }
+		return tsNodeAssertPartialCollection(loop, actual, expected, actualSeen, expectedSeen)
+	}
+	if actual.kind == tsTypedArrayKind || actual.kind == tsDataViewKind || expected.kind == tsTypedArrayKind || expected.kind == tsDataViewKind {
+		if actual.kind != expected.kind { return false }
+		if actual.kind == tsTypedArrayKind { return tsNodeAssertPartialTypedArray(loop, actual, expected, actualSeen, expectedSeen) }
+		a, b := (*tsDataView)(actual.ref), (*tsDataView)(expected.ref)
+		if a.buffer.detached || b.buffer.detached || b.length > a.length || !tsNodeAssertPartialBytes(a.buffer.data[a.offset:a.offset+a.length], b.buffer.data[b.offset:b.offset+b.length]) { return false }
+		return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+	}
+	if actual.kind == tsArrayBufferKind || expected.kind == tsArrayBufferKind {
+		if actual.kind != expected.kind { return false }
+		a, b := (*tsArrayBuffer)(actual.ref), (*tsArrayBuffer)(expected.ref)
+		if a.detached || b.detached || !tsNodeAssertPartialBytes(a.data, b.data) { return false }
+		return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+	}
+	if tsNodeAssertErrorValue(actual) || tsNodeAssertErrorValue(expected) {
+		if !tsNodeAssertErrorValue(actual) || !tsNodeAssertErrorValue(expected) { return false }
+		for _, name := range []string{"message", "name", "errors"} {
+			want := tsGet(expected, tsStringReference(tsStringUTF8(name)))
+			if tsIsUndefined(want) || name == "message" && want.kind == tsStringKind && len((*tsString)(want.ref).units) == 0 { continue }
+			if !tsNodeAssertPartialDeep(loop, tsGet(actual, tsStringReference(tsStringUTF8(name))), want, actualSeen, expectedSeen) { return false }
+		}
+		cause := tsStringReference(tsStringUTF8("cause"))
+		if tsObjectHasOwn(expected, "cause") && (!tsObjectHasOwn(actual, "cause") || !tsNodeAssertPartialDeep(loop, tsGet(actual, cause), tsGet(expected, cause), actualSeen, expectedSeen)) { return false }
+		return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+	}
+	if actual.kind == tsObjectKind && expected.kind == tsObjectKind {
+		a, b := (*tsObject)(actual.ref), (*tsObject)(expected.ref)
+		if a.nativeDate || b.nativeDate {
+			if !a.nativeDate || !b.nativeDate || !(a.nativeTime == b.nativeTime || math.IsNaN(a.nativeTime) && math.IsNaN(b.nativeTime)) { return false }
+			return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+		}
+		if a.nodeURL != nil || b.nodeURL != nil {
+			if a.nodeURL == nil || b.nodeURL == nil || tsText(tsNodeURLField(a.nodeURL, "href")) != tsText(tsNodeURLField(b.nodeURL, "href")) { return false }
+			return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+		}
+		if a.boxedPrimitive.kind != tsUndefinedKind || b.boxedPrimitive.kind != tsUndefinedKind {
+			if a.boxedPrimitive.kind == tsUndefinedKind || b.boxedPrimitive.kind == tsUndefinedKind || !tsSameValue(a.boxedPrimitive, b.boxedPrimitive) { return false }
+			return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+		}
+	}
+	if actual.kind == tsRegExpKind || expected.kind == tsRegExpKind {
+		if actual.kind != tsRegExpKind || expected.kind != tsRegExpKind { return false }
+		a, b := (*tsRegExp)(actual.ref), (*tsRegExp)(expected.ref)
+		if tsStringEqual(a.source, b.source) == false || a.flags != b.flags || !tsSameValue(tsRegExpGetLastIndex(loop, actual), tsRegExpGetLastIndex(loop, expected)) { return false }
+		return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+	}
+	if actual.kind == tsArrayKind || expected.kind == tsArrayKind {
+		if actual.kind != tsArrayKind || expected.kind != tsArrayKind { return false }
+		a, b := (*tsArray)(actual.ref), (*tsArray)(expected.ref)
+		if b.length() > a.length() { return false }
+		pos := 0
+		for i := 0; i < b.length(); i++ {
+			last := a.length() - b.length() + i
+			matched := false
+			for pos <= last {
+				if tsNodeAssertPartialDeep(loop, a.at(pos), b.at(i), actualSeen, expectedSeen) { matched = true; pos++; break }
+				pos++
+			}
+			if !matched { return false }
+		}
+		return tsNodeAssertPartialProperties(loop, actual, expected, true, actualSeen, expectedSeen)
+	}
+	if actual.kind != tsObjectKind && actual.kind != tsInstanceKind || expected.kind != tsObjectKind && expected.kind != tsInstanceKind { return false }
+	if actual.kind == tsObjectKind && expected.kind == tsObjectKind {
+		if (tsNodeCryptoKeyFor(actual) != nil || tsNodeCryptoKeyFor(expected) != nil) && (tsNodeCryptoKeyFor(actual) == nil || tsNodeCryptoKeyFor(expected) == nil || !tsNodeCryptoKeysEqual(tsNodeCryptoKeyFor(actual), tsNodeCryptoKeyFor(expected))) { return false }
+	}
+	return tsNodeAssertPartialProperties(loop, actual, expected, false, actualSeen, expectedSeen)
+}
+
 func tsNodeAssertMatch(loop *tsLoop,actual,expected tsValue) bool {
 	if expected.kind==tsRegExpKind {
 		input:=tsStringValueWithLoop(loop,actual);return tsRegExpExecReceiver(loop,expected,input).kind!=tsNullKind
@@ -78,7 +264,7 @@ func tsNodeAssertMethod(name string) tsValue {
 		case "equal","notEqual": if len(args)<2{tsNodeAssertMissing("expected")};same:=tsLooseEqual(actual,expected)||(tsIsNumeric(actual)&&tsIsNumeric(expected)&&math.IsNaN(tsNumber(actual))&&math.IsNaN(tsNumber(expected)));if (name=="equal"&&!same)||(name=="notEqual"&&same){operator:="==";if name=="notEqual"{operator="!="};tsNodeAssertFail(loop,message,actual,expected,operator)}
 		case "strictEqual","notStrictEqual": if len(args)<2{tsNodeAssertMissing("expected")};same:=tsSameValue(actual,expected);if (name=="strictEqual"&&!same)||(name=="notStrictEqual"&&same){operator:="strictEqual";if name=="notStrictEqual"{operator="notStrictEqual"};tsNodeAssertFail(loop,message,actual,expected,operator)}
 		case "deepEqual","notDeepEqual","deepStrictEqual","notDeepStrictEqual","partialDeepStrictEqual":
-			if len(args)<2{tsNodeAssertMissing("expected")};strict:=name=="deepStrictEqual"||name=="notDeepStrictEqual"||name=="partialDeepStrictEqual";same:=tsNodeAssertDeep(loop,actual,expected,strict,map[tsNodeAssertPair]bool{});if name=="partialDeepStrictEqual"{same=tsNodeAssertMatch(loop,actual,expected)};if name=="notDeepEqual"||name=="notDeepStrictEqual"{same=!same};if !same{tsNodeAssertFail(loop,message,actual,expected,name)}
+			if len(args)<2{tsNodeAssertMissing("expected")};strict:=name=="deepStrictEqual"||name=="notDeepStrictEqual"||name=="partialDeepStrictEqual";same:=false;if name=="partialDeepStrictEqual"{same=tsNodeAssertPartialDeep(loop,actual,expected,map[unsafe.Pointer]bool{},map[unsafe.Pointer]bool{})}else{same=tsNodeAssertDeep(loop,actual,expected,strict,map[tsNodeAssertPair]bool{})};if name=="notDeepEqual"||name=="notDeepStrictEqual"{same=!same};if !same{tsNodeAssertFail(loop,message,actual,expected,name)}
 		case "throws","doesNotThrow":
 			if len(args)==0{tsNodeAssertMissing("fn")};callback:=actual;want:=expected;msg:=message;if len(args)==2&&want.kind==tsStringKind{msg=want;want=tsU};thrown,didThrow:=tsNodeAssertThrown(loop,callback)
 			if name=="throws" {if !didThrow||!tsIsUndefined(want)&&!tsNodeAssertMatch(loop,thrown,want){tsNodeAssertFail(loop,msg,thrown,want,"throws")}} else if didThrow {if tsIsUndefined(want)||tsNodeAssertMatch(loop,thrown,want){tsNodeAssertFail(loop,msg,thrown,tsU,"doesNotThrow")};panic(tsThrown{thrown})}

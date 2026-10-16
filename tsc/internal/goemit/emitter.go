@@ -510,9 +510,9 @@ func (b *machineBuilder) finish() string {
 	if b.module {
 		out.WriteString("func(module *tsModule) {\n")
 	} else if b.dynamicReceiver {
-		fmt.Fprintf(&out, "func(%s) *tsFunction { var function *tsFunction;function = &tsFunction{name:%q,length:%d,constructible:%t,generator:%t,asyncGeneratorFunction:%t,receiverCall:func(loop *tsLoop,receiver tsValue,args ...tsValue) tsValue {\n", strings.Join(captures, ","), functionName(b.owner), functionLength(b.owner), !b.async && !b.generator && b.owner != nil && (b.owner.Kind == ast.KindFunctionDeclaration || b.owner.Kind == ast.KindFunctionExpression), b.generator, b.async && b.generator)
+		fmt.Fprintf(&out, "func(%s) *tsFunction { var function *tsFunction;function = &tsFunction{name:%q,length:%d,constructible:%t,generator:%t,async:%t,asyncGeneratorFunction:%t,receiverCall:func(loop *tsLoop,receiver tsValue,args ...tsValue) tsValue {\n", strings.Join(captures, ","), functionName(b.owner), functionLength(b.owner), !b.async && !b.generator && b.owner != nil && (b.owner.Kind == ast.KindFunctionDeclaration || b.owner.Kind == ast.KindFunctionExpression), b.generator, b.async, b.async && b.generator)
 	} else {
-		fmt.Fprintf(&out, "func(%s) *tsFunction { return tsFunc(func(args ...tsValue) tsValue {\n", strings.Join(captures, ","))
+		fmt.Fprintf(&out, "func(%s) *tsFunction { function:=tsFunc(func(args ...tsValue) tsValue {\n", strings.Join(captures, ","))
 	}
 	if b.dynamicReceiver && observesThis(b.owner) {
 		fmt.Fprintf(&out, "receiver=tsFunctionReceiver(receiver,%t)\n", strictFunction(b.owner))
@@ -557,7 +557,7 @@ func (b *machineBuilder) finish() string {
 	if b.dynamicReceiver {
 		fmt.Fprintf(&out, "}};return function }(%s)", strings.Join(args, ","))
 	} else {
-		fmt.Fprintf(&out, "}) }(%s)", strings.Join(args, ","))
+		fmt.Fprintf(&out, "});function.name=%q;function.length=%d;function.generator=%t;function.async=%t;function.asyncGeneratorFunction=%t;return function }(%s)", functionName(b.owner), functionLength(b.owner), b.generator, b.async, b.async && b.generator, strings.Join(args, ","))
 	}
 	return out.String()
 }

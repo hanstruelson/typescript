@@ -7,6 +7,7 @@ package goemit
 // User workers have their own loop and share application references explicitly.
 const Runtime = `import (
  "context"
+ "database/sql"
  "unsafe"
  "weak"
  "bytes"
@@ -14,6 +15,7 @@ const Runtime = `import (
 	"compress/flate"
 	"compress/gzip"
 	"compress/zlib"
+	brotli "github.com/andybalholm/brotli"
 	zstd "github.com/klauspost/compress/zstd"
  "crypto"
  "crypto/aes"
@@ -31,8 +33,10 @@ const Runtime = `import (
  "crypto/sha256"
  "crypto/sha512"
  "crypto/x509"
+ "crypto/x509/pkix"
  cryptotls "crypto/tls"
  "encoding/base64"
+ "encoding/asn1"
  "encoding/binary"
  "encoding/hex"
  "encoding/json"
@@ -47,6 +51,18 @@ const Runtime = `import (
  "runtime"
  "syscall"
  "golang.org/x/sys/unix"
+ "golang.org/x/term"
+ "golang.org/x/net/http2/hpack"
+	cryptargon2 "github.com/microsoft/TypeScript/tsc/third_party/go-argon2/argon2"
+	cryptoblake2b "golang.org/x/crypto/blake2b"
+	cryptoblake2s "golang.org/x/crypto/blake2s"
+	cryptoripemd160 "golang.org/x/crypto/ripemd160"
+	cryptosha3 "golang.org/x/crypto/sha3"
+	cryptopbkdf2 "golang.org/x/crypto/pbkdf2"
+	cryptopkcs12 "golang.org/x/crypto/pkcs12"
+	sqlite3 "github.com/mattn/go-sqlite3"
+	quicgo "github.com/quic-go/quic-go"
+	quicqpack "github.com/quic-go/qpack"
  "sync"
  "sync/atomic"
  "fmt"
@@ -77,7 +93,7 @@ func (c *tsCell) get() tsValue {if !c.initialized {panic(tsThrown{tsErrorValue(&
 func (c *tsCell) init(value tsValue) tsValue {if c.arrayKind!=""{value=tsValue(tsArrayBoundary(value,c.arrayKind,c.arrayNulls,c.arrayCoerce))};c.value = value; c.initialized = true; return value }
 func (c *tsCell) set(value tsValue) tsValue { if !c.initialized { panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Cannot access binding before initialization"})}) }; if c.constant { panic("Assignment to constant variable") }; if c.arrayKind!=""{value=tsValue(tsArrayBoundary(value,c.arrayKind,c.arrayNulls,c.arrayCoerce))};c.value = value; return value }
 func tsClone(c *tsCell) *tsCell { value := *c; return &value }
-type tsFunction struct {generator,asyncGeneratorFunction bool;name string;length int;constructible bool;prototypeOnce,metadataOnce sync.Once;metadataRef atomic.Pointer[tsObject];prototype,internalPrototype,boundTarget,boundReceiver tsValue;boundArgs []tsValue;receiverCall func(*tsLoop,tsValue,...tsValue)tsValue;construct func(*tsLoop,...tsValue)tsValue;properties *tsObject;call func(*tsLoop,...tsValue) tsValue}
+type tsFunction struct {generator,async,asyncGeneratorFunction bool;name string;length int;constructible bool;prototypeOnce,metadataOnce sync.Once;metadataRef atomic.Pointer[tsObject];prototype,internalPrototype,boundTarget,boundReceiver tsValue;boundArgs []tsValue;receiverCall func(*tsLoop,tsValue,...tsValue)tsValue;construct func(*tsLoop,...tsValue)tsValue;properties *tsObject;call func(*tsLoop,...tsValue) tsValue}
 func tsFunc(call func(*tsLoop,...tsValue)tsValue)*tsFunction{return &tsFunction{call:call}}
 func tsCall(loop *tsLoop,value tsValue,args ...tsValue)tsValue{if value.kind==tsClassKind{class:=(*tsClass)(value.ref);switch class.builtin{case "Date":return tsStringReference(tsStringUTF8(tsDateHuman(time.Now().In(tsDateLocal()),"toString")));case "Array","Buffer","ReadStream","WriteStream":return tsConstruct(value,args...);case "Stats","BigIntStats","StatFs","BigIntStatFs":return class.construct(args...);case "Dirent":panic(tsThrown{tsFSException("TypeError","ERR_ILLEGAL_CONSTRUCTOR","Dirent constructor cannot be called as a function")})}};if value.kind!=tsFunctionKind{tsPropertyFailure("Value is not callable")};function:=(*tsFunction)(value.ref);if function.receiverCall!=nil{return function.receiverCall(loop,tsU,args...)};return function.call(loop,args...)}
 func tsArg(args []tsValue, index int) tsValue { if index < len(args) { return args[index] }; return tsU }
@@ -216,6 +232,8 @@ type tsThrown struct {value tsValue}
 func tsUnwrap(value any)tsValue{switch v:=value.(type){case tsThrown:return v.value;case tsValue:return v;case error:return tsStringReference(tsStringUTF8(v.Error()));case string:return tsStringReference(tsStringUTF8(v));case nil:return tsNull;default:return tsStringReference(tsStringUTF8(fmt.Sprint(v)))}}
 type tsResult struct { value tsValue; rejected bool }
 type tsAsyncContextFrame struct { storage unsafe.Pointer; value tsValue; prev *tsAsyncContextFrame; masked map[unsafe.Pointer]bool }
+var tsAsyncContextTrackingEnabled atomic.Bool
+func tsSetAsyncContextTrackingEnabled(enabled bool){tsAsyncContextTrackingEnabled.Store(enabled)}
 func tsWithAsyncContext(loop *tsLoop, context *tsAsyncContextFrame, callback func()) { previous:=loop.asyncContext; loop.asyncContext=context; defer func(){loop.asyncContext=previous}(); callback() }
 type tsPromise struct {mu sync.Mutex; loop *tsLoop; properties *tsObject; settled, handled bool; result tsResult; listeners []func(tsResult) }
 // A task is registered and finished by the loop. The worker exclusively writes

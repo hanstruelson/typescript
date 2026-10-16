@@ -15,13 +15,14 @@ type tsNodeWorkerPortState struct {
 type tsNodeWorkerDOMListener struct { original, wrapper tsValue; once bool }
 type tsNodeWorkerState struct { object *tsObject; id int; name string; exited, refed bool; stdin, stdout, stderr, workerData tsValue }
 type tsNodeBroadcastGroup struct { ports []*tsNodeWorkerPortState }
+type tsNodeWorkerEnvironmentEntry struct { key, value tsValue }
 var tsNodeWorkerThreads struct {
 	sync.Once
 	module, workerConstructor, workerPrototype, portConstructor, portPrototype, channelConstructor, broadcastConstructor, broadcastPrototype tsValue
 	ports map[*tsObject]*tsNodeWorkerPortState
 	workers map[*tsObject]*tsNodeWorkerState
 	channels map[string]*tsNodeBroadcastGroup
-	environment map[string]tsValue
+	environment []tsNodeWorkerEnvironmentEntry
 	markedUntransferable map[uintptr]bool
 	markedUncloneable map[uintptr]bool
 	shareEnv tsValue
@@ -32,6 +33,9 @@ var tsNodeWorkerThreads struct {
 }
 
 func tsNodeWorkerKey(name string) tsValue { return tsStringReference(tsStringUTF8(name)) }
+func tsNodeWorkerCloneValue(loop *tsLoop,value tsValue)tsValue{return tsNodeV8Decode(loop,tsNodeV8Encode(loop,value))}
+func tsNodeWorkerGetEnvironmentData(loop *tsLoop,key tsValue)tsValue{for index:=len(tsNodeWorkerThreads.environment)-1;index>=0;index--{entry:=tsNodeWorkerThreads.environment[index];if tsSameValueZero(entry.key,key){return tsNodeWorkerCloneValue(loop,entry.value)}};return tsU}
+func tsNodeWorkerSetEnvironmentData(loop *tsLoop,key,value tsValue){for index:=range tsNodeWorkerThreads.environment{if tsSameValueZero(tsNodeWorkerThreads.environment[index].key,key){if tsIsUndefined(value){tsNodeWorkerThreads.environment=append(tsNodeWorkerThreads.environment[:index],tsNodeWorkerThreads.environment[index+1:]...)}else{tsNodeWorkerThreads.environment[index].value=tsNodeWorkerCloneValue(loop,value)};return}};if !tsIsUndefined(value){tsNodeWorkerThreads.environment=append(tsNodeWorkerThreads.environment,tsNodeWorkerEnvironmentEntry{key:key,value:tsNodeWorkerCloneValue(loop,value)})}}
 func tsNodeWorkerObject(loop *tsLoop,values map[string]tsValue) tsValue { object:=tsNewObject();for name,value:=range values{object.set(name,value)};return tsObjectValue(object) }
 func tsNodeWorkerError(name,code,message string) tsValue { return tsErrorValue(&tsRuntimeError{name:name,message:message,fields:map[string]tsValue{"code":tsNodeWorkerKey(code)}}) }
 func tsNodeWorkerPortFor(receiver tsValue) *tsNodeWorkerPortState { if receiver.kind!=tsObjectKind{return nil};return tsNodeWorkerThreads.ports[(*tsObject)(receiver.ref)] }
@@ -44,7 +48,7 @@ func tsNodeWorkerPortCreate(loop *tsLoop,name string) tsValue {
 	object.set("onmessage",tsU);object.set("onmessageerror",tsU)
 	object.set("postMessage",tsNamedNativeMethod("postMessage",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{
 		port:=tsNodeWorkerPortFor(receiver);if port==nil{tsPropertyFailure("Illegal invocation")};if port.closed{panic(tsThrown{tsNodeWorkerError("Error","ERR_CLOSED_MESSAGE_PORT","Cannot send data on a closed MessagePort")})}
-		data:=tsArg(args,0);if port.name!=""{group:=tsNodeWorkerThreads.channels[port.name];if group!=nil{for _,other:=range group.ports{if other!=port&&!other.closed{other.queue=append(other.queue,data);tsNodeWorkerPortSchedule(loop,other)}}}}else if port.peer!=nil&&!port.peer.closed{port.peer.queue=append(port.peer.queue,data);tsNodeWorkerPortSchedule(loop,port.peer)}
+		data:=tsNodeWorkerCloneValue(loop,tsArg(args,0));if port.name!=""{group:=tsNodeWorkerThreads.channels[port.name];if group!=nil{for _,other:=range group.ports{if other!=port&&!other.closed{other.queue=append(other.queue,tsNodeWorkerCloneValue(loop,data));tsNodeWorkerPortSchedule(loop,other)}}}}else if port.peer!=nil&&!port.peer.closed{port.peer.queue=append(port.peer.queue,data);tsNodeWorkerPortSchedule(loop,port.peer)}
 		return tsU
 	}))
 	object.set("start",tsNamedNativeMethod("start",0,func(loop *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if port:=tsNodeWorkerPortFor(receiver);port!=nil{port.started=true;tsNodeWorkerPortSchedule(loop,port)};return tsU}))
@@ -92,18 +96,18 @@ func tsNodeWorkerMakeChannel(loop *tsLoop) tsValue {left:=tsNodeWorkerPortCreate
 
 func tsNodeWorkerCreate(loop *tsLoop,args []tsValue) tsValue {
 	filename,options:=tsArg(args,0),tsArg(args,1);if tsIsUndefined(filename){panic(tsThrown{tsNodeWorkerError("TypeError","ERR_MISSING_ARGS","The \"filename\" argument is required")})}
-	if filename.kind!=tsStringKind{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \"filename\" argument must be of type string")})}
+	if filename.kind==tsObjectKind&&(*tsObject)(filename.ref).nodeURL!=nil||filename.kind==tsStringKind&&strings.HasPrefix(strings.ToLower(tsText(filename)),"file:"){filename=tsStringReference(tsStringUTF8(tsNodeURLAsFilePath(loop,filename,runtime.GOOS=="windows")))};if filename.kind!=tsStringKind{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \"filename\" argument must be of type string or an instance of URL")})}
 	if tsNullish(options){options=tsObjectValue(tsNewObject())};if options.kind!=tsObjectKind&&options.kind!=tsInstanceKind{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \"options\" argument must be an object")})}
 	eval:=tsTruthy(tsGet(loop,options,tsNodeWorkerKey("eval")));file:=tsText(filename);if !eval&&!filepath.IsAbs(file)&&!strings.HasPrefix(file,"./")&&!strings.HasPrefix(file,"../"){panic(tsThrown{tsNodeWorkerError("TypeError","ERR_WORKER_PATH","The worker script or module filename must be an absolute path or a relative path starting with './' or '../'. Received \""+file+"\"")})}
-	name:=tsGet(loop,options,tsNodeWorkerKey("name"));workerName:="";if tsTruthy(name){if name.kind!=tsStringKind{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \"options.name\" argument must be of type string")})};workerName=strings.TrimSpace(tsText(name))}
+	name:=tsGet(loop,options,tsNodeWorkerKey("name"));workerName:="";if !tsIsUndefined(name){if name.kind!=tsStringKind{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \"options.name\" argument must be of type string")})};workerName=tsText(name)}
 	tsNodeEventsInit(loop);value:=tsNodeEventCreate(loop,tsU,tsU);object:=(*tsObject)(value.ref);object.prototype=tsObjectValue((*tsObject)(tsNodeWorkerThreads.workerPrototype.ref))
-	tsNodeWorkerThreads.nextWorkerID++;state:=&tsNodeWorkerState{object:object,id:tsNodeWorkerThreads.nextWorkerID,name:workerName,refed:true,workerData:tsGet(loop,options,tsNodeWorkerKey("workerData"))};tsNodeWorkerThreads.workers[object]=state
+	workerData:=tsGet(loop,options,tsNodeWorkerKey("workerData"));if !tsIsUndefined(workerData){workerData=tsNodeWorkerCloneValue(loop,workerData)};tsNodeWorkerThreads.nextWorkerID++;state:=&tsNodeWorkerState{object:object,id:tsNodeWorkerThreads.nextWorkerID,name:workerName,refed:true,workerData:workerData};tsNodeWorkerThreads.workers[object]=state
 	object.set("threadId",tsNumberValue(float64(state.id)));object.set("threadName",tsStringReference(tsStringUTF8(workerName)));object.set("workerData",state.workerData);object.set("stdin",tsNull);object.set("stdout",tsNull);object.set("stderr",tsNull)
 	performance:=tsNewObject();performance.set("eventLoopUtilization",tsNamedNativeMethod("eventLoopUtilization",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsNodeWorkerObject(loop,map[string]tsValue{"idle":tsNumberValue(0),"active":tsNumberValue(0),"utilization":tsNumberValue(0)})}));object.set("performance",tsObjectValue(performance))
 	return value
 }
 func tsNodeWorkerThreadID(receiver tsValue) tsValue {state:=tsNodeWorkerFor(receiver);if state==nil{return tsNumberValue(0)};return tsNumberValue(float64(state.id))}
-func tsNodeWorkerTerminate(loop *tsLoop,receiver tsValue) tsValue {state:=tsNodeWorkerFor(receiver);promise:=loop.promise();if state==nil||state.exited{promise.settle(tsResult{tsU,false});return tsPromiseValue(promise)};state.exited=true;state.object.set("threadName",tsNull);state.object.set("stdin",tsNull);state.object.set("stdout",tsNull);state.object.set("stderr",tsNull);tsNodeEventEmit(loop,tsNodeEventState(receiver),tsNodeWorkerKey("exit"),[]tsValue{tsNumberValue(1)});promise.settle(tsResult{tsNumberValue(1),false});return tsPromiseValue(promise)}
+func tsNodeWorkerTerminate(loop *tsLoop,receiver tsValue) tsValue {state:=tsNodeWorkerFor(receiver);promise:=loop.promise();if state==nil||state.exited{promise.settle(tsResult{tsU,false});return tsPromiseValue(promise)};state.exited=true;state.object.set("threadId",tsNumberValue(-1));state.object.set("threadName",tsNull);state.object.set("stdin",tsNull);state.object.set("stdout",tsNull);state.object.set("stderr",tsNull);tsNodeEventEmit(loop,tsNodeEventState(receiver),tsNodeWorkerKey("exit"),[]tsValue{tsNumberValue(1)});promise.settle(tsResult{tsNumberValue(1),false});return tsPromiseValue(promise)}
 func tsNodeWorkerSnapshot(loop *tsLoop) tsValue {module:=tsInternalStreamReadableModule(loop);constructor:=tsGet(loop,module,tsNodeWorkerKey("Readable"));text:="{}";sent:=false;var stream tsValue;options:=tsNewObject();options.set("read",tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{if !sent{sent=true;tsCallReceiver(loop,tsGet(loop,stream,tsNodeWorkerKey("push")),stream,tsStringReference(tsStringUTF8(text)));tsCallReceiver(loop,tsGet(loop,stream,tsNodeWorkerKey("push")),stream,tsNull)};return tsU})));stream=tsConstruct(constructor,tsObjectValue(options));return stream}
 func tsNodeWorkerValidateOptions(loop *tsLoop,options tsValue,name string) {if tsIsUndefined(options)||tsIsNull(options){return};if options.kind!=tsObjectKind&&options.kind!=tsInstanceKind{panic(tsThrown{tsNodeWorkerError("TypeError","ERR_INVALID_ARG_TYPE","The \""+name+"\" argument must be an object")})}}
 func tsNodeWorkerPromise(loop *tsLoop,value tsValue,rejected bool) tsValue {return tsPromiseValue(loop.resolved(value,rejected))}
@@ -111,10 +115,10 @@ func tsNodeWorkerPostMessageToThread(loop *tsLoop,args []tsValue) tsValue {id:=t
 
 func tsNodeWorkerThreadsInit(loop *tsLoop) {
 	tsNodeWorkerThreads.Do(func(){
-		tsNodeEventsInit(loop);tsNodeWorkerThreads.ports=map[*tsObject]*tsNodeWorkerPortState{};tsNodeWorkerThreads.workers=map[*tsObject]*tsNodeWorkerState{};tsNodeWorkerThreads.channels=map[string]*tsNodeBroadcastGroup{};tsNodeWorkerThreads.environment=map[string]tsValue{};tsNodeWorkerThreads.markedUntransferable=map[uintptr]bool{};tsNodeWorkerThreads.markedUncloneable=map[uintptr]bool{};tsNodeWorkerThreads.threadID=0;tsNodeWorkerThreads.isMainThread=true;tsNodeWorkerThreads.threadName=tsNull
+		tsNodeEventsInit(loop);tsNodeWorkerThreads.ports=map[*tsObject]*tsNodeWorkerPortState{};tsNodeWorkerThreads.workers=map[*tsObject]*tsNodeWorkerState{};tsNodeWorkerThreads.channels=map[string]*tsNodeBroadcastGroup{};tsNodeWorkerThreads.environment=[]tsNodeWorkerEnvironmentEntry{};tsNodeWorkerThreads.markedUntransferable=map[uintptr]bool{};tsNodeWorkerThreads.markedUncloneable=map[uintptr]bool{};tsNodeWorkerThreads.threadID=0;tsNodeWorkerThreads.isMainThread=true;tsNodeWorkerThreads.threadName=tsNull
 		eventProto:=tsNodeEventsSingleton.prototype;workerProto:=tsNewObject();workerProto.prototype=tsObjectValue(eventProto);tsNodeWorkerThreads.workerPrototype=tsObjectValue(workerProto)
 		workerProto.set("ref",tsNamedNativeMethod("ref",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if state:=tsNodeWorkerFor(receiver);state!=nil{state.refed=true};return receiver}));workerProto.set("unref",tsNamedNativeMethod("unref",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if state:=tsNodeWorkerFor(receiver);state!=nil{state.refed=false};return receiver}))
-		workerProto.set("postMessage",tsNamedNativeMethod("postMessage",1,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{if state:=tsNodeWorkerFor(receiver);state==nil||state.exited{return tsU};return tsU}))
+		workerProto.set("postMessage",tsNamedNativeMethod("postMessage",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeWorkerFor(receiver);if state==nil||state.exited{return tsU};_ = tsNodeWorkerCloneValue(loop,tsArg(args,0));return tsU}))
 		workerProto.set("terminate",tsNamedNativeMethod("terminate",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeWorkerTerminate(loop,receiver)}))
 		workerProto.set("getHeapSnapshot",tsNamedNativeMethod("getHeapSnapshot",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{tsNodeWorkerValidateOptions(loop,tsArg(args,0),"options");return tsNodeWorkerPromise(loop,tsNodeWorkerSnapshot(loop),false)}))
 		workerProto.set("getHeapStatistics",tsNamedNativeMethod("getHeapStatistics",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsNodeWorkerPromise(loop,tsNodeWorkerObject(loop,map[string]tsValue{"totalHeapSize":tsNumberValue(0),"totalHeapSizeExecutable":tsNumberValue(0),"totalPhysicalSize":tsNumberValue(0),"totalAvailableSize":tsNumberValue(0),"usedHeapSize":tsNumberValue(0),"heapSizeLimit":tsNumberValue(0),"mallocedMemory":tsNumberValue(0),"peakMallocedMemory":tsNumberValue(0),"doesZapGarbage":tsBooleanValue(false)}),false)}))
@@ -132,8 +136,8 @@ func tsNodeWorkerThreadsInit(loop *tsLoop) {
 		workerCtor:=tsFunc(func(_ *tsLoop,_ ...tsValue)tsValue{tsPropertyFailure("Class constructor Worker cannot be invoked without 'new'");return tsU});workerCtor.name="Worker";workerCtor.constructible=true;workerCtor.construct=func(loop *tsLoop,args ...tsValue)tsValue{return tsNodeWorkerCreate(loop,args)};workerCtor.properties=tsNewObject();workerCtor.properties.set("prototype",tsObjectValue(workerProto));tsNodeWorkerThreads.workerConstructor=tsFunctionValue(workerCtor)
 		module:=tsNewObject();module.set("Worker",tsNodeWorkerThreads.workerConstructor);module.set("MessagePort",tsNodeWorkerThreads.portConstructor);module.set("MessageChannel",tsNodeWorkerThreads.channelConstructor);module.set("BroadcastChannel",tsNodeWorkerThreads.broadcastConstructor);module.set("workerData",tsU);module.set("parentPort",tsNull);module.set("resourceLimits",tsObjectValue(tsNewObject()));module.set("isMainThread",tsBooleanValue(true));module.set("isInternalThread",tsBooleanValue(false));module.set("threadId",tsNumberValue(0));module.set("threadName",tsNull);module.set("SHARE_ENV",share)
 		module.set("receiveMessageOnPort",tsNamedNativeMethod("receiveMessageOnPort",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeWorkerReceive(loop,args)}))
-		module.set("getEnvironmentData",tsNamedNativeMethod("getEnvironmentData",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeWorkerThreads.environment[tsPropertyKey(tsArg(args,0))]}))
-		module.set("setEnvironmentData",tsNamedNativeMethod("setEnvironmentData",2,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{key:=tsPropertyKey(tsArg(args,0));value:=tsArg(args,1);if tsIsUndefined(value){delete(tsNodeWorkerThreads.environment,key)}else{tsNodeWorkerThreads.environment[key]=value};return tsU}))
+		module.set("getEnvironmentData",tsNamedNativeMethod("getEnvironmentData",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeWorkerGetEnvironmentData(loop,tsArg(args,0))}))
+		module.set("setEnvironmentData",tsNamedNativeMethod("setEnvironmentData",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{tsNodeWorkerSetEnvironmentData(loop,tsArg(args,0),tsArg(args,1));return tsU}))
 		module.set("markAsUntransferable",tsNamedNativeMethod("markAsUntransferable",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{value:=tsArg(args,0);if value.kind==tsObjectKind||value.kind==tsArrayKind||value.kind==tsTypedArrayKind{tsNodeWorkerThreads.markedUntransferable[uintptr(value.ref)]=true};return tsU}))
 		module.set("markAsUncloneable",tsNamedNativeMethod("markAsUncloneable",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{value:=tsArg(args,0);if value.kind==tsObjectKind||value.kind==tsArrayKind||value.kind==tsTypedArrayKind{tsNodeWorkerThreads.markedUncloneable[uintptr(value.ref)]=true};return tsU}))
 		module.set("isMarkedAsUntransferable",tsNamedNativeMethod("isMarkedAsUntransferable",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsBooleanValue(tsNodeWorkerThreads.markedUntransferable[uintptr(tsArg(args,0).ref)])}))

@@ -24,7 +24,46 @@ const nodeProcessRuntime = `
 var tsNodeProcessSingleton tsNodeProcessState
 var tsNodeProcessStarted=time.Now()
 var tsNodeProcessSignalMu sync.Mutex
-var tsNodeProcessSignalWatch=map[string]bool{}
+type tsNodeProcessSignalWatcher struct { channel chan os.Signal; stop chan struct{}; done chan struct{}; signal syscall.Signal }
+var tsNodeProcessSignalWatch=map[string]*tsNodeProcessSignalWatcher{}
+type tsNodeProcessMemoryPressureWatcher struct { stop chan struct{}; done chan struct{} }
+var tsNodeProcessMemoryPressureWatcherState *tsNodeProcessMemoryPressureWatcher
+var tsNodeProcessMemoryPressureInstalled bool
+
+func tsNodeProcessMemoryPressureListenerChange(loop *tsLoop,process *tsObject,event string) {
+	if process!=tsNodeProcessSingleton.value||event!="memoryPressure"{return}
+	state:=tsNodeEventState(tsObjectValue(process));if state==nil{return}
+	if len(state.events[event])!=0{tsNodeProcessMemoryPressureInstall(loop);return}
+	tsNodeProcessMemoryPressureUninstall()
+}
+func tsNodeProcessMemoryPressureInstall(loop *tsLoop) {
+	if tsNodeProcessMemoryPressureInstalled{return};tsNodeProcessMemoryPressureInstalled=true
+	if runtime.GOOS!="linux"&&runtime.GOOS!="android"{return}
+	fd,lastTotal,ok:=tsNodeProcessOpenPSI();if !ok{return}
+	watcher:=&tsNodeProcessMemoryPressureWatcher{stop:make(chan struct{}),done:make(chan struct{})};tsNodeProcessMemoryPressureWatcherState=watcher
+	go tsNodeProcessPollPSI(loop,fd,lastTotal,watcher)
+}
+func tsNodeProcessMemoryPressureUninstall() {
+	if !tsNodeProcessMemoryPressureInstalled{return};tsNodeProcessMemoryPressureInstalled=false
+	watcher:=tsNodeProcessMemoryPressureWatcherState;tsNodeProcessMemoryPressureWatcherState=nil
+	if watcher!=nil{close(watcher.stop);<-watcher.done}
+}
+func tsNodeProcessOpenPSI()(int,uint64,bool) {
+	paths:=[]string{"/proc/pressure/memory"}
+	if data,err:=os.ReadFile("/proc/self/cgroup");err==nil{for _,line:=range strings.Split(string(data),"\n"){if strings.HasPrefix(line,"0::"){group:=strings.TrimPrefix(strings.TrimPrefix(line,"0::"),"/");path:="/sys/fs/cgroup/";if group!=""{path+=group+"/"};paths=append(paths,path+"memory.pressure");break}}}
+	for _,path:=range paths{fd,err:=unix.Open(path,unix.O_RDWR|unix.O_NONBLOCK|unix.O_CLOEXEC,0);if err!=nil{continue};var contents [256]byte;n,readErr:=unix.Pread(fd,contents[:],0);lastTotal:=uint64(0);if readErr==nil{if value,ok:=tsNodeProcessPSISomeTotal(contents[:n]);ok{lastTotal=value}};trigger:=[]byte("some 150000 2000000\x00");written,writeErr:=unix.Write(fd,trigger);if writeErr==nil&&written==len(trigger){return fd,lastTotal,true};_=unix.Close(fd)}
+	return -1,0,false
+}
+func tsNodeProcessPSISomeTotal(contents []byte)(uint64,bool) {
+	for _,line:=range strings.Split(string(contents),"\n"){if !strings.HasPrefix(line,"some "){continue};_,value,ok:=strings.Cut(line,"total=");if !ok{return 0,false};end:=0;for end<len(value)&&value[end]>='0'&&value[end]<='9'{end++};if end==0{return 0,false};total,err:=strconv.ParseUint(value[:end],10,64);return total,err==nil};return 0,false
+}
+func tsNodeProcessPollPSI(loop *tsLoop,fd int,lastTotal uint64,watcher *tsNodeProcessMemoryPressureWatcher) {
+	defer close(watcher.done);defer unix.Close(fd);poll:=[]unix.PollFd{{Fd:int32(fd),Events:int16(unix.POLLPRI)}}
+	for{select{case <-watcher.stop:return;default:};poll[0].Revents=0;count,err:=unix.Poll(poll,250);if err!=nil{if err==unix.EINTR{continue};return};if count==0{continue};if poll[0].Revents&int16(unix.POLLERR|unix.POLLHUP)!=0{return};if poll[0].Revents&int16(unix.POLLPRI)==0{continue}
+		var contents [256]byte;n,readErr:=unix.Pread(fd,contents[:],0);if readErr==nil{if total,ok:=tsNodeProcessPSISomeTotal(contents[:n]);ok{if total<lastTotal||total-lastTotal<150000{continue};lastTotal=total}}
+		select{case <-watcher.stop:return;default:};loop.post(func(){process:=tsNodeProcessSingleton.value;if process==nil{return};emit:=process.get("emit");if emit.kind==tsFunctionKind{tsCallReceiver(loop,emit,tsObjectValue(process),tsNodeProcessString("memoryPressure"),tsNodeProcessString("critical"))}})
+	}
+}
 
 func tsNodeProcessString(value string) tsValue { return tsStringReference(tsStringUTF8(value)) }
 func tsNodeProcessNumber(value int) tsValue { return tsNumberValue(float64(value)) }
@@ -68,9 +107,18 @@ func tsNodeProcessSignal(value tsValue) (syscall.Signal,bool) {
 func tsNodeProcessKill(pid int,signal syscall.Signal) int {
 	process,err:=os.FindProcess(pid);if err==nil{err=process.Signal(signal)};if err==nil{return 0};var errno syscall.Errno;if errors.As(err,&errno){return int(errno)};return 1
 }
-func tsNodeProcessWatchSignal(loop *tsLoop,process *tsObject,event tsValue) {
-	name:=tsText(event);signal,ok:=tsNodeProcessSignal(event);if !ok||signal==255{return};tsNodeProcessSignalMu.Lock();if tsNodeProcessSignalWatch[name]{tsNodeProcessSignalMu.Unlock();return};tsNodeProcessSignalWatch[name]=true;tsNodeProcessSignalMu.Unlock()
-	channel:=make(chan os.Signal,1);gosignal.Notify(channel,signal);go func(){for range channel{loop.post(func(){emit:=process.get("emit");if emit.kind==tsFunctionKind{tsCallReceiver(loop,emit,tsObjectValue(process),tsNodeProcessString(name))}})}}()
+func tsNodeProcessSignalListenerChange(loop *tsLoop,process *tsObject,event string) {
+	if process!=tsNodeProcessSingleton.value{return}
+	if event==""{tsNodeProcessSignalMu.Lock();names:=make([]string,0,len(tsNodeProcessSignalWatch));for name:=range tsNodeProcessSignalWatch{names=append(names,name)};tsNodeProcessSignalMu.Unlock();for _,name:=range names{state:=tsNodeEventState(tsObjectValue(process));if state==nil||len(state.events[name])==0{tsNodeProcessSignalStop(name)}};return}
+	if !strings.HasPrefix(event,"SIG"){return};signal,ok:=tsNodeProcessSignal(tsNodeProcessString(event));if !ok||signal==255||signal==syscall.SIGKILL||signal==syscall.SIGSTOP{return}
+	state:=tsNodeEventState(tsObjectValue(process));if state==nil{return};if len(state.events[event])==0{tsNodeProcessSignalStop(event);return};tsNodeProcessSignalStart(loop,process,event,signal)
+}
+func tsNodeProcessSignalStart(loop *tsLoop,process *tsObject,name string,signal syscall.Signal) {
+	tsNodeProcessSignalMu.Lock();if tsNodeProcessSignalWatch[name]!=nil{tsNodeProcessSignalMu.Unlock();return};watcher:=&tsNodeProcessSignalWatcher{channel:make(chan os.Signal,1),stop:make(chan struct{}),done:make(chan struct{}),signal:signal};tsNodeProcessSignalWatch[name]=watcher;gosignal.Notify(watcher.channel,signal);tsNodeProcessSignalMu.Unlock()
+	go func(){defer close(watcher.done);for{select{case <-watcher.stop:return;case _,ok:=<-watcher.channel:if !ok{return};select{case <-watcher.stop:return;default:};loop.post(func(){emit:=process.get("emit");if emit.kind==tsFunctionKind{signalName:=tsNodeProcessString(name);tsCallReceiver(loop,emit,tsObjectValue(process),signalName,signalName,tsNumberValue(float64(signal)))}})}}}()
+}
+func tsNodeProcessSignalStop(name string) {
+	tsNodeProcessSignalMu.Lock();watcher:=tsNodeProcessSignalWatch[name];if watcher==nil{tsNodeProcessSignalMu.Unlock();return};delete(tsNodeProcessSignalWatch,name);close(watcher.stop);gosignal.Stop(watcher.channel);tsNodeProcessSignalMu.Unlock();<-watcher.done
 }
 func tsNodeProcessExit(loop *tsLoop,process *tsObject,code tsValue) tsValue {
 	if !tsIsUndefined(code){tsNodeProcessSingleton.exitCode=code;process.values["exitCode"]=code}else if tsIsUndefined(tsNodeProcessSingleton.exitCode){tsNodeProcessSingleton.exitCode=tsNumberValue(0);process.values["exitCode"]=tsNodeProcessSingleton.exitCode}
@@ -180,7 +228,7 @@ func tsNodeProcessModule(loop *tsLoop) tsValue {
 		tsNodeProcessSingleton.started=tsNodeProcessStarted;tsNodeProcessSingleton.argv=append([]string{},os.Args...);tsNodeProcessSingleton.title="node";if len(os.Args)>0{tsNodeProcessSingleton.title=os.Args[0]};tsNodeProcessSingleton.execPath,_=os.Executable();tsNodeProcessSingleton.env=tsNodeProcessEnv();tsNodeProcessSingleton.exitCode=tsU;tsNodeProcessSingleton.uncaughtExceptionCapture=tsU;oldMask:=syscall.Umask(0);syscall.Umask(oldMask);tsNodeProcessSingleton.umask=oldMask
 		process:=tsNewObject();process.nativeClass=tsNativeClass("process");tsNodeProcessSingleton.value=process;emitter:=tsNodeEventsModule(loop);tsNodeEventCreate(loop,tsObjectValue(process),tsU)
 		if emitter.kind==tsFunctionKind{prototype:=(*tsObject)((*tsFunction)(emitter.ref).properties.get("prototype").ref);for _,key:=range prototype.order{if _,exists:=process.values[key];!exists{process.set(key,prototype.values[key])}}}
-		for _,method:=range []string{"addListener","on","prependListener","once","prependOnceListener"}{name:=method;process.set(name,tsNamedNativeMethod(name,2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{event,listener:=tsArg(args,0),tsArg(args,1);prepend:=name=="prependListener"||name=="prependOnceListener";once:=name=="once"||name=="prependOnceListener";result:=tsNodeEventAdd(loop,receiver,event,listener,prepend,once);tsNodeProcessWatchSignal(loop,process,event);return result}))}
+		for _,method:=range []string{"addListener","on","prependListener","once","prependOnceListener"}{name:=method;process.set(name,tsNamedNativeMethod(name,2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{event,listener:=tsArg(args,0),tsArg(args,1);prepend:=name=="prependListener"||name=="prependOnceListener";once:=name=="once"||name=="prependOnceListener";return tsNodeEventAdd(loop,receiver,event,listener,prepend,once)}))}
 		tsNodeProcessSingleton.argvValue=tsNodeProcessArray(tsNodeProcessSingleton.argv);tsNodeProcessSingleton.execArgvValue=tsNodeProcessArray(tsNodeProcessExecArgv());tsNodeProcessSingleton.debugPort=9229;process.set("argv",tsNodeProcessSingleton.argvValue);process.set("argv0",tsNodeProcessString(tsNodeProcessSingleton.title));process.set("execArgv",tsNodeProcessSingleton.execArgvValue);process.set("execPath",tsNodeProcessString(tsNodeProcessSingleton.execPath));process.set("env",tsObjectValue(tsNodeProcessSingleton.env));process.set("pid",tsNodeProcessNumber(os.Getpid()));process.set("ppid",tsNodeProcessNumber(os.Getppid()));process.set("platform",tsNodeProcessString(tsNodeProcessPlatform()));process.set("arch",tsNodeProcessString(tsNodeProcessArch()));process.set("title",tsNodeProcessString(tsNodeProcessSingleton.title));process.set("version",tsNodeProcessString("v0.0.0"));process.set("browser",tsBooleanValue(false));process.set("isBun",tsBooleanValue(false));process.set("connected",tsBooleanValue(false));process.set("exitCode",tsU);process.set("noDeprecation",tsBooleanValue(false));process.set("throwDeprecation",tsBooleanValue(false));process.set("traceDeprecation",tsBooleanValue(false));process.set("traceProcessWarnings",tsBooleanValue(false));process.set("pendingDeprecation",tsBooleanValue(false));process.set("noProcessWarnings",tsBooleanValue(os.Getenv("NODE_NO_WARNINGS")=="1"));
 		if !tsTruthy(process.get("noProcessWarnings")){listener:=tsNamedNativeMethod("onWarning",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{warning:=tsArg(args,0);name:=tsGet(warning,tsNodeProcessString("name"));message:=tsGet(warning,tsNodeProcessString("message"));if tsIsUndefined(name){name=tsNodeProcessString("Warning")};code:=tsGet(warning,tsNodeProcessString("code"));if tsIsUndefined(code){fmt.Fprintf(os.Stderr,"%s: %s\\n",tsText(name),tsText(message))}else{fmt.Fprintf(os.Stderr,"%s %s: %s\\n",tsText(name),tsText(code),tsText(message))};detail:=tsGet(warning,tsNodeProcessString("detail"));if !tsIsUndefined(detail){fmt.Fprintln(os.Stderr,tsText(detail))};return tsU});tsNodeEventAdd(loop,tsObjectValue(process),tsNodeProcessString("warning"),listener,false,false)}
 		tsNodeProcessAccessor(process,"title",tsNamedNativeMethod("get title",0,func(_ *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsNodeProcessString(tsNodeProcessSingleton.title)}),tsNamedNativeMethod("set title",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{tsNodeProcessSingleton.title=tsText(tsArg(args,0));return tsU}))

@@ -258,11 +258,13 @@ func tsInternalFSTestCreateMemfd(args []tsValue) tsValue {
 }
 
 func tsFSTime(value tsValue) time.Time {
-    if value.kind==tsObjectKind{object:=(*tsObject)(value.ref);if object.nativeClass!=nil&&object.nativeClass.builtin=="Date"{value=tsNumberValue(object.nativeTime);if math.IsNaN(value.number){tsFSInvalid("time","a valid Date")};return tsDateInstant(value.number)};value=tsFSProperty(value,"_milliseconds");if !tsIsUndefined(value){return time.Unix(0,int64(tsNumber(value)*1000000))}}
-    if value.kind==tsStringKind{number,err:=strconv.ParseFloat(tsText(value),64);if err!=nil{tsFSInvalid("time","a number, numeric string, or Date")};value=tsNumberValue(number)}
+    if value.kind==tsObjectKind{object:=(*tsObject)(value.ref);if object.nativeDate{if math.IsNaN(object.nativeTime){tsFSInvalid("time","a valid Date")};return tsDateInstant(object.nativeTime)}}
+    numericString:=value.kind==tsStringKind
+    if numericString{value=tsNumberValue(tsNumber(value))}
     if !tsIsNumeric(value){tsFSInvalid("time","a number, numeric string, or Date")}
     seconds:=tsNumber(value);if math.IsNaN(seconds)||math.IsInf(seconds,0){tsFSInvalid("time","a finite number")}
-    if seconds<0{seconds=float64(time.Now().UnixNano())/1e9};whole,fraction:=math.Modf(seconds);return time.Unix(int64(whole),int64(fraction*1e9))
+    if seconds<0&&!numericString{return time.Now()}
+    whole:=math.Floor(seconds);fraction:=seconds-whole;return time.Unix(int64(whole),int64(fraction*1e9))
 }
 
 

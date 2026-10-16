@@ -1,8 +1,7 @@
 package goemit
 
 // nodeZlibRuntime maps Node's zlib call and stream APIs onto Go's compression
-// packages. Brotli and Zstandard retain the API but report an unsupported-codec
-// error because the Go runtime has no matching standard-library codecs.
+// packages. Brotli and Zstandard use third-party Go codecs.
 const nodeZlibRuntime = `
 type tsNodeZlibState struct { mode string; options tsValue; input []byte; output *bytes.Buffer; encoder io.WriteCloser; encoderFlush func() error; stream tsValue; level, strategy int; bytesWritten int64; closed bool }
 var tsNodeZlibSingleton struct { sync.Once; module tsValue; states map[uintptr]*tsNodeZlibState; transform tsValue }
@@ -29,6 +28,17 @@ func tsNodeZlibParams(loop *tsLoop,options tsValue,mode string){
 	maximum:=9;code:="ERR_BROTLI_INVALID_PARAM";if strings.HasPrefix(mode,"zstd"){code="ERR_ZSTD_INVALID_PARAM";if strings.HasPrefix(mode,"zstdCompress"){maximum=402}else{maximum=100}}
 	seen:=map[int]bool{};for _,key:=range tsEnumerableOwnKeys(loop,params).values{text:=tsText(key);number:=tsStringNumber(tsStringKey(text));if math.IsNaN(number)||math.IsInf(number,0)||number<0||number>float64(maximum)||math.Trunc(number)!=number{panic(tsThrown{tsNodeZlibError(code,"Invalid compression parameter: "+text)})};index:=int(number);if seen[index]{panic(tsThrown{tsNodeZlibError(code,"Invalid compression parameter: "+text)})};seen[index]=true;value:=tsGet(loop,params,key);if !tsIsNumeric(value)&&value.kind!=tsBooleanKind{panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE","The \"options.params[key]\" argument must be of type number")})}}
 }
+func tsNodeZlibBrotliOptions(loop *tsLoop,options tsValue) brotli.WriterOptions {
+	quality,window:=11,22
+	params:=tsGet(loop,options,tsNodeZlibKey("params"))
+	if !tsNullish(params){
+		if value:=tsGet(loop,params,tsNodeZlibKey("1"));!tsIsUndefined(value){quality=int(tsToUint32(value))}
+		if value:=tsGet(loop,params,tsNodeZlibKey("2"));!tsIsUndefined(value){window=int(tsToUint32(value))}
+	}
+	if quality<0||quality>11{panic(tsThrown{tsNodeZlibError("ERR_BROTLI_PARAM_SET_FAILED","Brotli quality must be between 0 and 11")})}
+	if window<10||window>24{panic(tsThrown{tsNodeZlibError("ERR_BROTLI_PARAM_SET_FAILED","Brotli window must be between 10 and 24")})}
+	return brotli.WriterOptions{Quality:quality,LGWin:window}
+}
 func tsNodeZlibValidateOptions(loop *tsLoop,mode string,options tsValue){
 	if tsNullish(options){return}
 	brotli:=strings.HasPrefix(mode,"brotli");zstd:=strings.HasPrefix(mode,"zstd");flushMaximum:=5;finishDefault:=4;if brotli{flushMaximum=3;finishDefault=2};if zstd{flushMaximum=2;finishDefault=2}
@@ -49,7 +59,7 @@ func tsNodeZlibMaxOutput(loop *tsLoop,options tsValue)int64{
 func tsNodeZlibChunkSize(loop *tsLoop,options tsValue)tsValue{
 	value:=tsGet(loop,options,tsNodeZlibKey("chunkSize"));if tsIsUndefined(value)||tsIsNumeric(value)&&math.IsNaN(tsNumber(value)){return tsNumberValue(16384)};return value
 }
-func tsNodeZlibNewEncoder(mode string,output *bytes.Buffer,level int,dictionary []byte,optionArgs ...tsValue)(io.WriteCloser,func()error,error){
+func tsNodeZlibNewEncoder(loop *tsLoop,mode string,output *bytes.Buffer,level int,dictionary []byte,optionArgs ...tsValue)(io.WriteCloser,func()error,error){
 	switch mode{
 	case "deflate":
 		if len(dictionary)>0{writer,err:=zlib.NewWriterLevelDict(output,level,dictionary);return writer,writer.Flush,err};writer,err:=zlib.NewWriterLevel(output,level);return writer,writer.Flush,err
@@ -57,6 +67,8 @@ func tsNodeZlibNewEncoder(mode string,output *bytes.Buffer,level int,dictionary 
 		writer,err:=gzip.NewWriterLevel(output,level);return writer,writer.Flush,err
 	case "deflateRaw":
 		if len(dictionary)>0{writer,err:=flate.NewWriterDict(output,level,dictionary);return writer,writer.Flush,err};writer,err:=flate.NewWriter(output,level);return writer,writer.Flush,err
+	case "brotliCompress":
+		writer:=brotli.NewWriterOptions(output,tsNodeZlibBrotliOptions(loop,tsArg(optionArgs,0)));return writer,writer.Flush,nil
 	case "zstdCompress":
 		writer,err:=zstd.NewWriter(output,tsNodeZlibZstdEncoderOptions(nil,tsArg(optionArgs,0),dictionary)...);return writer,writer.Flush,err
 	default:return nil,nil,fmt.Errorf("Unknown compression method %s",mode)
@@ -75,7 +87,21 @@ func tsNodeZlibZstdDecoderOptions(dictionary []byte,maxOutput int64)[]zstd.DOpti
 	memory:=uint64(maxOutput);if memory<128*1024*1024{memory=128*1024*1024};result:=[]zstd.DOption{zstd.WithDecoderConcurrency(1),zstd.WithDecoderMaxMemory(memory)};if len(dictionary)>0{result=append(result,zstd.WithDecoderDictRaw(0,dictionary))};return result
 }
 func tsNodeZlibProcess(loop *tsLoop,mode string,input []byte,options tsValue) ([]byte,error) {
-	if mode=="brotliCompress"||mode=="brotliDecompress"{return nil,fmt.Errorf("Brotli codec is not available in the Go standard library")}
+	if mode=="brotliCompress"{
+		var output bytes.Buffer
+		writer:=brotli.NewWriterOptions(&output,tsNodeZlibBrotliOptions(loop,options))
+		if _,err:=writer.Write(input);err!=nil{_ = writer.Close();return nil,err}
+		if err:=writer.Close();err!=nil{return nil,err}
+		if int64(output.Len())>tsNodeZlibMaxOutput(loop,options){return nil,fmt.Errorf("output exceeds maxOutputLength")}
+		return output.Bytes(),nil
+	}
+	if mode=="brotliDecompress"{
+		maxOutput:=tsNodeZlibMaxOutput(loop,options)
+		reader:=brotli.NewReader(bytes.NewReader(input))
+		data,err:=io.ReadAll(io.LimitReader(reader,maxOutput+1));if err!=nil{return nil,err}
+		if int64(len(data))>maxOutput{return nil,fmt.Errorf("output exceeds maxOutputLength")}
+		return data,nil
+	}
 	if mode=="zstdCompress"{
 		writer,err:=zstd.NewWriter(nil,tsNodeZlibZstdEncoderOptions(loop,options,tsNodeZlibZstdDictionary(loop,options))...);if err!=nil{return nil,err};data:=writer.EncodeAll(input,nil);writer.Close();if int64(len(data))>tsNodeZlibMaxOutput(loop,options){return nil,fmt.Errorf("output exceeds maxOutputLength")};return data,nil
 	}
@@ -127,10 +153,10 @@ func tsNodeZlibConvenience(loop *tsLoop,mode string,synchronous bool,args []tsVa
 }
 func tsNodeZlibStream(loop *tsLoop,mode string,options tsValue) tsValue {
 	if tsNullish(options){options=tsObjectValue(tsNewObject())};tsNodeZlibValidateOptions(loop,mode,options)
-	snapshot:=tsNewObject();tsObjectSpread(snapshot,options);if !strings.HasPrefix(mode,"brotli")&&!strings.HasPrefix(mode,"zstd")&&!tsIsUndefined(tsGet(loop,options,tsNodeZlibKey("dictionary"))){snapshot.set("dictionary",tsNodeBuffer(tsNodeZlibDictionary(loop,options)))};if strings.HasPrefix(mode,"zstd")&&len(tsNodeZlibZstdDictionary(loop,options))>0{snapshot.set("dictionary",tsNodeBuffer(tsNodeZlibZstdDictionary(loop,options)))};optionSnapshot:=tsObjectValue(snapshot)
+	snapshot:=tsNewObject();tsObjectSpread(snapshot,options);if !strings.HasPrefix(mode,"zstd")&&!tsIsUndefined(tsGet(loop,options,tsNodeZlibKey("dictionary"))){snapshot.set("dictionary",tsNodeBuffer(tsNodeZlibDictionary(loop,options)))};if strings.HasPrefix(mode,"zstd")&&len(tsNodeZlibZstdDictionary(loop,options))>0{snapshot.set("dictionary",tsNodeBuffer(tsNodeZlibZstdDictionary(loop,options)))};optionSnapshot:=tsObjectValue(snapshot)
 	level,strategy:=-1,0;if !strings.HasPrefix(mode,"brotli")&&!strings.HasPrefix(mode,"zstd"){var levelErr error;level,levelErr=tsNodeZlibLevel(loop,optionSnapshot);if levelErr!=nil{panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE",levelErr.Error())})};strategy=tsNodeZlibCheckInt(loop,optionSnapshot,"strategy",0,4,0)};var err error
 	state:=&tsNodeZlibState{mode:mode,options:optionSnapshot,level:level,strategy:strategy,output:&bytes.Buffer{}}
-	if mode=="deflate"||mode=="gzip"||mode=="deflateRaw"||mode=="zstdCompress"{dictionary:=tsNodeZlibDictionary(loop,optionSnapshot);if mode=="zstdCompress"{dictionary=tsNodeZlibZstdDictionary(loop,optionSnapshot)};state.encoder,state.encoderFlush,err=tsNodeZlibNewEncoder(mode,state.output,level,dictionary,optionSnapshot);if err!=nil{panic(tsThrown{tsNodeZlibError("ERR_INVALID_ARG_VALUE",err.Error())})}}
+	if mode=="deflate"||mode=="gzip"||mode=="deflateRaw"||mode=="brotliCompress"||mode=="zstdCompress"{dictionary:=tsNodeZlibDictionary(loop,optionSnapshot);if mode=="zstdCompress"{dictionary=tsNodeZlibZstdDictionary(loop,optionSnapshot)};state.encoder,state.encoderFlush,err=tsNodeZlibNewEncoder(loop,mode,state.output,level,dictionary,optionSnapshot);if err!=nil{panic(tsThrown{tsNodeZlibError("ERR_INVALID_ARG_VALUE",err.Error())})}}
 	streamOptions:=tsNewObject();streamOptions.set("autoDestroy",tsBooleanValue(true));tsObjectSpread(streamOptions,optionSnapshot)
 	if tsTruthy(tsGet(loop,optionSnapshot,tsNodeZlibKey("encoding")))||tsTruthy(tsGet(loop,optionSnapshot,tsNodeZlibKey("objectMode")))||tsTruthy(tsGet(loop,optionSnapshot,tsNodeZlibKey("writableObjectMode"))){streamOptions.set("encoding",tsNull);streamOptions.set("objectMode",tsBooleanValue(false));streamOptions.set("writableObjectMode",tsBooleanValue(false))}
 	streamOptions.set("transform",tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{
@@ -146,7 +172,7 @@ func tsNodeZlibStream(loop *tsLoop,mode string,options tsValue) tsValue {
 	module:=tsInternalStreamTransformModule(loop);constructor:=tsGet(loop,module,tsNodeZlibKey("Transform"));stream:=tsConstruct(constructor,tsObjectValue(streamOptions));state.stream=stream;tsNodeZlibSingleton.states[uintptr((*tsObject)(stream.ref))]=state
 	object:=(*tsObject)(stream.ref);object.set("_destroy",tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{cause,callback:=tsArg(args,0),tsArg(args,1);if state.encoder!=nil{_ = state.encoder.Close();state.encoder=nil};state.closed=true;if callback.kind==tsFunctionKind{tsCall(loop,callback,cause)};return tsU})));object.set("bytesWritten",tsNumberValue(0));if object.descriptors==nil{object.descriptors=map[string]*tsDescriptor{}};object.descriptors["bytesRead"]=&tsDescriptor{accessor:true,configurable:true,getter:tsNamedNativeMethod("get bytesRead",0,func(loop *tsLoop,receiver tsValue,_ ...tsValue)tsValue{return tsGet(receiver,tsNodeZlibKey("bytesWritten"))}),setter:tsNamedNativeMethod("set bytesRead",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{value:=tsArg(args,0);(*tsObject)(receiver.ref).set("bytesWritten",value);if current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];current!=nil&&tsIsNumeric(value){current.bytesWritten=int64(tsNumber(value))};return tsU})};object.descriptors["_closed"]=&tsDescriptor{accessor:true,enumerable:true,configurable:true,getter:tsNamedNativeMethod("get _closed",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];return tsBooleanValue(current==nil||current.closed)})};object.set("_mode",tsNodeZlibKey(mode));chunkSize:=tsNodeZlibChunkSize(loop,optionSnapshot);object.set("_chunkSize",chunkSize);object.set("_maxOutputLength",tsNumberValue(float64(tsNodeZlibMaxOutput(loop,optionSnapshot))));object.set("_info",tsGet(loop,optionSnapshot,tsNodeZlibKey("info")))
 	flushDefault,finishDefault,fullFlushDefault:=float64(0),float64(4),float64(3);if strings.HasPrefix(mode,"brotli"){finishDefault,fullFlushDefault=2,1};if strings.HasPrefix(mode,"zstd"){finishDefault,fullFlushDefault=2,1};object.set("_defaultFlushFlag",tsNodeZlibOption(loop,optionSnapshot,"flush",tsNumberValue(flushDefault)));object.set("_finishFlushFlag",tsNodeZlibOption(loop,optionSnapshot,"finishFlush",tsNumberValue(finishDefault)));object.set("_defaultFullFlushFlag",tsNodeZlibOption(loop,optionSnapshot,"fullFlush",tsNumberValue(fullFlushDefault)))
-	object.set("reset",tsNamedNativeMethod("reset",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];if current==nil||current.closed{tsPropertyFailure("zlib binding closed")};if current.encoder!=nil{_ = current.encoder.Close()};current.input=nil;current.bytesWritten=0;current.output.Reset();if current.mode=="deflate"||current.mode=="gzip"||current.mode=="deflateRaw"||current.mode=="zstdCompress"{dictionary:=tsNodeZlibDictionary(loop,current.options);if current.mode=="zstdCompress"{dictionary=tsNodeZlibZstdDictionary(loop,current.options)};current.encoder,current.encoderFlush,_=tsNodeZlibNewEncoder(current.mode,current.output,current.level,dictionary,current.options)};receiverObj:=(*tsObject)(receiver.ref);receiverObj.set("bytesWritten",tsNumberValue(0));receiverObj.set("bytesRead",tsNumberValue(0));return tsU}))
+	object.set("reset",tsNamedNativeMethod("reset",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];if current==nil||current.closed{tsPropertyFailure("zlib binding closed")};if current.encoder!=nil{_ = current.encoder.Close()};current.input=nil;current.bytesWritten=0;current.output.Reset();if current.mode=="deflate"||current.mode=="gzip"||current.mode=="deflateRaw"||current.mode=="brotliCompress"||current.mode=="zstdCompress"{dictionary:=tsNodeZlibDictionary(loop,current.options);if current.mode=="zstdCompress"{dictionary=tsNodeZlibZstdDictionary(loop,current.options)};current.encoder,current.encoderFlush,_=tsNodeZlibNewEncoder(loop,current.mode,current.output,current.level,dictionary,current.options)};receiverObj:=(*tsObject)(receiver.ref);receiverObj.set("bytesWritten",tsNumberValue(0));receiverObj.set("bytesRead",tsNumberValue(0));return tsU}))
 	object.set("close",tsNamedNativeMethod("close",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{if current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];current!=nil{if current.encoder!=nil{_ = current.encoder.Close()};current.closed=true};if callback:=tsArg(args,0);callback.kind==tsFunctionKind{tsNodeWritableDefer(loop,func(){tsCall(loop,callback)})};tsNodeClassicMethod(loop,receiver,"destroy",tsU);return tsU}))
 	object.set("flush",tsNamedNativeMethod("flush",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{callback:=tsArg(args,1);if tsArg(args,0).kind==tsFunctionKind{callback=tsArg(args,0)};if current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];current!=nil&&current.encoder!=nil&&!current.closed{if err:=current.encoderFlush();err!=nil{return tsCall(loop,callback,tsNodeZlibErrorValue(err))};data:=append([]byte(nil),current.output.Bytes()...);current.output.Reset();if len(data)>0{tsNodeClassicMethod(loop,receiver,"push",tsNodeBuffer(data))}};if callback.kind==tsFunctionKind{tsNodeWritableDefer(loop,func(){tsCall(loop,callback)})};return tsU}))
 	object.set("params",tsNamedNativeMethod("params",3,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{level,strategy:=tsArg(args,0),tsArg(args,1);tsInternalValidatorInt32(level,tsNodeZlibKey("level"),tsNumberValue(-1),tsNumberValue(9));tsInternalValidatorInt32(strategy,tsNodeZlibKey("strategy"),tsNumberValue(0),tsNumberValue(4));if current:=tsNodeZlibSingleton.states[uintptr(receiver.ref)];current!=nil{current.level=int(tsNumber(level));current.strategy=int(tsNumber(strategy))};if callback:=tsArg(args,2);callback.kind==tsFunctionKind{tsNodeWritableDefer(loop,func(){tsCall(loop,callback)})};return tsU}))

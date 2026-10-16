@@ -34,6 +34,17 @@ func tsNodeEventState(receiver tsValue) *tsNodeEventEmitter {
 	return tsNodeEventsSingleton.emitters[(*tsObject)(receiver.ref)]
 }
 
+func tsNodeEventsAddTargetListener(loop *tsLoop,target,event,listener tsValue,once bool) {
+	if state:=tsNodeEventState(target);state!=nil { tsNodeEventAdd(loop,target,event,listener,false,once);return }
+	if tsEventTargetStateFor(target)==nil { tsFSInvalid("emitter","an EventEmitter or EventTarget") }
+	options:=tsNewObject();options.set("once",tsBooleanValue(once));tsEventTargetAdd(loop,target,event,listener,tsObjectValue(options))
+}
+func tsNodeEventsRemoveTargetListener(loop *tsLoop,target,event,listener tsValue) {
+	if state:=tsNodeEventState(target);state!=nil { tsNodeEventRemove(loop,state,event,listener);return }
+	if tsEventTargetStateFor(target)==nil { tsFSInvalid("emitter","an EventEmitter or EventTarget") }
+	tsEventTargetRemove(loop,target,event,listener,tsU)
+}
+
 func tsNodeEventCreate(loop *tsLoop, receiver tsValue, options tsValue) tsValue {
 	var object *tsObject
 	if receiver.kind==tsObjectKind { object=(*tsObject)(receiver.ref) }
@@ -62,7 +73,7 @@ func tsNodeEventsInstallPrototype(loop *tsLoop) {
 	prototype.set("prependOnceListener",tsNamedNativeMethod("prependOnceListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventAdd(loop,receiver,tsArg(args,0),tsArg(args,1),true,true)}))
 	prototype.set("removeListener",tsNamedNativeMethod("removeListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};tsNodeEventRemove(loop,state,tsArg(args,0),tsArg(args,1));return receiver}))
 	prototype.set("off",prototype.get("removeListener"))
-	prototype.set("removeAllListeners",tsNamedNativeMethod("removeAllListeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};event:=tsArg(args,0);if tsIsUndefined(event){state.events=map[string][]*tsNodeEventListener{};state.names=map[string]tsValue{}}else{key:=tsNodeEventKey(loop,event);delete(state.events,key);delete(state.names,key)};return receiver}))
+	prototype.set("removeAllListeners",tsNamedNativeMethod("removeAllListeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};event:=tsArg(args,0);if tsIsUndefined(event){state.events=map[string][]*tsNodeEventListener{};state.names=map[string]tsValue{};tsNodeProcessMemoryPressureListenerChange(loop,state.object,"memoryPressure");tsNodeProcessSignalListenerChange(loop,state.object,"")}else{key:=tsNodeEventKey(loop,event);delete(state.events,key);delete(state.names,key);tsNodeProcessMemoryPressureListenerChange(loop,state.object,key);tsNodeProcessSignalListenerChange(loop,state.object,key)};return receiver}))
 	prototype.set("listeners",tsNamedNativeMethod("listeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventListeners(loop,receiver,tsArg(args,0),false)}))
 	prototype.set("rawListeners",tsNamedNativeMethod("rawListeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventListeners(loop,receiver,tsArg(args,0),true)}))
 	prototype.set("listenerCount",tsNamedNativeMethod("listenerCount",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventCount(loop,receiver,tsArg(args,0),tsArg(args,1))}))
@@ -88,6 +99,8 @@ func tsNodeEventAdd(loop *tsLoop,receiver,event,listener tsValue,prepend,once bo
 	list:=state.events[key]
 	if prepend { list=append([]*tsNodeEventListener{entry},list...) } else { list=append(list,entry) }
 	state.events[key]=list;state.names[key]=event
+	tsNodeProcessMemoryPressureListenerChange(loop,state.object,key)
+	tsNodeProcessSignalListenerChange(loop,state.object,key)
 	return receiver
 }
 
@@ -99,6 +112,8 @@ func tsNodeEventRemove(loop *tsLoop,state *tsNodeEventEmitter,event,listener tsV
 		if matches { list=append(list[:index],list[index+1:]...);break }
 	}
 	if len(list)==0 { delete(state.events,key);delete(state.names,key) } else { state.events[key]=list }
+	tsNodeProcessMemoryPressureListenerChange(loop,state.object,key)
+	tsNodeProcessSignalListenerChange(loop,state.object,key)
 }
 
 func tsNodeEventEmit(loop *tsLoop,state *tsNodeEventEmitter,event tsValue,args []tsValue) bool {
@@ -128,52 +143,52 @@ func tsNodeEventEmit(loop *tsLoop,state *tsNodeEventEmitter,event tsValue,args [
 }
 
 func tsNodeEventListeners(loop *tsLoop,receiver,event tsValue,raw bool) tsValue {
-	state:=tsNodeEventState(receiver);out:=&tsArray{};if state==nil{return tsArrayValue(out)}
+	state:=tsNodeEventState(receiver);out:=&tsArray{};if state==nil{values,ok:=tsEventTargetListenerValues(loop,receiver,event);if !ok{tsFSInvalid("emitter","an EventEmitter or EventTarget")};out.values=values;return tsArrayValue(out)}
 	listeners:=state.events[tsNodeEventKey(loop,event)];for index:=0;index<len(listeners);index++{var entry *tsNodeEventListener;entry=listeners[index];value:=entry.original;if raw{value=entry.raw};out.values=append(out.values,value)}
 	return tsArrayValue(out)
 }
 
 func tsNodeEventCount(loop *tsLoop,receiver,event,listener tsValue) tsValue {
-	state:=tsNodeEventState(receiver);if state==nil{return tsNumberValue(0)}
+	state:=tsNodeEventState(receiver);if state==nil{count,ok:=tsEventTargetListenerCount(loop,receiver,event);if !ok{tsFSInvalid("emitter","an EventEmitter or EventTarget")};return tsNumberValue(float64(count))}
 	count:=0;listeners:=state.events[tsNodeEventKey(loop,event)];for index:=0;index<len(listeners);index++{var entry *tsNodeEventListener;entry=listeners[index];if tsIsUndefined(listener)||tsStrictEqual(entry.original,listener){count++}}
 	return tsNumberValue(float64(count))
 }
 
 func tsNodeEventsOnce(loop *tsLoop,args []tsValue) tsValue {
 	emitter,event,options:=tsArg(args,0),tsArg(args,1),tsArg(args,2)
-	state:=tsNodeEventState(emitter);if state==nil{tsFSInvalid("emitter","an EventEmitter")}
+	state:=tsNodeEventState(emitter);target:=tsEventTargetStateFor(emitter);if state==nil&&target==nil{tsFSInvalid("emitter","an EventEmitter or EventTarget")}
 	promise:=loop.promise();signal:=tsFSAbortSignal(options)
 	if signal!=nil{if _,aborted:=tsAbortReason(signal);aborted{promise.settle(tsResult{tsFSAbortError(signal),true});return tsPromiseValue(promise)}}
 	var listener tsValue
 	var errorListener tsValue
 	listener=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{
-		tsNodeEventRemove(loop,state,event,listener)
-		if !tsIsUndefined(errorListener){tsNodeEventRemove(loop,state,tsStringReference(tsStringUTF8("error")),errorListener)}
+			tsNodeEventsRemoveTargetListener(loop,emitter,event,listener)
+			if !tsIsUndefined(errorListener){tsNodeEventsRemoveTargetListener(loop,emitter,tsStringReference(tsStringUTF8("error")),errorListener)}
 		if signal!=nil{if _,aborted:=tsAbortReason(signal);aborted{promise.settle(tsResult{tsFSAbortError(signal),true});return tsU}}
 		promise.settle(tsResult{tsArrayValue(&tsArray{values:append([]tsValue(nil),values...)}),false})
 		return tsU
 	}))
-	tsNodeEventAdd(loop,emitter,event,listener,false,false)
-	if tsText(event)!="error" {
+	tsNodeEventsAddTargetListener(loop,emitter,event,listener,true)
+	if state!=nil&&tsText(event)!="error" {
 		errorListener=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{tsNodeEventRemove(loop,state,event,listener);tsNodeEventRemove(loop,state,tsStringReference(tsStringUTF8("error")),errorListener);promise.settle(tsResult{tsArg(values,0),true});return tsU}))
-		tsNodeEventAdd(loop,emitter,tsStringReference(tsStringUTF8("error")),errorListener,false,false)
+		tsNodeEventAdd(loop,emitter,tsStringReference(tsStringUTF8("error")),errorListener,false,true)
 	}
-	if signal!=nil{signal.followers=append(signal.followers,func(_ tsValue){tsNodeEventRemove(loop,state,event,listener);if !tsIsUndefined(errorListener){tsNodeEventRemove(loop,state,tsStringReference(tsStringUTF8("error")),errorListener)};promise.settle(tsResult{tsFSAbortError(signal),true})})}
+	if signal!=nil{signal.followers=append(signal.followers,func(_ tsValue){tsNodeEventsRemoveTargetListener(loop,emitter,event,listener);if !tsIsUndefined(errorListener)&&state!=nil{tsNodeEventRemove(loop,state,tsStringReference(tsStringUTF8("error")),errorListener)};promise.settle(tsResult{tsFSAbortError(signal),true})})}
 	return tsPromiseValue(promise)
 }
 
 func tsNodeEventsOn(loop *tsLoop,args []tsValue) tsValue {
 	emitter,event,options:=tsArg(args,0),tsArg(args,1),tsArg(args,2)
-	state:=tsNodeEventState(emitter);if state==nil{tsFSInvalid("emitter","an EventEmitter")}
+	state:=tsNodeEventState(emitter);target:=tsEventTargetStateFor(emitter);if state==nil&&target==nil{tsFSInvalid("emitter","an EventEmitter or EventTarget")}
 	signal:=tsFSAbortSignal(options);queue:=[]tsValue{};waiters:=[]*tsPromise{};closed:=false;aborted:=false
 	deliver:=func(){for len(queue)>0&&len(waiters)>0{promise:=waiters[0];waiters=waiters[1:];item:=queue[0];queue=queue[1:];promise.settle(tsResult{tsIteratorResult(item,false),false})};if aborted&&len(queue)==0{for _,promise:=range waiters{promise.settle(tsResult{tsFSAbortError(signal),true})};waiters=nil}}
 	listener:=tsFunctionValue(tsFunc(func(_ *tsLoop,args ...tsValue)tsValue{queue=append(queue,tsArrayValue(&tsArray{values:append([]tsValue(nil),args...)}));deliver();return tsU}))
-	tsNodeEventAdd(loop,emitter,event,listener,false,false)
+	tsNodeEventsAddTargetListener(loop,emitter,event,listener,false)
 	iterator:=&tsAsyncIterator{
 		next:func(loop *tsLoop)*tsPromise{if len(queue)>0{value:=queue[0];queue=queue[1:];return loop.resolved(tsIteratorResult(value,false),false)};if closed{return loop.resolved(tsIteratorResult(tsU,true),false)};if aborted{return loop.resolved(tsFSAbortError(signal),true)};promise:=loop.promise();waiters=append(waiters,promise);return promise},
-		close:func(loop *tsLoop)*tsPromise{if !closed{closed=true;tsNodeEventRemove(loop,state,event,listener);for _,promise:=range waiters{promise.settle(tsResult{tsIteratorResult(tsU,true),false})};waiters=nil};return loop.resolved(tsIteratorResult(tsU,true),false)},
+			close:func(loop *tsLoop)*tsPromise{if !closed{closed=true;tsNodeEventsRemoveTargetListener(loop,emitter,event,listener);for _,promise:=range waiters{promise.settle(tsResult{tsIteratorResult(tsU,true),false})};waiters=nil};return loop.resolved(tsIteratorResult(tsU,true),false)},
 	}
-	if signal!=nil{signal.followers=append(signal.followers,func(_ tsValue){aborted=true;tsNodeEventRemove(loop,state,event,listener);deliver()})}
+	if signal!=nil{signal.followers=append(signal.followers,func(_ tsValue){aborted=true;tsNodeEventsRemoveTargetListener(loop,emitter,event,listener);deliver()})}
 	return tsAsyncIteratorObject(iterator)
 }
 
@@ -215,8 +230,8 @@ func tsNodeEventsModule(loop *tsLoop) tsValue {
 	properties.set("once",tsNamedNativeMethod("once",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeEventsOnce(loop,args)}))
 	properties.set("on",tsNamedNativeMethod("on",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeEventsOn(loop,args)}))
 	properties.set("getEventListeners",tsNamedNativeMethod("getEventListeners",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeEventListeners(loop,tsArg(args,0),tsArg(args,1),false)}))
-	properties.set("getMaxListeners",tsNamedNativeMethod("getMaxListeners",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(tsArg(args,0));if state==nil{tsFSInvalid("emitter","an EventEmitter")};return tsNumberValue(float64(state.max))}))
-	properties.set("setMaxListeners",tsNamedNativeMethod("setMaxListeners",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{value:=tsArg(args,0);if !tsIsNumeric(value)||tsNumber(value)<0{tsFSInvalid("n","a non-negative number")};if len(args)==1{tsNodeEventsSingleton.defaultMax=int(tsNumber(value));return tsU};for _,target:=range args[1:]{state:=tsNodeEventState(target);if state==nil{tsFSInvalid("eventTargets","an EventEmitter")};state.max=int(tsNumber(value))};return tsU}))
+	properties.set("getMaxListeners",tsNamedNativeMethod("getMaxListeners",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{target:=tsArg(args,0);if state:=tsNodeEventState(target);state!=nil{return tsNumberValue(float64(state.max))};if tsEventTargetStateFor(target)!=nil{value:=tsGet(loop,target,tsNodeEventsSingleton.maxTargetListeners);if tsIsUndefined(value){return tsNumberValue(float64(tsNodeEventsSingleton.defaultMax))};return value};tsFSInvalid("emitter","an EventEmitter or EventTarget");return tsU}))
+	properties.set("setMaxListeners",tsNamedNativeMethod("setMaxListeners",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{value:=tsArg(args,0);if tsIsUndefined(value){value=tsNumberValue(float64(tsNodeEventsSingleton.defaultMax))};if !tsIsNumeric(value)||tsNumber(value)<0||math.IsNaN(tsNumber(value)){tsFSInvalid("n","a non-negative number")};if len(args)==1{tsNodeEventsSingleton.defaultMax=int(tsNumber(value));return tsU};for _,target:=range args[1:]{if state:=tsNodeEventState(target);state!=nil{state.max=int(tsNumber(value));continue};if tsEventTargetStateFor(target)!=nil{tsSet(loop,target,tsNodeEventsSingleton.maxTargetListeners,value);tsSet(loop,target,tsNodeEventsSingleton.maxTargetWarned,tsBooleanValue(false));continue};tsFSInvalid("eventTargets","an EventEmitter or EventTarget")};return tsU}))
 	properties.set("listenerCount",tsNamedNativeMethod("listenerCount",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeEventCount(loop,tsArg(args,0),tsArg(args,1),tsArg(args,2))}))
 	properties.set("addAbortListener",tsNamedNativeMethod("addAbortListener",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{signal:=tsArg(args,0);listener:=tsArg(args,1);if listener.kind!=tsFunctionKind{tsFSInvalid("listener","a function")};if signal.kind!=tsObjectKind||(*tsObject)(signal.ref).abort==nil{tsFSInvalid("signal","an AbortSignal")};state:=(*tsObject)(signal.ref).abort;_,aborted:=tsAbortReason(state);if aborted{tsCall(loop,listener);return tsObjectValue(tsNewObject())};state.followers=append(state.followers,func(reason tsValue){tsCall(loop,listener,tsObjectValue(tsNewObject()))});disposable:=tsNewObject();dispose:=tsNamedNativeMethod("[Symbol.dispose]",0,func(_ *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsU});disposable.set(tsPropertyKey(tsWellKnownSymbol("dispose")),dispose);return tsObjectValue(disposable)}))
 	properties.set("EventEmitterAsyncResource",tsNodeEventAsyncConstructor())

@@ -5,7 +5,7 @@ package goemit
 const webStreamRuntime = `
 type tsWebReadRequest struct { promise *tsPromise; loop *tsLoop; token uint64; canceled bool;view tsValue;minimum,capacity,filled int }
 type tsWebStream struct {
-    iterator *tsAsyncIterator;object *tsObject;locked,ended,busy bool;failure tsValue
+    iterator *tsAsyncIterator;object *tsObject;locked,disturbed,ended,busy bool;failure tsValue
     token uint64;queue []*tsWebReadRequest;buffered []tsValue;readerClosed *tsPromise;closeWaiters []*tsPromise
 }
 func tsWebStreamValue(iterator *tsAsyncIterator)tsValue{
@@ -35,11 +35,13 @@ func(stream *tsWebStream)acquireReader(loop *tsLoop,options tsValue)tsValue{
 func(stream *tsWebStream)releaseReader(token uint64){if stream.token==token{stream.locked=false;stream.object.set("locked",tsBooleanValue(false));stream.readerClosed=nil}}
 func(stream *tsWebStream)readNext(loop *tsLoop,token uint64)*tsPromise{
     if !stream.locked||stream.token!=token{return loop.resolved(tsFSException("TypeError","ERR_INVALID_STATE","Reader has been released"),true)}
+    stream.disturbed=true
     if !tsIsUndefined(stream.failure){return loop.resolved(stream.failure,true)};if stream.ended&&len(stream.buffered)==0{return loop.resolved(tsIteratorResult(tsU,true),false)}
     promise:=loop.promise();stream.queue=append(stream.queue,&tsWebReadRequest{promise:promise,loop:loop,token:token});stream.pumpStream();return promise
 }
 func(stream *tsWebStream)readBYOB(loop *tsLoop,token uint64,view tsValue,minimum int)*tsPromise{
     if !stream.locked||stream.token!=token{return loop.resolved(tsFSException("TypeError","ERR_INVALID_STATE","Reader has been released"),true)}
+    stream.disturbed=true
     if !tsIsUndefined(stream.failure){return loop.resolved(stream.failure,true)}
     array:=(*tsTypedArray)(view.ref);promise:=loop.promise();stream.queue=append(stream.queue,&tsWebReadRequest{promise:promise,loop:loop,token:token,view:view,minimum:minimum*array.bytes,capacity:array.length*array.bytes});stream.pumpStream();return promise
 }
@@ -81,7 +83,7 @@ func(stream *tsWebStream)pumpStream(){
 }
 
 func(stream *tsWebStream)cancelStream(loop *tsLoop)*tsPromise{
-    stream.ended=true;stream.buffered=nil;for _,request:=range stream.queue{request.promise.settle(tsResult{tsIteratorResult(tsU,true),false});request.canceled=true};tsWebStreamSettleClosed(stream,tsResult{tsU,false});return stream.iterator.close(loop)
+    stream.disturbed=true;stream.ended=true;stream.buffered=nil;for _,request:=range stream.queue{request.promise.settle(tsResult{tsIteratorResult(tsU,true),false});request.canceled=true};tsWebStreamSettleClosed(stream,tsResult{tsU,false});return stream.iterator.close(loop)
 }
 func tsWebStreamSettleClosed(stream *tsWebStream,result tsResult){if stream.readerClosed!=nil{stream.readerClosed.settle(result)};for _,promise:=range stream.closeWaiters{promise.settle(result)};stream.closeWaiters=nil}
 func tsWebStreamClosedPromise(loop *tsLoop,stream *tsWebStream)*tsPromise{promise:=loop.promise();if !tsIsUndefined(stream.failure){promise.settle(tsResult{stream.failure,true})}else if stream.ended{promise.settle(tsResult{tsU,false})}else{stream.closeWaiters=append(stream.closeWaiters,promise)};return promise}

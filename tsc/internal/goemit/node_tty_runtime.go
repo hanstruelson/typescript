@@ -3,8 +3,15 @@ package goemit
 // nodeTTYRuntime adapts the ReadStream/WriteStream wrappers and terminal
 // helpers from node:tty using the shared filesystem stream implementation.
 const nodeTTYRuntime = `
-func tsNodeTTYIsTTY(fd int) bool { return tsNodeProcessTTY(fd) }
-func tsNodeTTYSize(loop *tsLoop,fd int) (int,int,bool) { if !tsNodeTTYIsTTY(fd){return 0,0,false};return 80,24,true }
+type tsTTYModeState struct { original *term.State; mode bool }
+func tsNodeTTYIsTTY(fd int) bool { return fd >= 0 && term.IsTerminal(fd) }
+func tsNodeTTYSize(_ *tsLoop,fd int) (int,int,bool) { if !tsNodeTTYIsTTY(fd){return 0,0,false};width,height,err:=term.GetSize(fd);if err!=nil{return 0,0,false};return width,height,true }
+func tsNodeTTYModeErrorNumber(err error) syscall.Errno { var errno syscall.Errno;if errors.As(err,&errno){return errno};return syscall.EIO }
+func tsNodeTTYSetRawMode(receiver tsValue,fd int,raw bool) error {
+	if receiver.kind!=tsObjectKind{return syscall.EINVAL};object:=(*tsObject)(receiver.ref);if object.ttyMode==nil{object.ttyMode=&tsTTYModeState{}};state:=object.ttyMode;if state.mode==raw{return nil}
+	if raw{original,err:=term.MakeRaw(fd);if err!=nil{return err};state.original=original;state.mode=true;return nil}
+	if state.original!=nil{if err:=term.Restore(fd,state.original);err!=nil{return err}};state.original=nil;state.mode=false;return nil
+}
 func tsNodeTTYConstructor(loop *tsLoop,name string,prototype *tsObject,reading bool) tsValue {
 	construct:=func(loop *tsLoop,args ...tsValue)tsValue{
 		fdValue:=tsArg(args,0);fd:=int(tsFSInteger(fdValue,"fd",0,0));options:=tsNewObject();options.set("fd",tsNumberValue(float64(fd)))
@@ -17,7 +24,7 @@ func tsNodeTTYModule(loop *tsLoop) tsValue {
 	fs:=tsInternalFSStreamsModule(loop);baseRead:=tsNativeClass("ReadStream");baseWrite:=tsNativeClass("WriteStream")
 	readProto:=tsNewObject();readProto.prototype=tsObjectValue(baseRead.nativePrototype)
 	for _,name:=range []string{"ref","unref"}{method:=name;readProto.set(method,tsNamedNativeMethod(method,0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{return receiver}))}
-	readProto.set("setRawMode",tsNamedNativeMethod("setRawMode",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{flag:=tsBooleanValue(tsTruthy(tsArg(args,0)));fd:=int(tsFSInteger(tsGet(loop,receiver,tsStringReference(tsStringUTF8("fd"))),"fd",-1,0));if !tsNodeTTYIsTTY(fd){error:=tsFSException("Error","ERR_TTY_SET_MODE_FAILED","setRawMode failed because it was called on something that is not a TTY");tsCall(loop,tsGet(loop,receiver,tsStringReference(tsStringUTF8("emit"))),tsStringReference(tsStringUTF8("error")),error);return receiver};tsSet(loop,receiver,tsStringReference(tsStringUTF8("isRaw")),flag);return receiver}))
+	readProto.set("setRawMode",tsNamedNativeMethod("setRawMode",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{raw:=tsTruthy(tsArg(args,0));fd:=int(tsFSInteger(tsGet(loop,receiver,tsStringReference(tsStringUTF8("fd"))),"fd",-1,0));if err:=tsNodeTTYSetRawMode(receiver,fd,raw);err!=nil{message:="setRawMode failed with errno: "+strconv.Itoa(int(tsNodeTTYModeErrorNumber(err)));tsCall(loop,tsGet(loop,receiver,tsStringReference(tsStringUTF8("emit"))),tsStringReference(tsStringUTF8("error")),tsErrorValue(&tsRuntimeError{name:"Error",message:message}));return receiver};tsSet(loop,receiver,tsStringReference(tsStringUTF8("isRaw")),tsBooleanValue(raw));return receiver}))
 	writeProto:=tsNewObject();writeProto.prototype=tsObjectValue(baseWrite.nativePrototype)
 	writeProto.set("_refreshSize",tsNamedNativeMethod("_refreshSize",0,func(loop *tsLoop,receiver tsValue,_ ...tsValue)tsValue{fd:=int(tsFSInteger(tsGet(loop,receiver,tsStringReference(tsStringUTF8("fd"))),"fd",-1,0));columns,rows,ok:=tsNodeTTYSize(loop,fd);if !ok{return tsU};oldColumns:=tsGet(loop,receiver,tsStringReference(tsStringUTF8("columns")));oldRows:=tsGet(loop,receiver,tsStringReference(tsStringUTF8("rows")));if tsNumber(oldColumns)!=float64(columns)||tsNumber(oldRows)!=float64(rows){tsSet(loop,receiver,tsStringReference(tsStringUTF8("columns")),tsNumberValue(float64(columns)));tsSet(loop,receiver,tsStringReference(tsStringUTF8("rows")),tsNumberValue(float64(rows)));tsCall(loop,tsGet(loop,receiver,tsStringReference(tsStringUTF8("emit"))),tsStringReference(tsStringUTF8("resize")))};return tsU}))
 	for _,entry:=range []struct{name string;arity int}{{"clearLine",2},{"clearScreenDown",1},{"cursorTo",3},{"moveCursor",3}}{name,arity:=entry.name,entry.arity;writeProto.set(name,tsNamedNativeMethod(name,arity,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{readline:=tsNodeReadlineModule(loop);method:=tsGet(loop,readline,tsStringReference(tsStringUTF8(name)));values:=append([]tsValue{receiver},args...);return tsCall(loop,method,values...)}))}

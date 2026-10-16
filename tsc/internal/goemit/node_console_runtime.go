@@ -78,6 +78,12 @@ func tsNodeConsoleModule() tsValue {
 		out.set("groupEnd", tsNamedNativeMethod("groupEnd", 0, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsU }))
 		out.set("clear", tsNamedNativeMethod("clear", 0, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsU }))
 		tsNodeConsoleSingleton.value = out
+		if globalObject := tsGlobalNamespace.object; globalObject != nil {
+			if globalObject.get("console").kind == tsUndefinedKind {
+				globalObject.set("console", tsObjectValue(out))
+			} else if existing := globalObject.get("console"); existing.kind == tsObjectKind {
+				tsNodeConsoleSingleton.value = (*tsObject)(existing.ref)
+			}
 	})
 	return tsObjectValue(tsNodeConsoleSingleton.value)
 }

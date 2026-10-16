@@ -85,10 +85,33 @@ func tsNodeStreamPair(loop *tsLoop,args []tsValue) tsValue {
 	return tsArrayValue(&tsArray{values:[]tsValue{first,second}})
 }
 func tsNodeStreamDefer(loop *tsLoop,callback func()){context:=loop.asyncContext;loop.ready=append(loop.ready,func(){tsWithAsyncContext(loop,context,callback)})}
+func tsNodeStreamConsumerConvert(loop *tsLoop,method string,chunks []tsValue,settle func(tsResult)) {
+	var fail func(any)
+	fail=func(thrown any){settle(tsResult{tsUnwrap(thrown),true})}
+	defer func(){if thrown:=recover();thrown!=nil{fail(thrown)}}()
+	global:=tsObjectValue(tsGlobalObject());blobConstructor:=tsNodeStreamGet(loop,global,"Blob");blob:=tsConstruct(loop,blobConstructor,tsArrayValue(&tsArray{values:append([]tsValue(nil),chunks...)}))
+	if method=="blob"{settle(tsResult{blob,false});return}
+	methodName:=method;if method=="json"||method=="buffer"{methodName="text";if method=="buffer"{methodName="arrayBuffer"}}
+	convert:=tsNodeStreamGet(loop,blob,methodName);result:=tsCallReceiver(loop,convert,blob)
+	loop.await(result,func(converted tsResult){defer func(){if thrown:=recover();thrown!=nil{fail(thrown)}}();if converted.rejected{settle(converted);return};value:=converted.value
+		if method=="json"{json:=tsNodeStreamGet(loop,global,"JSON");value=tsCallReceiver(loop,tsNodeStreamGet(loop,json,"parse"),json,value)}else if method=="buffer"{value=tsNodeBuffer(tsNodeBufferByteView(value))}
+		settle(tsResult{value,false})
+	})
+}
+func tsNodeStreamConsumerCollect(loop *tsLoop,input tsValue,method string,promise *tsPromise) {
+	settled:=false;var iterator *tsAsyncIterator;finish:=func(result tsResult){if !settled{settled=true;promise.settle(result)}}
+	var fail func(any)
+	fail=func(thrown any){if settled{return};if iterator!=nil&&iterator.close!=nil{func(){defer func(){_ = recover()}();iterator.close(loop)}()};finish(tsResult{tsUnwrap(thrown),true})}
+	safe:=func(callback func()){defer func(){if thrown:=recover();thrown!=nil{fail(thrown)}}();callback()}
+	chunks:=[]tsValue{}
+	if input.kind==tsObjectKind&&(*tsObject)(input.ref).webStream!=nil{stream:=(*tsObject)(input.ref).webStream;if stream.locked{finish(tsResult{tsFSException("TypeError","ERR_INVALID_STATE","Invalid state: ReadableStream is locked"),true});return};if stream.disturbed{finish(tsResult{tsFSException("TypeError","ERR_INVALID_STATE","Invalid state: ReadableStream has already been used"),true});return}}
+	safe(func(){iterator=tsAsyncIterate(input)})
+	if settled{return}
+	var next func();next=func(){safe(func(){loop.await(tsPromiseValue(iterator.next(loop)),func(result tsResult){safe(func(){if result.rejected{finish(result);return};if tsTruthy(tsNodeStreamGet(loop,result.value,"done")){tsNodeStreamConsumerConvert(loop,method,chunks,finish);return};chunks=append(chunks,tsNodeStreamGet(loop,result.value,"value"));next()})})})};next()
+}
 func tsNodeStreamConsumers(loop *tsLoop) tsValue {
 	if !tsIsUndefined(tsNodeStreamSingleton.consumers){return tsNodeStreamSingleton.consumers};module:=tsNewObject()
-	collect:=func(input tsValue,finish func([]byte,[]tsValue)){iterator:=tsAsyncIterate(input);chunks:=[]byte{};items:=[]tsValue{};var next func();next=func(){loop.await(tsPromiseValue(iterator.next(loop)),func(result tsResult){if result.rejected{panic(tsThrown{result.value})};if tsTruthy(tsNodeStreamGet(loop,result.value,"done")){finish(chunks,items);return};item:=tsNodeStreamGet(loop,result.value,"value");items=append(items,item);if item.kind==tsStringKind{chunks=append(chunks,[]byte(tsText(item))...)}else if item.kind==tsTypedArrayKind||item.kind==tsDataViewKind{chunks=append(chunks,tsFSBytes(item)...)};next()})};next()}
-			for _,name:=range []string{"arrayBuffer","bytes","text","json","buffer","blob"}{method:=name;module.set(method,tsNamedNativeMethod(method,1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{promise:=loop.promise();collect(tsArg(args,0),func(data []byte,chunks []tsValue){var value tsValue;switch method{case "arrayBuffer":value=tsArrayBufferValue(&tsArrayBuffer{data:append([]byte(nil),data...),maxByteLength:len(data)});case "bytes":value=tsNodeBuffer(data);if value.kind==tsTypedArrayKind{(*tsTypedArray)(value.ref).nodeBuffer=false};case "buffer":value=tsNodeBuffer(data);case "text":value=tsStringReference(tsStringUTF8(string(data)));case "json":json:=tsGet(loop,tsObjectValue(tsGlobalObject()),tsNodeStreamKey("JSON"));value=tsCall(loop,tsNodeStreamGet(loop,json,"parse"),tsStringReference(tsStringUTF8(string(data))));case "blob":blob:=tsGet(loop,tsObjectValue(tsGlobalObject()),tsNodeStreamKey("Blob"));value=tsConstruct(loop,blob,tsArrayValue(&tsArray{values:chunks}))};promise.settle(tsResult{value,false})});return tsPromiseValue(promise)}))};module.set("default",tsObjectValue(module));tsNodeStreamSingleton.consumers=tsObjectValue(module);return tsNodeStreamSingleton.consumers
+	for _,name:=range []string{"arrayBuffer","bytes","text","json","buffer","blob"}{method:=name;module.set(method,tsNamedNativeMethod(method,1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{promise:=loop.promise();tsNodeStreamConsumerCollect(loop,tsArg(args,0),method,promise);return tsPromiseValue(promise)}))};module.set("default",tsObjectValue(module));tsNodeStreamSingleton.consumers=tsObjectValue(module);return tsNodeStreamSingleton.consumers
 }
 func tsNodeStreamWeb(loop *tsLoop) tsValue {
 	if !tsIsUndefined(tsNodeStreamSingleton.web){return tsNodeStreamSingleton.web};object:=tsNewObject();global:=tsObjectValue(tsGlobalObject());for _,name:=range []string{"ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader","ReadableStreamBYOBRequest","ReadableByteStreamController","ReadableStreamDefaultController","TransformStream","TransformStreamDefaultController","WritableStream","WritableStreamDefaultWriter","WritableStreamDefaultController","ByteLengthQueuingStrategy","CountQueuingStrategy","TextEncoderStream","TextDecoderStream","CompressionStream","DecompressionStream"}{object.set(name,tsGet(loop,global,tsNodeStreamKey(name)))};object.set("default",tsObjectValue(object));tsNodeStreamSingleton.web=tsObjectValue(object);return tsNodeStreamSingleton.web
