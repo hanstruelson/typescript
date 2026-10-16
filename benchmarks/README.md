@@ -1,4 +1,4 @@
-# Selected TypeScript → Go benchmarks
+# Selected Launch → Go benchmarks
 
 These benchmarks compare emitted, compiled programs with Node.js and Bun. The
 headline workloads deliberately focus on native byte storage and inexpensive
@@ -8,7 +8,7 @@ callback workload where Bun is faster.
 
 ## Results
 
-| Selected workload | This fork → Go | Node.js | Bun | Speedup vs Node / Bun |
+| Selected workload | Launch → Go | Node.js | Bun | Speedup vs Node / Bun |
 | --- | ---: | ---: | ---: | ---: |
 | Initialize/fill 4 million byte elements | 6.07 ms | 74.24 ms | 16.36 ms | 12.2× / 2.7× |
 | Eight parallel array-initialization tasks | 25.79 ms | 298.33 ms | 203.24 ms | 11.6× / 7.9× |
@@ -18,7 +18,7 @@ Medians of five complete-process runs; compilation excluded, startup and setup
 included. The container has a two-core CPU quota. The parallel row uses eight
 goroutines here and eight real worker threads in Node and Bun.
 
-| Workload | This fork → Go | Node.js | Bun |
+| Workload | Launch → Go | Node.js | Bun |
 | --- | ---: | ---: | ---: |
 | Byte-array initialization | 6.07 ms | 74.24 ms | 16.36 ms |
 | Eight tasks, sequential | 37.77 ms | 304.35 ms | 139.28 ms |
@@ -26,8 +26,8 @@ goroutines here and eight real worker threads in Node and Bun.
 | Number-array callback summation | 62.56 ms | 81.66 ms | 14.39 ms |
 | TSValue-array callback summation | 556.62 ms | 81.66 ms | 14.39 ms |
 
-For the worker workload, running with `go` rather than sequentially improves this
-fork's own time by 1.46×. The much larger differences against
+For the worker workload, running with `launch` rather than sequentially improves this
+Launch's own time by 1.46×. The much larger differences against
 Node and Bun combine native storage, runtime execution, and startup costs;
 they do not establish that goroutines alone produce those ratios.
 
@@ -39,8 +39,8 @@ they do not establish that goroutines alone produce those ratios.
   Array representation. This is not a comparison with buffer-backed `Int8Array`;
   JavaScript can explicitly use that different API to obtain compact storage.
 - [workers.ts](workers.ts): eight independent tasks each allocate and fill eight
-  million byte elements. The fork runs them with `go`, each on its own event loop.
-  The sequential comparison replaces `go compute(seed)` with
+  million byte elements. The fork runs them with `launch`, each on its own event loop.
+  The sequential comparison replaces `launch compute(seed)` with
   `Promise.resolve(compute(seed))`. Node and Bun also run a parallel version using
   eight actual worker threads via [node-workers.cjs](node-workers.cjs).
   The worker function body is extracted from the same TypeScript source using

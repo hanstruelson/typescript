@@ -9,7 +9,7 @@ async function main() {
     const results: Promise<number>[] = [];
     for (let seed: number = 0; seed < 8; seed++) {
         // The runner uses ordinary calls for the sequential comparison.
-        results.push(go compute(seed));
+        results.push(launch compute(seed));
     }
     const values = await Promise.all(results);
     let total: number = 0;

@@ -902,6 +902,50 @@ func (r *EmitResolver) GetReferencedValueDeclarationUnsafe(node *ast.IdentifierN
 	return r.getReferenceResolver().GetReferencedValueDeclaration(node)
 }
 
+// GetLaunchOperatorOverrideDeclaration returns the type member used by a Launch
+// operator expression, if the receiver type declares that member.
+func (r *EmitResolver) GetLaunchOperatorOverrideDeclaration(node *ast.Node, methodName string) *ast.Node {
+	if node == nil || !ast.IsParseTreeNode(node) {
+		return nil
+	}
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	t := r.checker.getTypeAtLocation(node)
+	property := r.checker.getPropertyOfType(t, methodName)
+	if property == nil {
+		return nil
+	}
+	if property.ValueDeclaration != nil {
+		return property.ValueDeclaration
+	}
+	return core.FirstOrNil(property.Declarations)
+}
+
+// GetLaunchBinaryOperatorOverrideReceiver applies left-first operator dispatch
+// using the actual source operand types. The method still receives both source
+// operands, so choosing the right type as the dispatcher never reverses them.
+func (r *EmitResolver) GetLaunchBinaryOperatorOverrideReceiver(node *ast.Node, methodName string) *ast.Node {
+	if node == nil || node.Kind != ast.KindBinaryExpression || !ast.IsParseTreeNode(node) {
+		return nil
+	}
+	r.checkerMu.Lock()
+	defer r.checkerMu.Unlock()
+	binary := node.AsBinaryExpression()
+	leftType := r.checker.getTypeAtLocation(binary.Left)
+	rightType := r.checker.getTypeAtLocation(binary.Right)
+	arguments := []*Type{leftType, rightType}
+	if r.checker.getLaunchOperatorOverrideSignatureForArguments(leftType, methodName, arguments) != nil {
+		return binary.Left
+	}
+	if binary.OperatorToken.Kind == ast.KindEqualsToken {
+		return nil
+	}
+	if r.checker.getLaunchOperatorOverrideSignatureForArguments(rightType, methodName, arguments) != nil {
+		return binary.Right
+	}
+	return nil
+}
+
 func (r *EmitResolver) GetReferencedValueDeclarations(node *ast.IdentifierNode) []*ast.Declaration {
 	if !ast.IsParseTreeNode(node) {
 		return nil

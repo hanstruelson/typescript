@@ -1694,7 +1694,19 @@ func (p *Printer) emitMethodDeclaration(node *ast.MethodDeclaration) {
 	state := p.enterNode(node.AsNode())
 	p.emitModifierList(node.AsNode(), node.Modifiers(), true /*allowDecorators*/)
 	p.emitTokenNode(node.AsteriskToken)
-	p.emitPropertyName(node.Name())
+	if spelling, keyword := ast.LaunchOperatorSpelling(node.Name().Text()); spelling != "" {
+		p.writeKeyword("operator")
+		p.writeSpace()
+		p.writeKeyword("override")
+		p.writeSpace()
+		if keyword {
+			p.writeKeyword(spelling)
+		} else {
+			p.writePunctuation(spelling)
+		}
+	} else {
+		p.emitPropertyName(node.Name())
+	}
 	p.emitTokenNode(node.PostfixToken)
 	indented := p.shouldEmitIndented(node.AsNode())
 	p.increaseIndentIf(indented)
@@ -2555,9 +2567,50 @@ func (p *Printer) emitElementAccessExpression(node *ast.ElementAccessExpression)
 	p.emitExpression(node.Expression, core.IfElse(ast.IsOptionalChain(node.AsNode()), ast.OperatorPrecedenceOptionalChain, ast.OperatorPrecedenceMember))
 	p.emitTokenNode(node.QuestionDotToken)
 	p.emitToken(ast.KindOpenBracketToken, greatestEnd(-1, node.Expression, node.QuestionDotToken), WriteKindPunctuation, node.AsNode())
-	p.emitExpression(node.ArgumentExpression, ast.OperatorPrecedenceComma)
+	if node.ArgumentExpression.Flags&ast.NodeFlagsSliceArguments != 0 {
+		p.emitSliceArguments(node.ArgumentExpression)
+	} else {
+		p.emitExpression(node.ArgumentExpression, ast.OperatorPrecedenceComma)
+	}
 	p.emitToken(ast.KindCloseBracketToken, node.ArgumentExpression.End(), WriteKindPunctuation, node.AsNode())
 	p.exitNode(node.AsNode(), state)
+}
+
+func (p *Printer) emitSliceArguments(expression *ast.Node) {
+	var axes []*ast.Node
+	if expression.Kind == ast.KindArrayLiteralExpression {
+		axes = expression.AsArrayLiteralExpression().Elements.Nodes
+	} else {
+		var appendAxis func(*ast.Node)
+		appendAxis = func(node *ast.Node) {
+			if node.Kind == ast.KindBinaryExpression && node.AsBinaryExpression().OperatorToken.Kind == ast.KindCommaToken {
+				appendAxis(node.AsBinaryExpression().Left)
+				appendAxis(node.AsBinaryExpression().Right)
+				return
+			}
+			axes = append(axes, node)
+		}
+		appendAxis(expression)
+	}
+	for index, axis := range axes {
+		if index != 0 {
+			p.writePunctuation(",")
+			p.writeSpace()
+		}
+		if axis.Flags&ast.NodeFlagsSliceRange != 0 && axis.Kind == ast.KindArrayLiteralExpression {
+			parts := axis.AsArrayLiteralExpression().Elements.Nodes
+			for partIndex, part := range parts {
+				if partIndex != 0 {
+					p.writePunctuation(":")
+				}
+				if part.Kind != ast.KindUndefinedKeyword {
+					p.emitExpression(part, ast.OperatorPrecedenceAssignment)
+				}
+			}
+		} else {
+			p.emitExpression(axis, ast.OperatorPrecedenceAssignment)
+		}
+	}
 }
 
 func (p *Printer) emitArgument(node *ast.Expression) {
@@ -3472,9 +3525,14 @@ func (p *Printer) emitIfStatement(node *ast.IfStatement) {
 	state := p.enterNode(node.AsNode())
 	pos := p.emitToken(ast.KindIfKeyword, node.Pos(), WriteKindKeyword, node.AsNode())
 	p.writeSpace()
-	p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node.AsNode())
+	parenthesized := !ast.IsBlock(node.ThenStatement)
+	if parenthesized {
+		p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node.AsNode())
+	}
 	p.emitExpression(node.Expression, ast.OperatorPrecedenceLowest)
-	p.emitToken(ast.KindCloseParenToken, node.Expression.End(), WriteKindPunctuation, node.AsNode())
+	if parenthesized {
+		p.emitToken(ast.KindCloseParenToken, node.Expression.End(), WriteKindPunctuation, node.AsNode())
+	}
 	p.emitEmbeddedStatement(node.AsNode(), node.ThenStatement)
 	if node.ElseStatement != nil {
 		p.writeLineOrSpace(node.AsNode(), node.ThenStatement, node.ElseStatement)
@@ -3489,12 +3547,17 @@ func (p *Printer) emitIfStatement(node *ast.IfStatement) {
 	p.exitNode(node.AsNode(), state)
 }
 
-func (p *Printer) emitWhileClause(node *ast.Node, expression *ast.Expression, startPos int) {
+func (p *Printer) emitWhileClause(node *ast.Node, expression *ast.Expression, statement *ast.Node, startPos int) {
 	pos := p.emitToken(ast.KindWhileKeyword, startPos, WriteKindKeyword, node)
 	p.writeSpace()
-	p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node)
+	parenthesized := statement == nil || !ast.IsBlock(statement)
+	if parenthesized {
+		p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node)
+	}
 	p.emitExpression(expression, ast.OperatorPrecedenceLowest)
-	p.emitToken(ast.KindCloseParenToken, expression.End(), WriteKindPunctuation, node)
+	if parenthesized {
+		p.emitToken(ast.KindCloseParenToken, expression.End(), WriteKindPunctuation, node)
+	}
 }
 
 func (p *Printer) emitDoStatement(node *ast.DoStatement) {
@@ -3507,14 +3570,14 @@ func (p *Printer) emitDoStatement(node *ast.DoStatement) {
 		p.writeLineOrSpace(node.AsNode(), node.Statement, node.Expression)
 	}
 
-	p.emitWhileClause(node.AsNode(), node.Expression, node.Statement.End())
+	p.emitWhileClause(node.AsNode(), node.Expression, node.Statement, node.Statement.End())
 	p.writeTrailingSemicolon()
 	p.exitNode(node.AsNode(), state)
 }
 
 func (p *Printer) emitWhileStatement(node *ast.WhileStatement) {
 	state := p.enterNode(node.AsNode())
-	p.emitWhileClause(node.AsNode(), node.Expression, node.Pos())
+	p.emitWhileClause(node.AsNode(), node.Expression, node.Statement, node.Pos())
 	p.emitEmbeddedStatement(node.AsNode(), node.Statement)
 	p.exitNode(node.AsNode(), state)
 }
@@ -3531,7 +3594,10 @@ func (p *Printer) emitForStatement(node *ast.ForStatement) {
 	state := p.enterNode(node.AsNode())
 	pos := p.emitToken(ast.KindForKeyword, node.Pos(), WriteKindKeyword, node.AsNode())
 	p.writeSpace()
-	pos = p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node.AsNode())
+	parenthesized := !ast.IsBlock(node.Statement)
+	if parenthesized {
+		pos = p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node.AsNode())
+	}
 	if node.Initializer != nil {
 		p.emitForInitializer(node.Initializer)
 		pos = node.Initializer.End()
@@ -3548,7 +3614,9 @@ func (p *Printer) emitForStatement(node *ast.ForStatement) {
 		p.emitExpression(node.Incrementor, ast.OperatorPrecedenceLowest)
 		pos = node.Incrementor.End()
 	}
-	p.emitToken(ast.KindCloseParenToken, pos, WriteKindPunctuation, node.AsNode())
+	if parenthesized {
+		p.emitToken(ast.KindCloseParenToken, pos, WriteKindPunctuation, node.AsNode())
+	}
 	p.emitEmbeddedStatement(node.AsNode(), node.Statement)
 	p.exitNode(node.AsNode(), state)
 }
@@ -3557,13 +3625,18 @@ func (p *Printer) emitForInStatement(node *ast.ForInOrOfStatement) {
 	state := p.enterNode(node.AsNode())
 	pos := p.emitToken(ast.KindForKeyword, node.Pos(), WriteKindKeyword, node.AsNode())
 	p.writeSpace()
-	p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node.AsNode())
+	parenthesized := !ast.IsBlock(node.Statement)
+	if parenthesized {
+		p.emitToken(ast.KindOpenParenToken, pos, WriteKindPunctuation, node.AsNode())
+	}
 	p.emitForInitializer(node.Initializer)
 	p.writeSpace()
 	p.emitToken(ast.KindInKeyword, node.Initializer.End(), WriteKindKeyword, node.AsNode())
 	p.writeSpace()
 	p.emitExpression(node.Expression, ast.OperatorPrecedenceLowest)
-	p.emitToken(ast.KindCloseParenToken, node.Expression.End(), WriteKindPunctuation, node.AsNode())
+	if parenthesized {
+		p.emitToken(ast.KindCloseParenToken, node.Expression.End(), WriteKindPunctuation, node.AsNode())
+	}
 	p.emitEmbeddedStatement(node.AsNode(), node.Statement)
 	p.exitNode(node.AsNode(), state)
 }
@@ -3576,13 +3649,18 @@ func (p *Printer) emitForOfStatement(node *ast.ForInOrOfStatement) {
 		p.emitKeywordNode(node.AwaitModifier)
 		p.writeSpace()
 	}
-	p.emitToken(ast.KindOpenParenToken, openParenPos, WriteKindPunctuation, node.AsNode())
+	parenthesized := !ast.IsBlock(node.Statement)
+	if parenthesized {
+		p.emitToken(ast.KindOpenParenToken, openParenPos, WriteKindPunctuation, node.AsNode())
+	}
 	p.emitForInitializer(node.Initializer)
 	p.writeSpace()
 	p.emitToken(ast.KindOfKeyword, node.Initializer.End(), WriteKindKeyword, node.AsNode())
 	p.writeSpace()
 	p.emitExpression(node.Expression, ast.OperatorPrecedenceLowest)
-	p.emitToken(ast.KindCloseParenToken, node.Expression.End(), WriteKindPunctuation, node.AsNode())
+	if parenthesized {
+		p.emitToken(ast.KindCloseParenToken, node.Expression.End(), WriteKindPunctuation, node.AsNode())
+	}
 	p.emitEmbeddedStatement(node.AsNode(), node.Statement)
 	p.exitNode(node.AsNode(), state)
 }

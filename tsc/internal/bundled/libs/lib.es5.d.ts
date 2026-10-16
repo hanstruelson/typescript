@@ -17,6 +17,22 @@ and limitations under the License.
 /// <reference lib="decorators" />
 /// <reference lib="decorators.legacy" />
 
+/** Typed slice parts passed to an `operator override slice` method. */
+interface SliceIndex {
+    readonly kind: "index";
+    readonly index: number;
+}
+
+/** A Python-style half-open range. Missing bounds and steps are `undefined`. */
+interface SliceRange {
+    readonly kind: "range";
+    readonly start: number | undefined;
+    readonly stop: number | undefined;
+    readonly step: number | undefined;
+}
+
+type Slice = SliceIndex | SliceRange;
+
 /////////////////////////////
 /// ECMAScript APIs
 /////////////////////////////

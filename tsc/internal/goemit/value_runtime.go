@@ -40,6 +40,7 @@ const (
  tsDataViewKind
  tsBigIntKind
  tsSymbolKind
+	tsSliceKind
 )
 type tsValue struct {kind tsKind;number float64;ref unsafe.Pointer}
 var tsU=tsValue{}
@@ -73,6 +74,7 @@ func tsIteratorValueReference(value *tsIterator)tsValue{return tsValue{ref:unsaf
 func tsInstanceValue(value *tsProperties)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsInstanceKind}}
 func tsNamespaceValue(value tsNamespace)tsValue{return tsValue{ref:unsafe.Pointer(&value),kind:tsNamespaceKind}}
 func tsImportValue(value tsImportRef)tsValue{return tsValue{ref:unsafe.Pointer(&value),kind:tsImportKind}}
+func tsSliceValue(value *tsSlice)tsValue{return tsValue{ref:unsafe.Pointer(value),kind:tsSliceKind}}
 func tsClassPointer(value tsValue)*tsClass{if value.kind!=tsClassKind{panic("Expected a class")};return (*tsClass)(value.ref)}
 func tsInstanceProperties(value tsValue)*tsProperties{if value.kind!=tsInstanceKind{panic("Expected a class instance")};return (*tsProperties)(value.ref)}
 // Generic constraints describe compiler-selected native shapes, not JS values.

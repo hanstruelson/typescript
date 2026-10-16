@@ -40,9 +40,9 @@ def main():
             bun = str(local_bun)
     if not go or not node or not bun:
         parser.error("Go 1.27+, Node 24+, and Bun must be installed (see benchmarks/README.md)")
-    compiler = BUILD / "tsc"
+    compiler = BUILD / "launch"
     print("Building the compiler...", flush=True)
-    run([go, "build", "-o", str(compiler), "./tsc/cmd/tsc"])
+    run([go, "build", "-o", str(compiler), "./tsc/cmd/launch"])
     arrays = (HERE / "arrays.ts").read_text()
     workers = (HERE / "workers.ts").read_text()
     compact = (HERE / "compact-array.ts").read_text()
@@ -50,7 +50,7 @@ def main():
         "array-native": arrays.replace("ELEMENT_TYPE", "number"),
         "array-dynamic": arrays.replace("ELEMENT_TYPE", "any"),
         "compact-array": compact,
-        "workers-sequential": workers.replace("go compute(seed)", "Promise.resolve(compute(seed))"),
+        "workers-sequential": workers.replace("launch compute(seed)", "Promise.resolve(compute(seed))"),
         "workers-parallel": workers,
     }
     workloads = []

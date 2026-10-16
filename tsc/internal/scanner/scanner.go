@@ -103,7 +103,7 @@ var textToKeyword = map[string]ast.Kind{
 	"uint16":      ast.KindUint16Keyword,
 	"uint32":      ast.KindUint32Keyword,
 	"uint64":      ast.KindUint64Keyword,
-	"go":          ast.KindGoKeyword,
+	"launch":      ast.KindGoKeyword,
 	"object":      ast.KindObjectKeyword,
 	"package":     ast.KindPackageKeyword,
 	"private":     ast.KindPrivateKeyword,

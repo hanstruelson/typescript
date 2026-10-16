@@ -1241,9 +1241,13 @@ func (p *Parser) parseIfStatement() *ast.Node {
 	jsdoc := p.jsdocScannerInfo()
 	p.parseExpected(ast.KindIfKeyword)
 	openParenPosition := p.scanner.TokenStart()
-	openParenParsed := p.parseExpected(ast.KindOpenParenToken)
+	openParenParsed := p.parseOptional(ast.KindOpenParenToken)
 	expression := p.parseExpressionAllowIn()
-	p.parseExpectedMatchingBrackets(ast.KindOpenParenToken, ast.KindCloseParenToken, openParenParsed, openParenPosition)
+	if openParenParsed {
+		p.parseExpectedMatchingBrackets(ast.KindOpenParenToken, ast.KindCloseParenToken, true, openParenPosition)
+	} else if p.token != ast.KindOpenBraceToken {
+		p.parseErrorAtCurrentToken(diagnostics.Declaration_or_statement_expected)
+	}
 	thenStatement := p.parseStatement()
 	var elseStatement *ast.Statement
 	if p.parseOptional(ast.KindElseKeyword) {
@@ -1261,9 +1265,11 @@ func (p *Parser) parseDoStatement() *ast.Node {
 	statement := p.parseStatement()
 	p.parseExpected(ast.KindWhileKeyword)
 	openParenPosition := p.scanner.TokenStart()
-	openParenParsed := p.parseExpected(ast.KindOpenParenToken)
+	openParenParsed := p.parseOptional(ast.KindOpenParenToken)
 	expression := p.parseExpressionAllowIn()
-	p.parseExpectedMatchingBrackets(ast.KindOpenParenToken, ast.KindCloseParenToken, openParenParsed, openParenPosition)
+	if openParenParsed {
+		p.parseExpectedMatchingBrackets(ast.KindOpenParenToken, ast.KindCloseParenToken, true, openParenPosition)
+	}
 	// From: https://mail.mozilla.org/pipermail/es-discuss/2011-August/016188.html
 	// 157 min --- All allen at wirfs-brock.com CONF --- "do{;}while(false)false" prohibited in
 	// spec but allowed in consensus reality. Approved -- this is the de-facto standard whereby
@@ -1279,9 +1285,13 @@ func (p *Parser) parseWhileStatement() *ast.Node {
 	jsdoc := p.jsdocScannerInfo()
 	p.parseExpected(ast.KindWhileKeyword)
 	openParenPosition := p.scanner.TokenStart()
-	openParenParsed := p.parseExpected(ast.KindOpenParenToken)
+	openParenParsed := p.parseOptional(ast.KindOpenParenToken)
 	expression := p.parseExpressionAllowIn()
-	p.parseExpectedMatchingBrackets(ast.KindOpenParenToken, ast.KindCloseParenToken, openParenParsed, openParenPosition)
+	if openParenParsed {
+		p.parseExpectedMatchingBrackets(ast.KindOpenParenToken, ast.KindCloseParenToken, true, openParenPosition)
+	} else if p.token != ast.KindOpenBraceToken {
+		p.parseErrorAtCurrentToken(diagnostics.Declaration_or_statement_expected)
+	}
 	statement := p.parseStatement()
 	result := p.finishNode(p.factory.NewWhileStatement(expression, statement), pos)
 	p.withJSDoc(result, jsdoc)
@@ -1293,7 +1303,20 @@ func (p *Parser) parseForOrForInOrForOfStatement() *ast.Node {
 	jsdoc := p.jsdocScannerInfo()
 	p.parseExpected(ast.KindForKeyword)
 	awaitToken := p.parseOptionalToken(ast.KindAwaitKeyword)
-	p.parseExpected(ast.KindOpenParenToken)
+	hasParens := p.parseOptional(ast.KindOpenParenToken)
+	headerEnds := func() bool {
+		if hasParens {
+			return p.token == ast.KindCloseParenToken
+		}
+		return p.token == ast.KindOpenBraceToken
+	}
+	finishHeader := func() {
+		if hasParens {
+			p.parseExpected(ast.KindCloseParenToken)
+		} else if p.token != ast.KindOpenBraceToken {
+			p.parseErrorAtCurrentToken(diagnostics.Declaration_or_statement_expected)
+		}
+	}
 	var initializer *ast.ForInitializer
 	if p.token != ast.KindSemicolonToken {
 		if p.token == ast.KindVarKeyword || p.token == ast.KindLetKeyword || p.token == ast.KindConstKeyword ||
@@ -1309,24 +1332,24 @@ func (p *Parser) parseForOrForInOrForOfStatement() *ast.Node {
 	switch {
 	case awaitToken != nil && p.parseExpected(ast.KindOfKeyword) || awaitToken == nil && p.parseOptional(ast.KindOfKeyword):
 		expression := p.doInContext(ast.NodeFlagsDisallowInContext, false, (*Parser).parseAssignmentExpressionOrHigher)
-		p.parseExpected(ast.KindCloseParenToken)
+		finishHeader()
 		result = p.factory.NewForInOrOfStatement(ast.KindForOfStatement, awaitToken, initializer, expression, p.parseStatement())
 	case p.parseOptional(ast.KindInKeyword):
 		expression := p.parseExpressionAllowIn()
-		p.parseExpected(ast.KindCloseParenToken)
+		finishHeader()
 		result = p.factory.NewForInOrOfStatement(ast.KindForInStatement, nil /*awaitToken*/, initializer, expression, p.parseStatement())
 	default:
 		p.parseExpected(ast.KindSemicolonToken)
 		var condition *ast.Expression
-		if p.token != ast.KindSemicolonToken && p.token != ast.KindCloseParenToken {
+		if p.token != ast.KindSemicolonToken && !headerEnds() {
 			condition = p.parseExpressionAllowIn()
 		}
 		p.parseExpected(ast.KindSemicolonToken)
 		var incrementor *ast.Expression
-		if p.token != ast.KindCloseParenToken {
+		if !headerEnds() {
 			incrementor = p.parseExpressionAllowIn()
 		}
-		p.parseExpected(ast.KindCloseParenToken)
+		finishHeader()
 		result = p.factory.NewForStatement(initializer, condition, incrementor, p.parseStatement())
 	}
 	p.finishNode(result, pos)
@@ -1899,6 +1922,9 @@ func (p *Parser) parseClassElement() *ast.Node {
 		p.withJSDoc(result, jsdoc)
 		return result
 	}
+	if p.token == ast.KindIdentifier && p.scanner.TokenValue() == "operator" && p.lookAhead((*Parser).nextTokenIsOverrideKeyword) {
+		return p.parseLaunchOperatorOverride(pos, jsdoc)
+	}
 	modifiers := p.parseModifiersEx(true /*allowDecorators*/, true /*permitConstAsModifier*/, true /*stopOnStartOfClassStaticBlock*/)
 	if p.token == ast.KindStaticKeyword && p.lookAhead((*Parser).nextTokenIsOpenBrace) {
 		return p.parseClassStaticBlockDeclaration(pos, jsdoc, modifiers)
@@ -1943,6 +1969,31 @@ func (p *Parser) parseClassElement() *ast.Node {
 	}
 	// 'isClassMemberStart' should have hinted not to attempt parsing.
 	panic("Should not have attempted to parse class member declaration.")
+}
+
+func (p *Parser) nextTokenIsOverrideKeyword() bool {
+	return p.nextToken() == ast.KindOverrideKeyword
+}
+
+func (p *Parser) parseLaunchOperatorOverride(pos int, jsdoc jsdocScannerInfo) *ast.Node {
+	p.nextToken() // operator
+	p.parseExpected(ast.KindOverrideKeyword)
+	namePos := p.nodePos()
+	methodName := "__launch_operator_invalid"
+	switch {
+	case p.token == ast.KindIdentifier && p.scanner.TokenValue() == "slice":
+		methodName = ast.LaunchOperatorSliceMethodName
+		p.nextToken()
+	default:
+		if operatorName := ast.LaunchOperatorMethodName(p.token); operatorName != "" {
+			methodName = operatorName
+			p.nextToken()
+		} else {
+			p.parseErrorAtCurrentToken(diagnostics.Declaration_expected)
+		}
+	}
+	name := p.finishNode(p.newIdentifier(methodName), namePos)
+	return p.parseMethodDeclaration(pos, jsdoc, nil, nil, name, nil, diagnostics.X_or_expected)
 }
 
 func (p *Parser) parseClassStaticBlockDeclaration(pos int, jsdoc jsdocScannerInfo, modifiers *ast.ModifierList) *ast.Node {
@@ -5535,11 +5586,84 @@ func (p *Parser) parseElementAccessExpressionRest(pos int, expression *ast.Expre
 	if p.token == ast.KindCloseBracketToken {
 		p.parseErrorAt(p.nodePos(), p.nodePos(), diagnostics.An_element_access_expression_should_take_an_argument)
 	} else {
-		argumentExpression = p.parseExpressionAllowIn()
+		argumentExpression = p.parseLaunchElementAccessArguments()
 	}
 	p.parseExpected(ast.KindCloseBracketToken)
 	isOptionalChain := questionDotToken != nil || p.tryReparseOptionalChain(expression)
 	return p.finishNode(p.factory.NewElementAccessExpression(expression, questionDotToken, argumentExpression, core.IfElse(isOptionalChain, ast.NodeFlagsOptionalChain, ast.NodeFlagsNone)), pos)
+}
+
+func (p *Parser) parseLaunchElementAccessArguments() *ast.Expression {
+	pos := p.nodePos()
+	var axes []*ast.Expression
+	var commaPositions []int
+	hasRange := false
+	for {
+		var start *ast.Expression
+		if p.token != ast.KindColonToken && p.token != ast.KindCommaToken && p.token != ast.KindCloseBracketToken {
+			start = p.parseAssignmentExpressionOrHigher()
+		}
+		axis := start
+		if p.parseOptional(ast.KindColonToken) {
+			hasRange = true
+			startPart := p.slicePartOrUndefined(start, pos)
+			var stop *ast.Expression
+			if p.token != ast.KindColonToken && p.token != ast.KindCommaToken && p.token != ast.KindCloseBracketToken {
+				stop = p.parseAssignmentExpressionOrHigher()
+			}
+			parts := []*ast.Node{startPart.AsNode(), p.slicePartOrUndefined(stop, pos).AsNode()}
+			if p.parseOptional(ast.KindColonToken) {
+				var step *ast.Expression
+				if p.token != ast.KindCommaToken && p.token != ast.KindCloseBracketToken {
+					step = p.parseAssignmentExpressionOrHigher()
+				}
+				parts = append(parts, p.slicePartOrUndefined(step, pos).AsNode())
+			}
+			rangeNode := p.factory.NewArrayLiteralExpression(p.newNodeList(core.NewTextRange(pos, p.nodePos()), parts), false)
+			axis = p.finishNode(rangeNode, pos).AsExpression()
+			axis.Flags |= ast.NodeFlagsSliceRange
+		}
+		if axis == nil {
+			p.parseErrorAtCurrentToken(diagnostics.Expression_expected)
+			axis = p.finishNode(p.newIdentifier(""), p.nodePos()).AsExpression()
+		}
+		axes = append(axes, axis)
+		if p.token != ast.KindCommaToken {
+			break
+		}
+		commaPositions = append(commaPositions, p.nodePos())
+		p.nextToken()
+		if p.token == ast.KindCloseBracketToken {
+			break
+		}
+	}
+	if !hasRange && len(axes) == 1 {
+		return axes[0]
+	}
+	if hasRange && len(axes) == 1 {
+		args := p.factory.NewArrayLiteralExpression(p.newNodeList(core.NewTextRange(pos, p.nodePos()), []*ast.Node{axes[0].AsNode()}), false)
+		result := p.finishNode(args, pos).AsExpression()
+		result.Flags |= ast.NodeFlagsSliceArguments
+		return result
+	}
+	result := axes[0]
+	for index := 1; index < len(axes); index++ {
+		comma := p.factory.NewToken(ast.KindCommaToken)
+		comma.Loc = core.NewTextRange(commaPositions[index-1], commaPositions[index-1]+1)
+		binary := p.factory.NewBinaryExpression(nil, result, nil, comma, axes[index])
+		result = p.finishNode(binary, pos).AsExpression()
+	}
+	if hasRange || len(axes) > 1 {
+		result.Flags |= ast.NodeFlagsSliceArguments
+	}
+	return result
+}
+
+func (p *Parser) slicePartOrUndefined(expression *ast.Expression, pos int) *ast.Expression {
+	if expression != nil {
+		return expression
+	}
+	return p.finishNodeWithEnd(p.factory.NewKeywordExpression(ast.KindUndefinedKeyword), pos, pos).AsExpression()
 }
 
 func (p *Parser) parseCallExpressionRest(pos int, expression *ast.Expression) *ast.Expression {

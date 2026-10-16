@@ -55,7 +55,7 @@ func TestGoPrototypeFreeClassUsesDirectAccess(t *testing.T) {
 	}
 }
 func TestGoPrototypeSharedInitializationRace(t *testing.T) {
-	source := `function F(){this.x=1;}function inspect(){return Object.getOwnPropertyDescriptor(F,"prototype").value;}async function main(){const values=await Promise.all([go inspect(),go inspect()]);console.log(values[0]===values[1]);}main();`
+	source := `function F(){this.x=1;}function inspect(){return Object.getOwnPropertyDescriptor(F,"prototype").value;}async function main(){const values=await Promise.all([launch inspect(),launch inspect()]);console.log(values[0]===values[1]);}main();`
 	got, err := runGoProgram(t, emitGoProgram(t, source), true)
 	if err != nil || got != "true\n" {
 		t.Fatalf("%v %s", err, got)

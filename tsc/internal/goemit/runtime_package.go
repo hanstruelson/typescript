@@ -22,7 +22,7 @@ type runtimeExportPlan struct {
 }
 
 func runtimeTemplate() string {
-	return Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime +
+	return Runtime + ValueRuntime + SliceRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime +
 		GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime +
 		CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime +
 		ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime +

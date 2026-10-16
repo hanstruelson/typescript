@@ -765,6 +765,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		return b.temp("tsGet(" + receiver + "," + strconv.Quote(lookupName) + ")")
 	case ast.KindElementAccessExpression:
 		n := node.AsElementAccessExpression()
+		if b.hasLaunchOperatorOverride(n.Expression, ast.LaunchOperatorSliceMethodName) {
+			return b.sliceAccess(node)
+		}
 		if n.Expression.Kind == ast.KindSuperKeyword && b.e.dynamicPrototypes && b.declaring != nil && b.declaring.baseError == "RegExp" && !b.declaring.static {
 			receiver := b.expression(n.Expression)
 			key := b.expression(n.ArgumentExpression)
@@ -836,7 +839,14 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 	case ast.KindPrefixUnaryExpression:
 		n := node.AsPrefixUnaryExpression()
 		if n.Operator == ast.KindPlusPlusToken || n.Operator == ast.KindMinusMinusToken {
+			if methodName := ast.LaunchOperatorMethodName(n.Operator); b.hasLaunchOperatorOverride(n.Operand, methodName) {
+				return b.launchUpdateOperator(n.Operand, methodName, false)
+			}
 			return b.update(n.Operand, n.Operator, false)
+		}
+		if methodName := ast.LaunchOperatorMethodName(n.Operator); methodName != "" && b.hasLaunchOperatorOverride(n.Operand, methodName) {
+			receiver := b.launchDynamicValue(n.Operand)
+			return b.launchOperatorNoArgumentMethodCall(n.Operand, receiver, methodName)
 		}
 		operand := b.expression(n.Operand)
 		switch n.Operator {
@@ -863,6 +873,9 @@ func (b *machineBuilder) expression(node *ast.Node) string {
 		}
 	case ast.KindPostfixUnaryExpression:
 		n := node.AsPostfixUnaryExpression()
+		if methodName := ast.LaunchOperatorMethodName(n.Operator); b.hasLaunchOperatorOverride(n.Operand, methodName) {
+			return b.launchUpdateOperator(n.Operand, methodName, true)
+		}
 		return b.update(n.Operand, n.Operator, true)
 	case ast.KindVoidExpression:
 		b.expression(node.AsVoidExpression().Expression)
@@ -1066,9 +1079,248 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 	}
 	return value
 }
+type launchOperatorOverrideResolver interface {
+	GetLaunchOperatorOverrideDeclaration(*ast.Node, string) *ast.Node
+}
+
+type launchBinaryOperatorOverrideResolver interface {
+	GetLaunchBinaryOperatorOverrideReceiver(*ast.Node, string) *ast.Node
+}
+
+func (b *machineBuilder) hasLaunchOperatorOverride(receiver *ast.Node, methodName string) bool {
+	resolver, ok := b.e.resolver.(launchOperatorOverrideResolver)
+	return ok && resolver.GetLaunchOperatorOverrideDeclaration(receiver, methodName) != nil
+}
+
+func (b *machineBuilder) launchBinaryOperatorOverrideReceiver(node *ast.Node, methodName string) *ast.Node {
+	if resolver, ok := b.e.resolver.(launchBinaryOperatorOverrideResolver); ok {
+		return resolver.GetLaunchBinaryOperatorOverrideReceiver(node, methodName)
+	}
+	if node == nil || node.Kind != ast.KindBinaryExpression {
+		return nil
+	}
+	binary := node.AsBinaryExpression()
+	if b.hasLaunchOperatorOverride(binary.Left, methodName) {
+		return binary.Left
+	}
+	if b.hasLaunchOperatorOverride(binary.Right, methodName) {
+		return binary.Right
+	}
+	return nil
+}
+
+func (b *machineBuilder) launchDynamicValue(node *ast.Node) string {
+	if node != nil && ast.SkipParentheses(node).Kind == ast.KindThisKeyword && b.concrete != nil && !b.concrete.static {
+		return b.temp("tsInstanceValue(" + b.receiver + ".properties)")
+	}
+	return b.receiverValue(b.expression(node))
+}
+
+func (b *machineBuilder) launchOperatorMethodCall(dispatchNode *ast.Node, receiver, argument, methodName string) string {
+	if call, ok := b.launchOperatorStaticCall(dispatchNode, receiver, methodName, argument); ok {
+		return b.temp(call)
+	}
+	callee := b.temp("tsGet(" + receiver + ",tsStringReference(tsStringUTF8(" + strconv.Quote(methodName) + ")))")
+	return b.temp("tsCallReceiver(loop," + callee + "," + receiver + "," + argument + ")")
+}
+
+func (b *machineBuilder) launchOperatorBinaryMethodCall(dispatchNode *ast.Node, receiver, left, right, methodName string) string {
+	if call, ok := b.launchOperatorStaticCall(dispatchNode, receiver, methodName, left, right); ok {
+		return b.temp(call)
+	}
+	callee := b.temp("tsGet(" + receiver + ",tsStringReference(tsStringUTF8(" + strconv.Quote(methodName) + ")))")
+	return b.temp("tsCallReceiver(loop," + callee + "," + receiver + "," + left + "," + right + ")")
+}
+
+func (b *machineBuilder) launchOperatorNoArgumentMethodCall(dispatchNode *ast.Node, receiver, methodName string) string {
+	if call, ok := b.launchOperatorStaticCall(dispatchNode, receiver, methodName); ok {
+		return b.temp(call)
+	}
+	callee := b.temp("tsGet(" + receiver + ",tsStringReference(tsStringUTF8(" + strconv.Quote(methodName) + ")))")
+	return b.temp("tsCallReceiver(loop," + callee + "," + receiver + ")")
+}
+
+// launchOperatorStaticCall bypasses the generic property-call path for known
+// generated classes. Concrete Go receivers call their implementation directly;
+// base-typed views use a generated layout switch to retain virtual dispatch.
+func (b *machineBuilder) launchOperatorStaticCall(dispatchNode *ast.Node, receiver, methodName string, args ...string) (string, bool) {
+	if dispatchNode == nil {
+		return "", false
+	}
+	c := b.classOf(dispatchNode)
+	if c == nil || c.methods[methodName] == nil {
+		return "", false
+	}
+	target := b.classTarget(dispatchNode, receiver, c)
+	if dispatchNode.Kind == ast.KindThisKeyword {
+		target = b.receiver
+	}
+	if strings.HasPrefix(target, "tsView_") {
+		name := b.launchOperatorDispatcher(c, methodName)
+		values := append([]string{"loop", receiver}, args...)
+		return name + "(" + strings.Join(values, ",") + ")", true
+	}
+	owner := c.ownerOf(c.methods[methodName])
+	if owner == nil {
+		return "", false
+	}
+	return target + "." + implName(owner, methodName) + "(" + strings.Join(args, ",") + ")", true
+}
+
+func isClassOrSubclassOf(candidate, base *classInfo) bool {
+	for at := candidate; at != nil; at = at.parent {
+		if at == base {
+			return true
+		}
+	}
+	return false
+}
+
+func (b *machineBuilder) launchOperatorDispatcher(base *classInfo, methodName string) string {
+	key := base.name + ":" + methodName
+	name := "tsLaunchOperatorDispatch_" + base.name + "_" + memberName(methodName)
+	if b.e.operatorDispatchers == nil {
+		b.e.operatorDispatchers = map[string]bool{}
+	}
+	if b.e.operatorDispatchers[key] {
+		return name
+	}
+	b.e.operatorDispatchers[key] = true
+
+	var out strings.Builder
+	fmt.Fprintf(&out, "\nfunc %s(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{\n", name)
+	dispatchBase := base
+	dispatchValue := "receiver"
+	if base.static {
+		dispatchValue = "tsClassPointer(receiver).static"
+	}
+	fmt.Fprintf(&out, "value:=%s;properties:=tsInstanceProperties(value);switch properties.layout{\n", dispatchValue)
+	for _, candidateClass := range b.e.classOrder {
+		candidate := candidateClass
+		if base.static {
+			candidate = candidateClass.statics
+		}
+		if candidate == nil || candidate.methods[methodName] == nil || !isClassOrSubclassOf(candidate, dispatchBase) {
+			continue
+		}
+		owner := candidate.ownerOf(candidate.methods[methodName])
+		if owner == nil {
+			continue
+		}
+		fmt.Fprintf(&out, "case &tsLayout_%s:return tsAs_%s(value).%s(args...)\n", candidate.name, candidate.name, implName(owner, methodName))
+	}
+	fmt.Fprintf(&out, "};callee:=tsGet(loop,receiver,tsStringReference(tsStringUTF8(%s)));return tsCallReceiver(loop,callee,receiver,args...)\n}\n", strconv.Quote(methodName))
+	b.e.classText.WriteString(out.String())
+	return name
+}
+
+func (b *machineBuilder) launchUpdateOperator(operand *ast.Node, methodName string, postfix bool) string {
+	read, write := b.lvalue(operand)
+	old := b.temp(read)
+	value := b.launchOperatorNoArgumentMethodCall(operand, old, methodName)
+	written := b.temp(write(value))
+	if postfix {
+		return old
+	}
+	return written
+}
+
+func sliceAxes(expression *ast.Node) []*ast.Node {
+	if expression == nil || expression.Flags&ast.NodeFlagsSliceArguments == 0 {
+		return []*ast.Node{expression}
+	}
+	if expression.Kind == ast.KindArrayLiteralExpression {
+		return expression.AsArrayLiteralExpression().Elements.Nodes
+	}
+	var axes []*ast.Node
+	var appendAxis func(*ast.Node)
+	appendAxis = func(node *ast.Node) {
+		if node.Kind == ast.KindBinaryExpression && node.AsBinaryExpression().OperatorToken.Kind == ast.KindCommaToken {
+			appendAxis(node.AsBinaryExpression().Left)
+			appendAxis(node.AsBinaryExpression().Right)
+			return
+		}
+		axes = append(axes, node)
+	}
+	appendAxis(expression)
+	return axes
+}
+
+func (b *machineBuilder) sliceDescriptor(axis *ast.Node) string {
+	if axis != nil && axis.Flags&ast.NodeFlagsSliceRange != 0 && axis.Kind == ast.KindArrayLiteralExpression {
+		parts := []string{"tsU", "tsU", "tsU"}
+		for index, expression := range axis.AsArrayLiteralExpression().Elements.Nodes {
+			if index >= len(parts) {
+				break
+			}
+			if expression.Kind != ast.KindUndefinedKeyword {
+				parts[index] = b.launchDynamicValue(expression)
+			}
+		}
+		return "tsRangeSliceValue(" + strings.Join(parts, ",") + ")"
+	}
+	return "tsIndexSliceValue(" + b.launchDynamicValue(axis) + ")"
+}
+
+func (b *machineBuilder) sliceAccess(node *ast.Node) string {
+	access := node.AsElementAccessExpression()
+	receiver := b.launchDynamicValue(access.Expression)
+	parts := sliceAxes(access.ArgumentExpression)
+	descriptors := make([]string, 0, len(parts))
+	for _, part := range parts {
+		descriptors = append(descriptors, b.sliceDescriptor(part))
+	}
+	argument := b.temp("tsArrayValue(&tsArray{values:[]tsValue{" + strings.Join(descriptors, ",") + "}})")
+	return b.launchOperatorMethodCall(access.Expression, receiver, argument, ast.LaunchOperatorSliceMethodName)
+}
+
 func (b *machineBuilder) binary(node *ast.Node) string {
 	n := node.AsBinaryExpression()
 	operator := n.OperatorToken.Kind
+	if operator == ast.KindEqualsToken {
+		if dispatchReceiver := b.launchBinaryOperatorOverrideReceiver(node, ast.LaunchOperatorAssignMethodName); dispatchReceiver != nil {
+			read, _ := b.lvalue(n.Left)
+			leftValue := b.temp(read)
+			left := b.temp(b.receiverValue(leftValue))
+			right := b.launchDynamicValue(n.Right)
+			receiver := left
+			if dispatchReceiver == n.Right {
+				receiver = right
+			}
+			b.launchOperatorBinaryMethodCall(dispatchReceiver, receiver, left, right, ast.LaunchOperatorAssignMethodName)
+			return left
+		}
+	}
+	if baseMethodName := ast.LaunchOperatorBaseMethodName(operator); baseMethodName != "" {
+		methodName := ast.LaunchOperatorMethodName(operator)
+		dispatchReceiver := b.launchBinaryOperatorOverrideReceiver(node, methodName)
+		if dispatchReceiver == nil {
+			methodName = baseMethodName
+			dispatchReceiver = b.launchBinaryOperatorOverrideReceiver(node, methodName)
+		}
+		if dispatchReceiver != nil {
+			read, write := b.lvalue(n.Left)
+			leftValue := b.temp(read)
+			left := b.temp(b.receiverValue(leftValue))
+			right := b.launchDynamicValue(n.Right)
+			receiver := left
+			if dispatchReceiver == n.Right {
+				receiver = right
+			}
+			value := b.launchOperatorBinaryMethodCall(dispatchReceiver, receiver, left, right, methodName)
+			return b.temp(write(value))
+		}
+	} else if methodName := ast.LaunchOperatorMethodName(operator); methodName != "" && operator != ast.KindEqualsToken {
+		if dispatchReceiver := b.launchBinaryOperatorOverrideReceiver(node, methodName); dispatchReceiver != nil {
+			left := b.launchDynamicValue(n.Left)
+			right := b.launchDynamicValue(n.Right)
+			receiver := left
+			if dispatchReceiver == n.Right {
+				receiver = right
+			}
+			return b.launchOperatorBinaryMethodCall(dispatchReceiver, receiver, left, right, methodName)
+		}
+	}
 	if operator == ast.KindAmpersandAmpersandEqualsToken || operator == ast.KindBarBarEqualsToken || operator == ast.KindQuestionQuestionEqualsToken {
 		return b.logicalAssignment(n)
 	}

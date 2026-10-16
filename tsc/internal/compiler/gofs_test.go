@@ -36,7 +36,7 @@ func TestGoNodeFS(t *testing.T) {
  console.log(fs.lstatSync(dir+"/link").isSymbolicLink(),fs.readlinkSync(dir+"/link"));
  try{await fsp.readFile(dir+"/missing");}catch(e){console.log(e.code,e.path===dir+"/missing");}
  async function worker(path){const mod=await import("node:fs/promises");return await mod.readFile(path,"utf8");}
- console.log(await go worker(file));
+ console.log(await launch worker(file));
  await fsp.rm(dir,{recursive:true});console.log(fs.existsSync(dir));
  }main();`
 	text := emitGoProgram(t, source)

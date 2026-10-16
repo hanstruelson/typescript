@@ -20,7 +20,7 @@ func TestRuntimeWorkers(t *testing.T) {
 	dir := t.TempDir()
 	regexEmitter := &emitter{}
 	regexConstructor := regexEmitter.compiledRegExp("(?<word>a)(b)", "dg", nil)
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + regexEmitter.regexText.String() + "\nfunc testGeneratedRegExp(loop *tsLoop) tsValue { return " + regexConstructor + " }\n"))
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + SliceRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + regexEmitter.regexText.String() + "\nfunc testGeneratedRegExp(loop *tsLoop) tsValue { return " + regexConstructor + " }\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestPrimitiveTags(t *testing.T){
 // Only host APIs and generic static-type selection may inspect Go interfaces.
 // Application values must never fall back to interface boxing or assertions.
 func TestRuntimeInterfaceBoundaries(t *testing.T) {
-	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
+	source, err := formatValueSource([]byte("package main\n" + Runtime + ValueRuntime + SliceRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime))
 	if err != nil {
 		t.Fatal(err)
 	}

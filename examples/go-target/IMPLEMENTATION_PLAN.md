@@ -237,7 +237,7 @@ Go integer widths), exact integer tags, checked conversions independent of
 `coerceAny`, and compile-time constant range diagnostics. Calls carry the current
 loop explicitly, including native function and class method dispatch.
 
-`go worker(args)` returns a Promise through the existing task completion path.
+`launch worker(args)` returns a Promise through the existing task completion path.
 Each worker owns its loop and ECMAScript runtime. Reference values and captures
 remain shared; there is no deep-copy isolation. Promise handoff uses internal
 synchronization. Bundled literal dynamic imports initialize once on the registry

@@ -113,6 +113,7 @@ func tsText(value tsValue)string{switch value.kind{
  case tsFunctionKind:return "function "+(*tsFunction)(value.ref).name+"() { [native code] }"
  case tsClassKind:return fmt.Sprint((*tsClass)(value.ref))
  case tsInstanceKind:return "[object Object]"
+ case tsSliceKind:return "[object Object]"
  case tsRegExpKind:return tsRegExpText((*tsRegExp)(value.ref)).String()
 
  case tsPromiseKind:return fmt.Sprint((*tsPromise)(value.ref))
@@ -153,6 +154,7 @@ func tsGet(value,key tsValue) tsValue {if tsNullish(value){tsPropertyFailure("Ca
  case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return tsPrototypeLookup(loop,value,tsObjectValue(tsNumberPrototype(loop)),tsPropertyKey(key))
   case tsErrorKind:v:=(*tsRuntimeError)(value.ref);if v.object!=nil{return tsObjectRead(loop,tsObjectValue(v.object),tsPropertyKey(key))};if tsText(key)=="message" {return tsStringUTF8(v.message)};if tsText(key)=="name" {return tsStringUTF8(v.name)};if result,ok:=v.fields[tsText(key)];ok{return result};return tsPrototypeLookup(loop,value,tsValue(tsErrorPrototype(v.name)),tsPropertyKey(key))
  case tsNamespaceKind:v:=(*tsNamespace)(value.ref);return v.module.read(tsPropertyKey(key))
+ case tsSliceKind:return tsSliceGet(value,key)
  case tsPromiseKind:v:=(*tsPromise)(value.ref);name:=tsPropertyKey(key);if property,ok:=v.properties.values[name];ok{return property}
   if name=="then" || name=="catch" {return tsFunc(func(args ...tsValue) tsValue {
    next:=loop.promise();success,failure:=tsArg(args,0),tsArg(args,1);if tsText(key)=="catch" {failure=success;success=tsU}
@@ -471,6 +473,6 @@ func tsPolicyCompareOptionalNative[T tsPrimitive](loop *tsLoop,op string,native 
  }
  known:=native.raw();checked:=tsComparisonOperand(other,kind,nulls,coerce);left,right:=checked,known;if nativeLeft{left,right=known,checked};return tsTruthy(tsPolicyCompare(op,left,right,coerce))
 }
-func tsStrictEqual(a,b tsValue)bool {if tsIsNumeric(a)&&tsIsNumeric(b){return tsNumericEqual(a,b)};if a.kind!=b.kind{return false};switch a.kind {case tsBigIntKind:return (*big.Int)(a.ref).Cmp((*big.Int)(b.ref))==0;case tsUndefinedKind,tsNullKind:return true;case tsNumberKind,tsBooleanKind:return a.number==b.number;case tsStringKind:return tsStringEqual((*tsString)(a.ref),(*tsString)(b.ref));case tsRegExpKind:return a.ref==b.ref;case tsTaskKind,tsModuleKind:return a.ref==b.ref;case tsNamespaceKind:return (*tsNamespace)(a.ref).module==(*tsNamespace)(b.ref).module;case tsImportKind:x,y:=(*tsImportRef)(a.ref),(*tsImportRef)(b.ref);return x.module==y.module&&x.name==y.name;case tsSymbolKind,tsErrorKind,tsFunctionKind,tsObjectKind,tsArrayKind,tsClassKind,tsPromiseKind,tsInstanceKind,tsCollectionKind,tsIteratorKind,tsTypedArrayKind,tsArrayBufferKind,tsDataViewKind:return a.ref==b.ref;default:return false}}
+func tsStrictEqual(a,b tsValue)bool {if tsIsNumeric(a)&&tsIsNumeric(b){return tsNumericEqual(a,b)};if a.kind!=b.kind{return false};switch a.kind {case tsBigIntKind:return (*big.Int)(a.ref).Cmp((*big.Int)(b.ref))==0;case tsUndefinedKind,tsNullKind:return true;case tsNumberKind,tsBooleanKind:return a.number==b.number;case tsStringKind:return tsStringEqual((*tsString)(a.ref),(*tsString)(b.ref));case tsRegExpKind:return a.ref==b.ref;case tsTaskKind,tsModuleKind:return a.ref==b.ref;case tsNamespaceKind:return (*tsNamespace)(a.ref).module==(*tsNamespace)(b.ref).module;case tsImportKind:x,y:=(*tsImportRef)(a.ref),(*tsImportRef)(b.ref);return x.module==y.module&&x.name==y.name;case tsSymbolKind,tsErrorKind,tsFunctionKind,tsObjectKind,tsArrayKind,tsClassKind,tsPromiseKind,tsInstanceKind,tsCollectionKind,tsIteratorKind,tsTypedArrayKind,tsArrayBufferKind,tsDataViewKind,tsSliceKind:return a.ref==b.ref;default:return false}}
 
 `

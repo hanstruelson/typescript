@@ -8329,10 +8329,57 @@ func (c *Checker) checkElementAccessExpression(node *ast.Node, exprType *Type, c
 		objectType = c.getWidenedType(objectType)
 	}
 	indexExpression := node.AsElementAccessExpression().ArgumentExpression
-	indexType := c.checkExpression(indexExpression)
 	if c.isErrorType(objectType) || objectType == c.silentNeverType {
+		c.checkExpression(indexExpression)
 		return objectType
 	}
+	if signature := c.getLaunchOperatorOverrideSignature(objectType, ast.LaunchOperatorSliceMethodName); signature != nil {
+		parameterType := c.getTypeOfFirstParameterOfSignature(signature)
+		validParameter := len(signature.parameters) == 1 && parameterType != nil && (c.isArrayType(parameterType) || c.isReadonlyArrayType(parameterType))
+		if validParameter {
+			typeArguments := c.getTypeArguments(parameterType)
+			var elementType *Type
+			if len(typeArguments) == 1 {
+				elementType = typeArguments[0]
+			}
+			sliceSymbol := c.getGlobalTypeAliasSymbol("Slice", 0, false)
+			if sliceSymbol != nil {
+				sliceType := c.getDeclaredTypeOfSymbol(sliceSymbol)
+				validParameter = elementType != nil && !IsTypeAny(elementType) && c.isTypeAssignableTo(sliceType, elementType) && c.isTypeAssignableTo(elementType, sliceType)
+			}
+		}
+		if !validParameter {
+			declaration := signature.declaration
+			if declaration == nil {
+				declaration = node
+			}
+			c.error(declaration, diagnostics.NewAdHocMessage("An operator override slice method must accept one Slice array parameter."))
+		} else {
+			parameter := signature.parameters[0].ValueDeclaration
+			if parameter != nil {
+				parameterNode := parameter
+				if parameterNode.AsParameterDeclaration().QuestionToken != nil || parameterNode.AsParameterDeclaration().DotDotDotToken != nil || parameterNode.AsParameterDeclaration().Initializer != nil {
+					c.error(parameterNode, diagnostics.NewAdHocMessage("An operator override slice method must accept one required Slice array parameter."))
+				}
+			}
+		}
+		for _, axis := range sliceAxes(indexExpression) {
+			if axis != nil && axis.Flags&ast.NodeFlagsSliceRange != 0 && axis.Kind == ast.KindArrayLiteralExpression {
+				for _, part := range axis.AsArrayLiteralExpression().Elements.Nodes {
+					if part.Kind == ast.KindUndefinedKeyword {
+						continue
+					}
+					partType := c.checkExpression(part)
+					c.checkTypeAssignableTo(partType, c.numberType, part, nil)
+				}
+				continue
+			}
+			axisType := c.checkExpression(axis)
+			c.checkTypeAssignableTo(axisType, c.numberType, axis, nil)
+		}
+		return c.getReturnTypeOfSignature(signature)
+	}
+	indexType := c.checkExpression(indexExpression)
 	if isConstEnumObjectType(objectType) && !ast.IsStringLiteralLike(indexExpression) {
 		c.error(indexExpression, diagnostics.A_const_enum_member_can_only_be_accessed_using_a_string_literal)
 		return c.errorType
@@ -8352,6 +8399,27 @@ func (c *Checker) checkElementAccessExpression(node *ast.Node, exprType *Type, c
 	}
 	indexedAccessType := core.OrElse(c.getIndexedAccessTypeOrUndefined(objectType, effectiveIndexType, accessFlags, node, nil), c.errorType)
 	return c.checkIndexedAccessIndexType(c.getFlowTypeOfAccessExpression(node, c.getResolvedSymbolOrNil(node), indexedAccessType, indexExpression, checkMode), node)
+}
+
+func sliceAxes(expression *ast.Node) []*ast.Node {
+	if expression == nil || expression.Flags&ast.NodeFlagsSliceArguments == 0 {
+		return []*ast.Node{expression}
+	}
+	if expression.Kind == ast.KindArrayLiteralExpression {
+		return expression.AsArrayLiteralExpression().Elements.Nodes
+	}
+	var axes []*ast.Node
+	var appendAxis func(*ast.Node)
+	appendAxis = func(node *ast.Node) {
+		if node.Kind == ast.KindBinaryExpression && node.AsBinaryExpression().OperatorToken.Kind == ast.KindCommaToken {
+			appendAxis(node.AsBinaryExpression().Left)
+			appendAxis(node.AsBinaryExpression().Right)
+			return
+		}
+		axes = append(axes, node)
+	}
+	appendAxis(expression)
+	return axes
 }
 
 // Return true if given node is an expression consisting of an identifier (possibly parenthesized)
@@ -11092,6 +11160,17 @@ func (c *Checker) checkPrefixUnaryExpression(node *ast.Node) *Type {
 	if operandType == c.silentNeverType {
 		return c.silentNeverType
 	}
+	if methodName := ast.LaunchOperatorMethodName(expr.Operator); methodName != "" {
+		if signature := c.getLaunchOperatorOverrideSignatureForArguments(operandType, methodName, nil); signature != nil {
+			resultType := c.getReturnTypeOfSignature(signature)
+			if c.checkLaunchOperatorSignature(signature, node, scanner.TokenToString(expr.Operator), 0) && (expr.Operator == ast.KindPlusPlusToken || expr.Operator == ast.KindMinusMinusToken) {
+				if c.checkReferenceExpression(expr.Operand, diagnostics.The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access, diagnostics.The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access) {
+					c.checkTypeAssignableTo(resultType, operandType, node, nil)
+				}
+			}
+			return resultType
+		}
+	}
 	switch expr.Operand.Kind {
 	case ast.KindNumericLiteral:
 		switch expr.Operator {
@@ -11148,6 +11227,17 @@ func (c *Checker) checkPostfixUnaryExpression(node *ast.Node) *Type {
 	operandType := c.checkExpression(expr.Operand)
 	if operandType == c.silentNeverType {
 		return c.silentNeverType
+	}
+	if methodName := ast.LaunchOperatorMethodName(expr.Operator); methodName != "" {
+		if signature := c.getLaunchOperatorOverrideSignatureForArguments(operandType, methodName, nil); signature != nil {
+			resultType := c.getReturnTypeOfSignature(signature)
+			if c.checkLaunchOperatorSignature(signature, node, scanner.TokenToString(expr.Operator), 0) {
+				if c.checkReferenceExpression(expr.Operand, diagnostics.The_operand_of_an_increment_or_decrement_operator_must_be_a_variable_or_a_property_access, diagnostics.The_operand_of_an_increment_or_decrement_operator_may_not_be_an_optional_property_access) {
+					c.checkTypeAssignableTo(resultType, operandType, node, nil)
+				}
+			}
+			return resultType
+		}
 	}
 	ok := c.checkArithmeticOperandType(expr.Operand, c.checkNonNullType(operandType, expr.Operand), diagnostics.An_arithmetic_operand_must_be_of_type_any_number_bigint_or_an_enum_type, false)
 	if ok {
@@ -12576,6 +12666,85 @@ func (c *Checker) checkBinaryExpression(node *ast.Node, checkMode CheckMode) *Ty
 	return c.checkBinaryLikeExpression(binary.Left, binary.OperatorToken, binary.Right, checkMode, node)
 }
 
+func (c *Checker) getLaunchOperatorOverrideSignature(t *Type, methodName string) *Signature {
+	if t == nil || methodName == "" {
+		return nil
+	}
+	property := c.getPropertyOfType(t, methodName)
+	if property == nil {
+		return nil
+	}
+	signatures := c.getSignaturesOfType(c.getTypeOfSymbol(property), SignatureKindCall)
+	if len(signatures) == 0 {
+		return nil
+	}
+	return signatures[0]
+}
+
+func (c *Checker) getLaunchOperatorOverrideSignatureForArguments(t *Type, methodName string, arguments []*Type) *Signature {
+	if t == nil || methodName == "" {
+		return nil
+	}
+	property := c.getPropertyOfType(t, methodName)
+	if property == nil {
+		return nil
+	}
+	for _, signature := range c.getSignaturesOfType(c.getTypeOfSymbol(property), SignatureKindCall) {
+		if len(signature.parameters) != len(arguments) {
+			continue
+		}
+		matches := true
+		for index, argumentType := range arguments {
+			parameterType := c.getTypeAtPosition(signature, index)
+			if parameterType == nil || !c.isTypeAssignableTo(argumentType, parameterType) {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return signature
+		}
+	}
+	return nil
+}
+
+func (c *Checker) checkLaunchOperatorSignature(signature *Signature, location *ast.Node, operatorName string, argumentCount int) bool {
+	valid := signature != nil && len(signature.parameters) == argumentCount
+	if valid {
+		for _, parameter := range signature.parameters {
+			if parameter.ValueDeclaration != nil {
+				declaration := parameter.ValueDeclaration.AsParameterDeclaration()
+				if declaration.QuestionToken != nil || declaration.DotDotDotToken != nil || declaration.Initializer != nil {
+					valid = false
+					break
+				}
+			}
+		}
+	}
+	if !valid {
+		if signature != nil && signature.declaration != nil {
+			location = signature.declaration
+		}
+		c.error(location, diagnostics.NewAdHocMessage("An operator override "+operatorName+" method must declare exactly "+strconv.Itoa(argumentCount)+" required parameters."))
+	}
+	return valid
+}
+
+func (c *Checker) checkLaunchOperatorArguments(signature *Signature, arguments []*ast.Node, argumentTypes []*Type) {
+	if signature == nil {
+		return
+	}
+	for index, argument := range arguments {
+		if index >= len(argumentTypes) || index >= len(signature.parameters) {
+			break
+		}
+		parameterType := c.getTypeAtPosition(signature, index)
+		if parameterType != nil {
+			c.checkTypeAssignableTo(argumentTypes[index], parameterType, argument, nil)
+		}
+	}
+}
+
 func (c *Checker) checkBinaryLikeExpression(left *ast.Node, operatorToken *ast.Node, right *ast.Node, checkMode CheckMode, errorNode *ast.Node) *Type {
 	operator := operatorToken.Kind
 	if operator == ast.KindEqualsToken && (left.Kind == ast.KindObjectLiteralExpression || left.Kind == ast.KindArrayLiteralExpression) {
@@ -12583,6 +12752,45 @@ func (c *Checker) checkBinaryLikeExpression(left *ast.Node, operatorToken *ast.N
 	}
 	leftType := c.checkExpressionEx(left, checkMode)
 	rightType := c.checkExpressionEx(right, checkMode)
+	operatorMethodName := ast.LaunchOperatorMethodName(operator)
+	methodNames := []string{operatorMethodName}
+	if baseMethodName := ast.LaunchOperatorBaseMethodName(operator); baseMethodName != "" && baseMethodName != operatorMethodName {
+		methodNames = append(methodNames, baseMethodName)
+	}
+	argumentNodes := []*ast.Node{left, right}
+	argumentTypes := []*Type{leftType, rightType}
+	for _, methodName := range methodNames {
+		if methodName == "" {
+			continue
+		}
+		var signature *Signature
+		if operator == ast.KindEqualsToken {
+			signature = c.getLaunchOperatorOverrideSignatureForArguments(leftType, methodName, argumentTypes)
+		} else {
+			signature = c.getLaunchOperatorOverrideSignatureForArguments(leftType, methodName, argumentTypes)
+			if signature == nil {
+				signature = c.getLaunchOperatorOverrideSignatureForArguments(rightType, methodName, argumentTypes)
+			}
+		}
+		if signature == nil {
+			continue
+		}
+		operatorName := scanner.TokenToString(operator)
+		if c.checkLaunchOperatorSignature(signature, errorNode, operatorName, 2) {
+			c.checkLaunchOperatorArguments(signature, argumentNodes, argumentTypes)
+		}
+		resultType := c.getReturnTypeOfSignature(signature)
+		if operator == ast.KindEqualsToken {
+			// The override owns RHS conversion, while the compiler still verifies
+			// that the left operand is a writable assignment target.
+			c.checkAssignmentOperator(left, operator, right, leftType, leftType)
+			return leftType
+		}
+		if ast.IsAssignmentOperator(operator) {
+			c.checkAssignmentOperator(left, operator, right, leftType, resultType)
+		}
+		return resultType
+	}
 	if ast.IsLogicalOrCoalescingBinaryOperator(operator) {
 		parent := left.Parent.Parent
 		for ast.IsParenthesizedExpression(parent) || ast.IsLogicalOrCoalescingBinaryExpression(parent) {

@@ -389,7 +389,7 @@ func TestGoNativeNumericConversions(t *testing.T) {
 }
 
 func TestGoWorkerEventLoop(t *testing.T) {
-	source := `declare function delay(ms:number):Promise<void>;let shared={value:0};function child(x:int32):int32{return x;}async function worker(x:int32){await delay(1);shared.value=x;return child(x);}async function main(){const result=await go worker(7);console.log(result,shared.value);try{await go fail();}catch(e){console.log("rejected");}}function fail(){throw "worker failed";}main();`
+	source := `declare function delay(ms:number):Promise<void>;let shared={value:0};function child(x:int32):int32{return x;}async function worker(x:int32){await delay(1);shared.value=x;return child(x);}async function main(){const result=await launch worker(7);console.log(result,shared.value);try{await launch fail();}catch(e){console.log("rejected");}}function fail(){throw "worker failed";}main();`
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	got, err := runGoProgram(t, text, true)
 	if err != nil {
@@ -402,7 +402,7 @@ func TestGoWorkerEventLoop(t *testing.T) {
 
 func TestGoConcurrentWorkerImports(t *testing.T) {
 	fs := bundled.WrapFS(vfstest.FromMap(map[string]string{
-		"/src/main.ts":   `async function worker(){const m=await import("./helper.js");return m.value;}async function main(){const values=await Promise.all([go worker(),go worker()]);console.log(values[0],values[1]);}main();`,
+		"/src/main.ts":   `async function worker(){const m=await import("./helper.js");return m.value;}async function main(){const values=await Promise.all([launch worker(),launch worker()]);console.log(values[0],values[1]);}main();`,
 		"/src/helper.ts": `console.log("initialized");export const value:int64=9223372036854775807;`,
 	}, tspath.CaseSensitive))
 	options := core.CompilerOptions{Target: core.ScriptTargetGo, OutDir: "/out"}

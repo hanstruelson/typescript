@@ -74,18 +74,18 @@ func printEasyHelp(sys System, locale locale.Locale, simpleOptions []*tsoptions.
 		output = append(output, "  ", desc.Localize(locale), "\n", "\n")
 	}
 
-	msg := diagnostics.X_tsc_Colon_The_TypeScript_Compiler.Localize(locale) + " - " + diagnostics.Version_0.Localize(locale, core.Version())
+	msg := "Launch: The Launch Compiler - " + diagnostics.Version_0.Localize(locale, core.Version())
 	output = append(output, getHeader(sys, msg)...)
 
 	output = append(output, colors.bold(diagnostics.COMMON_COMMANDS.Localize(locale)), "\n", "\n")
 
-	example([]string{"tsc"}, diagnostics.Compiles_the_current_project_tsconfig_json_in_the_working_directory)
-	example([]string{"tsc app.ts util.ts"}, diagnostics.Ignoring_tsconfig_json_compiles_the_specified_files_with_default_compiler_options)
-	example([]string{"tsc -b"}, diagnostics.Build_a_composite_project_in_the_working_directory)
-	example([]string{"tsc --init"}, diagnostics.Creates_a_tsconfig_json_with_the_recommended_settings_in_the_working_directory)
-	example([]string{"tsc -p ./path/to/tsconfig.json"}, diagnostics.Compiles_the_TypeScript_project_located_at_the_specified_path)
-	example([]string{"tsc --help --all"}, diagnostics.An_expanded_version_of_this_information_showing_all_possible_compiler_options)
-	example([]string{"tsc --noEmit", "tsc --target esnext"}, diagnostics.Compiles_the_current_project_with_additional_settings)
+	example([]string{"launch"}, diagnostics.Compiles_the_current_project_tsconfig_json_in_the_working_directory)
+	example([]string{"launch app.ts util.ts"}, diagnostics.Ignoring_tsconfig_json_compiles_the_specified_files_with_default_compiler_options)
+	example([]string{"launch -b"}, diagnostics.Build_a_composite_project_in_the_working_directory)
+	example([]string{"launch --init"}, diagnostics.Creates_a_tsconfig_json_with_the_recommended_settings_in_the_working_directory)
+	example([]string{"launch -p ./path/to/tsconfig.json"}, diagnostics.Compiles_the_TypeScript_project_located_at_the_specified_path)
+	example([]string{"launch --help --all"}, diagnostics.An_expanded_version_of_this_information_showing_all_possible_compiler_options)
+	example([]string{"launch --noEmit", "launch --target esnext"}, diagnostics.Compiles_the_current_project_with_additional_settings)
 
 	var cliCommands []*tsoptions.CommandLineOption
 	var configOpts []*tsoptions.CommandLineOption
@@ -109,7 +109,7 @@ func printEasyHelp(sys System, locale locale.Locale, simpleOptions []*tsoptions.
 
 func printAllHelp(sys System, locale locale.Locale, options []*tsoptions.CommandLineOption) {
 	var output []string
-	msg := diagnostics.X_tsc_Colon_The_TypeScript_Compiler.Localize(locale) + " - " + diagnostics.Version_0.Localize(locale, core.Version())
+	msg := "Launch: The Launch Compiler - " + diagnostics.Version_0.Localize(locale, core.Version())
 	output = append(output, getHeader(sys, msg)...)
 
 	// ALL COMPILER OPTIONS section
@@ -130,7 +130,7 @@ func printAllHelp(sys System, locale locale.Locale, options []*tsoptions.Command
 
 func PrintBuildHelp(sys System, locale locale.Locale, buildOptions []*tsoptions.CommandLineOption) {
 	var output []string
-	output = append(output, getHeader(sys, diagnostics.X_tsc_Colon_The_TypeScript_Compiler.Localize(locale)+" - "+diagnostics.Version_0.Localize(locale, core.Version()))...)
+	output = append(output, getHeader(sys, "Launch: The Launch Compiler - "+diagnostics.Version_0.Localize(locale, core.Version()))...)
 	before := diagnostics.Using_build_b_will_make_tsc_behave_more_like_a_build_orchestrator_than_a_compiler_This_is_used_to_trigger_building_composite_projects_which_you_can_learn_more_about_at_0.Localize(locale, "https://aka.ms/tsc-composite-builds")
 	options := core.Filter(buildOptions, func(option *tsoptions.CommandLineOption) bool {
 		return option != &tsoptions.TscBuildOption

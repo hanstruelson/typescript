@@ -40,6 +40,7 @@ type emitter struct {
 	classes             map[*ast.Node]*classInfo
 	classOrder          []*classInfo
 	classText           strings.Builder
+	operatorDispatchers map[string]bool
 	regexText           strings.Builder
 	regexMatchers       map[string]string
 	dynamicPrototypes   bool

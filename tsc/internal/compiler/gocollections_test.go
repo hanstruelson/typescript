@@ -120,7 +120,7 @@ func TestGoArrayCopyMethods(t *testing.T) {
 }
 
 func TestGoTypedArrayNativeAccess(t *testing.T) {
-	source := `function first(a:Float64Array){return a[0];}const a=new Float64Array([1,2]);a[1]=7.5;console.log(a[1],first(a),first(new Uint8Array([255]) as unknown as Float64Array));async function worker(x:Float64Array){x[0]=9;return x[0];}async function main(){console.log(await go worker(a),a[0]);}main();`
+	source := `function first(a:Float64Array){return a[0];}const a=new Float64Array([1,2]);a[1]=7.5;console.log(a[1],first(a),first(new Uint8Array([255]) as unknown as Float64Array));async function worker(x:Float64Array){x[0]=9;return x[0];}async function main(){console.log(await launch worker(a),a[0]);}main();`
 	text := emitGoOptions(t, source, core.CompilerOptions{Strict: core.TSTrue})
 	for _, fragment := range []string{"tsNativeArrayRead[float64](", "tsNativeArrayWrite[float64]("} {
 		if !strings.Contains(text, fragment) {

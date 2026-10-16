@@ -3,7 +3,7 @@
 Use Go 1.27 or later. From the repository root:
 
 ```sh
-go run ./tsc/cmd/tsc --project examples/go-target
+go run ./tsc/cmd/launch --project examples/go-target
 go run examples/go-target/out/input.go
 ```
 
@@ -17,7 +17,7 @@ module, and `outDir` still controls the destination.
 ## Timers
 
 ```sh
-go run ./tsc/cmd/tsc --project examples/go-target/timer
+go run ./tsc/cmd/launch --project examples/go-target/timer
 go run examples/go-target/timer/out/main.go
 ```
 
@@ -40,7 +40,7 @@ worker, so canceled long timers do not keep the process alive.
 ## Async file reading
 
 ```sh
-go run ./tsc/cmd/tsc --project examples/go-target/async
+go run ./tsc/cmd/launch --project examples/go-target/async
 go run examples/go-target/async/out/main.go
 ```
 
@@ -194,7 +194,7 @@ not browser numeric IDs.
 ## Demand-driven modules
 
 ```sh
-go run ./tsc/cmd/tsc --project examples/go-target/modules
+go run ./tsc/cmd/launch --project examples/go-target/modules
 go run examples/go-target/modules/out/main.go
 ```
 
@@ -243,7 +243,7 @@ nested directories. A pattern with no matches or colliding file paths is an erro
 ## Classes
 
 ```sh
-go run ./tsc/cmd/tsc --project examples/go-target/classes
+go run ./tsc/cmd/launch --project examples/go-target/classes
 go run examples/go-target/classes/out/main.go
 ```
 
@@ -335,7 +335,7 @@ The `types` example demonstrates typed boundaries, UTF-16 indexing, regex
 captures, and destructuring:
 
 ```sh
-go run ./tsc/cmd/tsc --project examples/go-target/types
+go run ./tsc/cmd/launch --project examples/go-target/types
 go run examples/go-target/types/out/main.go
 ```
 
@@ -390,15 +390,15 @@ async function worker(value: int64): Promise<int64> {
     return value;
 }
 async function main() {
-    const result = await go worker(count);
+    const result = await launch worker(count);
     console.log(result);
 }
 main();
 ```
 
-`go worker(args)` evaluates the function and arguments once, starts a task with
+`launch worker(args)` evaluates the function and arguments once, starts a task with
 its own event loop, and returns a Promise for the worker's result or error.
-Nested calls, timers, async functions, and further `go` calls use the executing
+Nested calls, timers, async functions, and further `launch` calls use the executing
 worker's loop. Scalars pass by value; object, array, function, and class references
 pass by pointer. No arguments, captures, or results are deep copied.
 
