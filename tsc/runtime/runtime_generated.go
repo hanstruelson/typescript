@@ -2626,6 +2626,12 @@ func TsOrdinaryInstanceOf(loop *TsLoop, value, class TsValue) bool {
 		if !TsIsUndefined(function.BoundTarget) {
 			return TsInstanceOf(loop, value, function.BoundTarget)
 		}
+		if function == TsRegExpIntrinsics.Constructor {
+			if value.Kind == TsRegExpKind {
+				return true
+			}
+			return value.Kind == TsInstanceKind && (*TsProperties)(value.Ref).Regexp != nil
+		}
 		prototype := TsFunctionGet(loop, class, "prototype")
 		if TsIsPrimitiveValue(prototype) {
 			TsPropertyFailure("Constructor prototype is not an object")
@@ -35269,17 +35275,18 @@ type TsNodeEventListener struct {
 	Once          bool
 }
 type TsNodeEventEmitter struct {
-	Object  *TsObject
-	Events  map[string][]*TsNodeEventListener
-	Names   map[string]TsValue
-	Max     int
-	Capture bool
+	Receiver TsValue
+	Object   *TsObject
+	Events   map[string][]*TsNodeEventListener
+	Names    map[string]TsValue
+	Max      int
+	Capture  bool
 }
 type TsNodeEventsState struct {
 	sync.Once
 	Constructor                                                        *TsFunction
 	Prototype                                                          *TsObject
-	Emitters                                                           map[*TsObject]*TsNodeEventEmitter
+	Emitters                                                           map[unsafe.Pointer]*TsNodeEventEmitter
 	DefaultMax                                                         int
 	Capture                                                            bool
 	ErrorMonitor, RejectionSymbol, MaxTargetListeners, MaxTargetWarned TsValue
@@ -35289,7 +35296,7 @@ var TsNodeEventsSingleton TsNodeEventsState
 
 func TsNodeEventsInit(loop *TsLoop) {
 	TsNodeEventsSingleton.Do(func() {
-		TsNodeEventsSingleton.Emitters = map[*TsObject]*TsNodeEventEmitter{}
+		TsNodeEventsSingleton.Emitters = map[unsafe.Pointer]*TsNodeEventEmitter{}
 		TsNodeEventsSingleton.DefaultMax = 10
 		TsNodeEventsSingleton.Prototype = TsNewObject()
 		registry := TsGet(loop, TsSymbolFunction(), TsStringReference(TsStringUTF8("for")))
@@ -35312,10 +35319,34 @@ func TsNodeEventKey(loop *TsLoop, event TsValue) string {
 }
 
 func TsNodeEventState(receiver TsValue) *TsNodeEventEmitter {
-	if receiver.Kind != TsObjectKind {
+	if receiver.Kind != TsObjectKind && receiver.Kind != TsFunctionKind {
+		return nil
+	}
+	return TsNodeEventsSingleton.Emitters[receiver.Ref]
+}
+
+func TsNodeEventEnsureState(receiver TsValue) *TsNodeEventEmitter {
+	if receiver.Kind != TsObjectKind && receiver.Kind != TsFunctionKind {
 		TsPropertyFailure("EventEmitter method called on incompatible receiver")
 	}
-	return TsNodeEventsSingleton.Emitters[(*TsObject)(receiver.Ref)]
+	if state := TsNodeEventState(receiver); state != nil {
+		return state
+	}
+	var object *TsObject
+	if receiver.Kind == TsObjectKind {
+		object = (*TsObject)(receiver.Ref)
+	}
+	state := &TsNodeEventEmitter{Receiver: receiver, Object: object, Events: map[string][]*TsNodeEventListener{}, Names: map[string]TsValue{}, Max: TsNodeEventsSingleton.DefaultMax, Capture: TsNodeEventsSingleton.Capture}
+	TsNodeEventsSingleton.Emitters[receiver.Ref] = state
+	return state
+}
+
+func TsNodeEventProcessListenerChange(loop *TsLoop, state *TsNodeEventEmitter, key string) {
+	if state.Object == nil {
+		return
+	}
+	TsNodeProcessMemoryPressureListenerChange(loop, state.Object, key)
+	TsNodeProcessSignalListenerChange(loop, state.Object, key)
 }
 
 func TsNodeEventsAddTargetListener(loop *TsLoop, target, event, listener TsValue, once bool) {
@@ -35342,17 +35373,17 @@ func TsNodeEventsRemoveTargetListener(loop *TsLoop, target, event, listener TsVa
 }
 
 func TsNodeEventCreate(loop *TsLoop, receiver TsValue, options TsValue) TsValue {
+	if receiver.Kind != TsObjectKind && receiver.Kind != TsFunctionKind {
+		receiver = TsObjectValue(TsNewObject())
+	}
 	var object *TsObject
 	if receiver.Kind == TsObjectKind {
 		object = (*TsObject)(receiver.Ref)
 	}
-	if object == nil {
-		object = TsNewObject()
-	}
-	if object.NativeClass == nil {
+	if object != nil && object.NativeClass == nil {
 		object.NativeClass = TsNativeClass(loop, "EventEmitter")
 	}
-	if TsIsUndefined(object.Prototype) {
+	if object != nil && TsIsUndefined(object.Prototype) {
 		object.Prototype = TsObjectValue(TsNodeEventsSingleton.Prototype)
 	}
 	capture := TsNodeEventsSingleton.Capture
@@ -35367,18 +35398,15 @@ func TsNodeEventCreate(loop *TsLoop, receiver TsValue, options TsValue) TsValue 
 	} else if !TsIsUndefined(options) {
 		TsFSInvalid("options", "an object")
 	}
-	state := &TsNodeEventEmitter{Object: object, Events: map[string][]*TsNodeEventListener{}, Names: map[string]TsValue{}, Max: TsNodeEventsSingleton.DefaultMax, Capture: capture}
-	TsNodeEventsSingleton.Emitters[object] = state
-	return TsObjectValue(object)
+	state := &TsNodeEventEmitter{Receiver: receiver, Object: object, Events: map[string][]*TsNodeEventListener{}, Names: map[string]TsValue{}, Max: TsNodeEventsSingleton.DefaultMax, Capture: capture}
+	TsNodeEventsSingleton.Emitters[receiver.Ref] = state
+	return receiver
 }
 
 func TsNodeEventsInstallPrototype(loop *TsLoop) {
 	prototype := TsNodeEventsSingleton.Prototype
 	prototype.Set("setMaxListeners", TsNamedNativeMethod("setMaxListeners", 1, func(_ *TsLoop, receiver TsValue, args ...TsValue) TsValue {
-		state := TsNodeEventState(receiver)
-		if state == nil {
-			TsPropertyFailure("Invalid EventEmitter receiver")
-		}
+		state := TsNodeEventEnsureState(receiver)
 		value := TsArg(args, 0)
 		if !TsIsNumeric(value) || TsNumber(value) < 0 || math.IsNaN(TsNumber(value)) {
 			TsFSInvalid("n", "a non-negative number")
@@ -35387,18 +35415,10 @@ func TsNodeEventsInstallPrototype(loop *TsLoop) {
 		return receiver
 	}))
 	prototype.Set("getMaxListeners", TsNamedNativeMethod("getMaxListeners", 0, func(_ *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
-		state := TsNodeEventState(receiver)
-		if state == nil {
-			TsPropertyFailure("Invalid EventEmitter receiver")
-		}
-		return TsNumberValue(float64(state.Max))
+		return TsNumberValue(float64(TsNodeEventEnsureState(receiver).Max))
 	}))
 	prototype.Set("emit", TsNamedNativeMethod("emit", 1, func(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
-		state := TsNodeEventState(receiver)
-		if state == nil {
-			TsPropertyFailure("Invalid EventEmitter receiver")
-		}
-		return TsBooleanValue(TsNodeEventEmit(loop, state, TsArg(args, 0), args[1:]))
+		return TsBooleanValue(TsNodeEventEmit(loop, TsNodeEventEnsureState(receiver), TsArg(args, 0), args[1:]))
 	}))
 	prototype.Set("addListener", TsNamedNativeMethod("addListener", 2, func(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
 		return TsNodeEventAdd(loop, receiver, TsArg(args, 0), TsArg(args, 1), false, false)
@@ -35414,31 +35434,23 @@ func TsNodeEventsInstallPrototype(loop *TsLoop) {
 		return TsNodeEventAdd(loop, receiver, TsArg(args, 0), TsArg(args, 1), true, true)
 	}))
 	prototype.Set("removeListener", TsNamedNativeMethod("removeListener", 2, func(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
-		state := TsNodeEventState(receiver)
-		if state == nil {
-			TsPropertyFailure("Invalid EventEmitter receiver")
-		}
-		TsNodeEventRemove(loop, state, TsArg(args, 0), TsArg(args, 1))
+		TsNodeEventRemove(loop, TsNodeEventEnsureState(receiver), TsArg(args, 0), TsArg(args, 1))
 		return receiver
 	}))
 	prototype.Set("off", prototype.RuntimeFieldGet(loop, "removeListener"))
 	prototype.Set("removeAllListeners", TsNamedNativeMethod("removeAllListeners", 1, func(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
-		state := TsNodeEventState(receiver)
-		if state == nil {
-			TsPropertyFailure("Invalid EventEmitter receiver")
-		}
+		state := TsNodeEventEnsureState(receiver)
 		event := TsArg(args, 0)
 		if TsIsUndefined(event) {
 			state.Events = map[string][]*TsNodeEventListener{}
 			state.Names = map[string]TsValue{}
-			TsNodeProcessMemoryPressureListenerChange(loop, state.Object, "memoryPressure")
-			TsNodeProcessSignalListenerChange(loop, state.Object, "")
+			TsNodeEventProcessListenerChange(loop, state, "memoryPressure")
+			TsNodeEventProcessListenerChange(loop, state, "")
 		} else {
 			key := TsNodeEventKey(loop, event)
 			delete(state.Events, key)
 			delete(state.Names, key)
-			TsNodeProcessMemoryPressureListenerChange(loop, state.Object, key)
-			TsNodeProcessSignalListenerChange(loop, state.Object, key)
+			TsNodeEventProcessListenerChange(loop, state, key)
 		}
 		return receiver
 	}))
@@ -35452,13 +35464,11 @@ func TsNodeEventsInstallPrototype(loop *TsLoop) {
 		return TsNodeEventCount(loop, receiver, TsArg(args, 0), TsArg(args, 1))
 	}))
 	prototype.Set("eventNames", TsNamedNativeMethod("eventNames", 0, func(_ *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
-		state := TsNodeEventState(receiver)
+		state := TsNodeEventEnsureState(receiver)
 		out := &TsArray{}
-		if state != nil {
-			for key, list := range state.Events {
-				if len(list) > 0 {
-					out.Values = append(out.Values, state.Names[key])
-				}
+		for key, list := range state.Events {
+			if len(list) > 0 {
+				out.Values = append(out.Values, state.Names[key])
 			}
 		}
 		return TsArrayValue(out)
@@ -35466,10 +35476,7 @@ func TsNodeEventsInstallPrototype(loop *TsLoop) {
 }
 
 func TsNodeEventAdd(loop *TsLoop, receiver, event, listener TsValue, prepend, once bool) TsValue {
-	state := TsNodeEventState(receiver)
-	if state == nil {
-		TsPropertyFailure("Invalid EventEmitter receiver")
-	}
+	state := TsNodeEventEnsureState(receiver)
 	if listener.Kind != TsFunctionKind {
 		TsFSInvalid("listener", "a function")
 	}
@@ -35479,7 +35486,7 @@ func TsNodeEventAdd(loop *TsLoop, receiver, event, listener TsValue, prepend, on
 		var wrapper TsValue
 		wrapper = TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue {
 			TsNodeEventRemove(loop, state, event, wrapper)
-			return TsCallReceiver(loop, listener, TsObjectValue(state.Object), args...)
+			return TsCallReceiver(loop, listener, state.Receiver, args...)
 		}))
 		(*TsFunction)(wrapper.Ref).Name = "bound onceWrapper"
 		(*TsFunction)(wrapper.Ref).Properties = TsNewObject()
@@ -35494,8 +35501,7 @@ func TsNodeEventAdd(loop *TsLoop, receiver, event, listener TsValue, prepend, on
 	}
 	state.Events[key] = list
 	state.Names[key] = event
-	TsNodeProcessMemoryPressureListenerChange(loop, state.Object, key)
-	TsNodeProcessSignalListenerChange(loop, state.Object, key)
+	TsNodeEventProcessListenerChange(loop, state, key)
 	return receiver
 }
 
@@ -35519,8 +35525,7 @@ func TsNodeEventRemove(loop *TsLoop, state *TsNodeEventEmitter, event, listener 
 	} else {
 		state.Events[key] = list
 	}
-	TsNodeProcessMemoryPressureListenerChange(loop, state.Object, key)
-	TsNodeProcessSignalListenerChange(loop, state.Object, key)
+	TsNodeEventProcessListenerChange(loop, state, key)
 }
 
 func TsNodeEventEmit(loop *TsLoop, state *TsNodeEventEmitter, event TsValue, args []TsValue) bool {
@@ -35530,7 +35535,7 @@ func TsNodeEventEmit(loop *TsLoop, state *TsNodeEventEmitter, event TsValue, arg
 		for index := 0; index < len(monitor); index++ {
 			var entry *TsNodeEventListener
 			entry = monitor[index]
-			TsCallReceiver(loop, entry.Raw, TsObjectValue(state.Object), args...)
+			TsCallReceiver(loop, entry.Raw, state.Receiver, args...)
 		}
 	}
 	listeners := append([]*TsNodeEventListener(nil), state.Events[key]...)
@@ -35551,7 +35556,7 @@ func TsNodeEventEmit(loop *TsLoop, state *TsNodeEventEmitter, event TsValue, arg
 		if entry.Once {
 			TsNodeEventRemove(loop, state, event, entry.Raw)
 		}
-		result := TsCallReceiver(loop, entry.Raw, TsObjectValue(state.Object), args...)
+		result := TsCallReceiver(loop, entry.Raw, state.Receiver, args...)
 		if state.Capture && result.Kind == TsPromiseKind {
 			promise := (*TsPromise)(result.Ref)
 			promise.Then(func(settled TsResult) {

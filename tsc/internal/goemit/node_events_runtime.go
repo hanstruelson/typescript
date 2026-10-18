@@ -5,13 +5,13 @@ package goemit
 // direct checks against this runtime's existing values and AbortSignal state.
 const nodeEventsRuntime = `
 type tsNodeEventListener struct { original, raw tsValue; once bool }
-type tsNodeEventEmitter struct { object *tsObject; events map[string][]*tsNodeEventListener; names map[string]tsValue; max int; capture bool }
-type tsNodeEventsState struct { sync.Once; constructor *tsFunction; prototype *tsObject; emitters map[*tsObject]*tsNodeEventEmitter; defaultMax int; capture bool; errorMonitor, rejectionSymbol, maxTargetListeners, maxTargetWarned tsValue }
+type tsNodeEventEmitter struct { receiver tsValue; object *tsObject; events map[string][]*tsNodeEventListener; names map[string]tsValue; max int; capture bool }
+type tsNodeEventsState struct { sync.Once; constructor *tsFunction; prototype *tsObject; emitters map[unsafe.Pointer]*tsNodeEventEmitter; defaultMax int; capture bool; errorMonitor, rejectionSymbol, maxTargetListeners, maxTargetWarned tsValue }
 var tsNodeEventsSingleton tsNodeEventsState
 
 func tsNodeEventsInit(loop *tsLoop) {
 	tsNodeEventsSingleton.Do(func() {
-		tsNodeEventsSingleton.emitters=map[*tsObject]*tsNodeEventEmitter{}
+		tsNodeEventsSingleton.emitters=map[unsafe.Pointer]*tsNodeEventEmitter{}
 		tsNodeEventsSingleton.defaultMax=10
 		tsNodeEventsSingleton.prototype=tsNewObject()
 		registry:=tsGet(loop,tsSymbolFunction(),tsStringReference(tsStringUTF8("for")))
@@ -30,8 +30,24 @@ func tsNodeEventKey(loop *tsLoop, event tsValue) string {
 }
 
 func tsNodeEventState(receiver tsValue) *tsNodeEventEmitter {
-	if receiver.kind!=tsObjectKind { tsPropertyFailure("EventEmitter method called on incompatible receiver") }
-	return tsNodeEventsSingleton.emitters[(*tsObject)(receiver.ref)]
+	if receiver.kind!=tsObjectKind && receiver.kind!=tsFunctionKind { return nil }
+	return tsNodeEventsSingleton.emitters[receiver.ref]
+}
+
+func tsNodeEventEnsureState(receiver tsValue) *tsNodeEventEmitter {
+	if receiver.kind!=tsObjectKind && receiver.kind!=tsFunctionKind { tsPropertyFailure("EventEmitter method called on incompatible receiver") }
+	if state:=tsNodeEventState(receiver);state!=nil { return state }
+	var object *tsObject
+	if receiver.kind==tsObjectKind { object=(*tsObject)(receiver.ref) }
+	state:=&tsNodeEventEmitter{receiver:receiver,object:object,events:map[string][]*tsNodeEventListener{},names:map[string]tsValue{},max:tsNodeEventsSingleton.defaultMax,capture:tsNodeEventsSingleton.capture}
+	tsNodeEventsSingleton.emitters[receiver.ref]=state
+	return state
+}
+
+func tsNodeEventProcessListenerChange(loop *tsLoop,state *tsNodeEventEmitter,key string) {
+	if state.object==nil { return }
+	tsNodeProcessMemoryPressureListenerChange(loop,state.object,key)
+	tsNodeProcessSignalListenerChange(loop,state.object,key)
 }
 
 func tsNodeEventsAddTargetListener(loop *tsLoop,target,event,listener tsValue,once bool) {
@@ -46,42 +62,42 @@ func tsNodeEventsRemoveTargetListener(loop *tsLoop,target,event,listener tsValue
 }
 
 func tsNodeEventCreate(loop *tsLoop, receiver tsValue, options tsValue) tsValue {
+	if receiver.kind!=tsObjectKind && receiver.kind!=tsFunctionKind { receiver=tsObjectValue(tsNewObject()) }
 	var object *tsObject
 	if receiver.kind==tsObjectKind { object=(*tsObject)(receiver.ref) }
-	if object==nil { object=tsNewObject() }
-	if object.nativeClass==nil { object.nativeClass=tsNativeClass("EventEmitter") }
-	if tsIsUndefined(object.prototype) { object.prototype=tsObjectValue(tsNodeEventsSingleton.prototype) }
+	if object!=nil && object.nativeClass==nil { object.nativeClass=tsNativeClass("EventEmitter") }
+	if object!=nil && tsIsUndefined(object.prototype) { object.prototype=tsObjectValue(tsNodeEventsSingleton.prototype) }
 	capture:=tsNodeEventsSingleton.capture
 	if options.kind==tsObjectKind||options.kind==tsInstanceKind {
 		value:=tsFSProperty(options,"captureRejections")
 		if !tsIsUndefined(value) { if value.kind!=tsBooleanKind { tsFSInvalid("options.captureRejections","a boolean") }; capture=tsTruthy(value) }
 	} else if !tsIsUndefined(options) { tsFSInvalid("options","an object") }
-	state:=&tsNodeEventEmitter{object:object,events:map[string][]*tsNodeEventListener{},names:map[string]tsValue{},max:tsNodeEventsSingleton.defaultMax,capture:capture}
-	tsNodeEventsSingleton.emitters[object]=state
-	return tsObjectValue(object)
+	state:=&tsNodeEventEmitter{receiver:receiver,object:object,events:map[string][]*tsNodeEventListener{},names:map[string]tsValue{},max:tsNodeEventsSingleton.defaultMax,capture:capture}
+	tsNodeEventsSingleton.emitters[receiver.ref]=state
+	return receiver
 }
 
 func tsNodeEventsInstallPrototype(loop *tsLoop) {
 	prototype:=tsNodeEventsSingleton.prototype
-	prototype.set("setMaxListeners",tsNamedNativeMethod("setMaxListeners",1,func(_ *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};value:=tsArg(args,0);if !tsIsNumeric(value)||tsNumber(value)<0||math.IsNaN(tsNumber(value)){tsFSInvalid("n","a non-negative number")};state.max=int(tsNumber(value));return receiver}))
-	prototype.set("getMaxListeners",tsNamedNativeMethod("getMaxListeners",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};return tsNumberValue(float64(state.max))}))
-	prototype.set("emit",tsNamedNativeMethod("emit",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};return tsBooleanValue(tsNodeEventEmit(loop,state,tsArg(args,0),args[1:]))}))
+	prototype.set("setMaxListeners",tsNamedNativeMethod("setMaxListeners",1,func(_ *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventEnsureState(receiver);value:=tsArg(args,0);if !tsIsNumeric(value)||tsNumber(value)<0||math.IsNaN(tsNumber(value)){tsFSInvalid("n","a non-negative number")};state.max=int(tsNumber(value));return receiver}))
+	prototype.set("getMaxListeners",tsNamedNativeMethod("getMaxListeners",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{return tsNumberValue(float64(tsNodeEventEnsureState(receiver).max))}))
+	prototype.set("emit",tsNamedNativeMethod("emit",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsBooleanValue(tsNodeEventEmit(loop,tsNodeEventEnsureState(receiver),tsArg(args,0),args[1:]))}))
 	prototype.set("addListener",tsNamedNativeMethod("addListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventAdd(loop,receiver,tsArg(args,0),tsArg(args,1),false,false)}))
 	prototype.set("on",prototype.get("addListener"))
 	prototype.set("prependListener",tsNamedNativeMethod("prependListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventAdd(loop,receiver,tsArg(args,0),tsArg(args,1),true,false)}))
 	prototype.set("once",tsNamedNativeMethod("once",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventAdd(loop,receiver,tsArg(args,0),tsArg(args,1),false,true)}))
 	prototype.set("prependOnceListener",tsNamedNativeMethod("prependOnceListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventAdd(loop,receiver,tsArg(args,0),tsArg(args,1),true,true)}))
-	prototype.set("removeListener",tsNamedNativeMethod("removeListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};tsNodeEventRemove(loop,state,tsArg(args,0),tsArg(args,1));return receiver}))
+	prototype.set("removeListener",tsNamedNativeMethod("removeListener",2,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{tsNodeEventRemove(loop,tsNodeEventEnsureState(receiver),tsArg(args,0),tsArg(args,1));return receiver}))
 	prototype.set("off",prototype.get("removeListener"))
-	prototype.set("removeAllListeners",tsNamedNativeMethod("removeAllListeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")};event:=tsArg(args,0);if tsIsUndefined(event){state.events=map[string][]*tsNodeEventListener{};state.names=map[string]tsValue{};tsNodeProcessMemoryPressureListenerChange(loop,state.object,"memoryPressure");tsNodeProcessSignalListenerChange(loop,state.object,"")}else{key:=tsNodeEventKey(loop,event);delete(state.events,key);delete(state.names,key);tsNodeProcessMemoryPressureListenerChange(loop,state.object,key);tsNodeProcessSignalListenerChange(loop,state.object,key)};return receiver}))
+	prototype.set("removeAllListeners",tsNamedNativeMethod("removeAllListeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{state:=tsNodeEventEnsureState(receiver);event:=tsArg(args,0);if tsIsUndefined(event){state.events=map[string][]*tsNodeEventListener{};state.names=map[string]tsValue{};tsNodeEventProcessListenerChange(loop,state,"memoryPressure");tsNodeEventProcessListenerChange(loop,state,"")}else{key:=tsNodeEventKey(loop,event);delete(state.events,key);delete(state.names,key);tsNodeEventProcessListenerChange(loop,state,key)};return receiver}))
 	prototype.set("listeners",tsNamedNativeMethod("listeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventListeners(loop,receiver,tsArg(args,0),false)}))
 	prototype.set("rawListeners",tsNamedNativeMethod("rawListeners",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventListeners(loop,receiver,tsArg(args,0),true)}))
 	prototype.set("listenerCount",tsNamedNativeMethod("listenerCount",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsNodeEventCount(loop,receiver,tsArg(args,0),tsArg(args,1))}))
-	prototype.set("eventNames",tsNamedNativeMethod("eventNames",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{state:=tsNodeEventState(receiver);out:=&tsArray{};if state!=nil{for key,list:=range state.events{if len(list)>0{out.values=append(out.values,state.names[key])}}};return tsArrayValue(out)}))
+	prototype.set("eventNames",tsNamedNativeMethod("eventNames",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{state:=tsNodeEventEnsureState(receiver);out:=&tsArray{};for key,list:=range state.events{if len(list)>0{out.values=append(out.values,state.names[key])}};return tsArrayValue(out)}))
 }
 
 func tsNodeEventAdd(loop *tsLoop,receiver,event,listener tsValue,prepend,once bool) tsValue {
-	state:=tsNodeEventState(receiver);if state==nil{tsPropertyFailure("Invalid EventEmitter receiver")}
+	state:=tsNodeEventEnsureState(receiver)
 	if listener.kind!=tsFunctionKind{tsFSInvalid("listener","a function")}
 	key:=tsNodeEventKey(loop,event)
 	entry:=&tsNodeEventListener{original:listener,raw:listener,once:once}
@@ -89,7 +105,7 @@ func tsNodeEventAdd(loop *tsLoop,receiver,event,listener tsValue,prepend,once bo
 		var wrapper tsValue
 		wrapper=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{
 			tsNodeEventRemove(loop,state,event,wrapper)
-			return tsCallReceiver(loop,listener,tsObjectValue(state.object),args...)
+			return tsCallReceiver(loop,listener,state.receiver,args...)
 		}))
 		(*tsFunction)(wrapper.ref).name="bound onceWrapper"
 		(*tsFunction)(wrapper.ref).properties=tsNewObject()
@@ -99,8 +115,7 @@ func tsNodeEventAdd(loop *tsLoop,receiver,event,listener tsValue,prepend,once bo
 	list:=state.events[key]
 	if prepend { list=append([]*tsNodeEventListener{entry},list...) } else { list=append(list,entry) }
 	state.events[key]=list;state.names[key]=event
-	tsNodeProcessMemoryPressureListenerChange(loop,state.object,key)
-	tsNodeProcessSignalListenerChange(loop,state.object,key)
+	tsNodeEventProcessListenerChange(loop,state,key)
 	return receiver
 }
 
@@ -112,15 +127,14 @@ func tsNodeEventRemove(loop *tsLoop,state *tsNodeEventEmitter,event,listener tsV
 		if matches { list=append(list[:index],list[index+1:]...);break }
 	}
 	if len(list)==0 { delete(state.events,key);delete(state.names,key) } else { state.events[key]=list }
-	tsNodeProcessMemoryPressureListenerChange(loop,state.object,key)
-	tsNodeProcessSignalListenerChange(loop,state.object,key)
+	tsNodeEventProcessListenerChange(loop,state,key)
 }
 
 func tsNodeEventEmit(loop *tsLoop,state *tsNodeEventEmitter,event tsValue,args []tsValue) bool {
 	key:=tsNodeEventKey(loop,event)
 	if tsText(event)=="error" {
 		monitor:=state.events[tsPropertyKey(loop,tsNodeEventsSingleton.errorMonitor)]
-		for index:=0;index<len(monitor);index++{var entry *tsNodeEventListener;entry=monitor[index];tsCallReceiver(loop,entry.raw,tsObjectValue(state.object),args...)}
+		for index:=0;index<len(monitor);index++{var entry *tsNodeEventListener;entry=monitor[index];tsCallReceiver(loop,entry.raw,state.receiver,args...)}
 	}
 	listeners:=append([]*tsNodeEventListener(nil),state.events[key]...)
 	if len(listeners)==0 {
@@ -133,7 +147,7 @@ func tsNodeEventEmit(loop *tsLoop,state *tsNodeEventEmitter,event tsValue,args [
 	for index:=0;index<len(listeners);index++ {
 		var entry *tsNodeEventListener;entry=listeners[index]
 		if entry.once { tsNodeEventRemove(loop,state,event,entry.raw) }
-		result:=tsCallReceiver(loop,entry.raw,tsObjectValue(state.object),args...)
+		result:=tsCallReceiver(loop,entry.raw,state.receiver,args...)
 		if state.capture&&result.kind==tsPromiseKind {
 			promise:=(*tsPromise)(result.ref)
 			promise.then(func(settled tsResult){if settled.rejected{tsNodeEventEmit(loop,state,tsStringReference(tsStringUTF8("error")),[]tsValue{settled.value})}})
