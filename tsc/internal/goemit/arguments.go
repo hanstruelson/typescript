@@ -31,7 +31,7 @@ func (b *machineBuilder) prepareArguments(node *ast.Node) {
 	strict := strictFunction(node)
 	b.argumentsObject = b.typedTemp(fmt.Sprintf("tsArgumentsObject(args,%t)", strict), "*tsObject")
 	b.argumentsCell = b.typedTemp("tsBinding(true,false)", "*tsCell")
-	b.emit(b.argumentsCell + ".init(" + b.argumentsObject + ")")
+	b.emit(b.argumentsCell + ".init(loop," + b.argumentsObject + ")")
 	if !strict && b.dynamicReceiver {
 		b.emit(b.argumentsObject + ".values[\"callee\"]=tsFunctionValue(function)")
 	}
@@ -63,7 +63,7 @@ func (b *machineBuilder) initializeArguments(node *ast.Node) {
 				continue
 			}
 			key := strconv.Quote(fmt.Sprint(i))
-			b.emit(fmt.Sprintf("if len(args)>%d {%s.argumentMap[%s]=tsProperty{readField:func()tsValue{return %s.get()},writeField:func(value tsValue)tsValue{return %s.set(value)}}}", i, b.argumentsObject, key, cell.name, cell.name))
+ b.emit(fmt.Sprintf("if len(args)>%d {%s.argumentMap[%s]=tsProperty{readField:func()tsValue{return %s.get()},writeField:func(value tsValue)tsValue{return %s.set(loop,value)}}}", i, b.argumentsObject, key, cell.name, cell.name))
 		}
 	}
 }

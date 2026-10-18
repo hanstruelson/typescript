@@ -1,6 +1,10 @@
 package goemit
 
 const errorRuntime = `
+func tsRuntimeUnsupported(feature,reason string) {
+ message:=feature+" is not supported by the statically compiled Go runtime: "+reason
+ panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"NotImplementedError",message:message,fields:map[string]tsValue{"code":tsStringReference(tsStringUTF8("ERR_NOT_IMPLEMENTED"))}})})
+}
 func tsErrorObject(loop *tsLoop,error *tsRuntimeError)*tsObject{if error.object!=nil{return error.object};object:=tsNewObject();object.nativeError=true;object.errorStack=error.stack;object.prototype=tsErrorPrototype(error.name);object.descriptors=map[string]*tsDescriptor{};object.set("message",tsStringReference(tsStringUTF8(error.message)));object.descriptors["message"]=&tsDescriptor{writable:true,configurable:true};for name,value:=range error.fields{object.set(name,value)};error.object=object;return object}
 func tsErrorSuper(loop *tsLoop,properties *tsProperties,name string,args []tsValue){
  if name=="RegExp"{if properties.initialized{panic(tsErrorValue(&tsRuntimeError{name:"ReferenceError",message:"Super constructor may only be called once"}))};instance:=tsConstruct(tsRegExpConstructor(),args...);if instance.kind!=tsRegExpKind{tsPropertyFailure("RegExp super constructor did not create a RegExp")};properties.regexp=(*tsRegExp)(instance.ref);properties.define("lastIndex");properties.extra["lastIndex"]=tsNumberValue(0);if properties.accessors==nil{properties.accessors=map[string]*tsDescriptor{}};properties.accessors["lastIndex"]=&tsDescriptor{writable:true};properties.initialized=true;return}
@@ -19,6 +23,25 @@ func tsInitErrors(){tsErrors.Do(func(){
   if name!="Error"{constructor.internalPrototype=tsFunctionValue(tsErrors.constructors["Error"])}
   prototype.set("constructor",tsFunctionValue(constructor));prototype.descriptors["constructor"]=&tsDescriptor{writable:true,configurable:true};tsErrors.constructors[name]=constructor;tsErrors.prototypes[name]=prototype
  }
+ errorConstructor:=tsErrors.constructors["Error"]
+ errorConstructor.properties.set("stackTraceLimit",tsNumberValue(10))
+ errorConstructor.properties.set("prepareStackTrace",tsU)
+ errorConstructor.properties.set("captureStackTrace",tsNamedNativeMethod("captureStackTrace",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{
+  target:=tsArg(args,0)
+  if target.kind==tsObjectKind {
+   object:=(*tsObject)(target.ref);object.nativeError=true;object.errorStack=tsCaptureErrorStack("Error")
+   if object.descriptors==nil{object.descriptors=map[string]*tsDescriptor{}}
+   object.descriptors["stack"]=&tsDescriptor{accessor:true,configurable:true,getter:tsNamedNativeMethod("get stack",0,func(loop *tsLoop,receiver tsValue,_ ...tsValue)tsValue{return tsErrorStackGet(loop,receiver)}),setter:tsNamedNativeMethod("set stack",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsErrorStackSet(loop,receiver,tsArg(args,0))})}
+   return tsU
+  }
+  if target.kind==tsInstanceKind {
+   properties:=(*tsProperties)(target.ref);properties.nativeError=true;properties.errorStack=tsCaptureErrorStack("Error")
+   if properties.accessors==nil{properties.accessors=map[string]*tsDescriptor{}}
+   properties.accessors["stack"]=&tsDescriptor{accessor:true,configurable:true,getter:tsNamedNativeMethod("get stack",0,func(loop *tsLoop,receiver tsValue,_ ...tsValue)tsValue{return tsErrorStackGet(loop,receiver)}),setter:tsNamedNativeMethod("set stack",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsErrorStackSet(loop,receiver,tsArg(args,0))})}
+   return tsU
+  }
+  tsPropertyFailure("Error.captureStackTrace target must be an object");return tsU
+ }))
  prototype:=tsErrors.prototypes["Error"];prototype.set("toString",tsNamedNativeMethod("toString",0,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{
   if tsIsPrimitiveValue(receiver){tsPropertyFailure("Error.toString requires an object")};name:=tsGet(loop,receiver,"name");message:=tsGet(loop,receiver,"message");n:="Error";m:="";if !tsIsUndefined(name){n=tsStringValueWithLoop(loop,name).String()};if !tsIsUndefined(message){m=tsStringValueWithLoop(loop,message).String()};if n==""{return tsStringReference(tsStringUTF8(m))};if m==""{return tsStringReference(tsStringUTF8(n))};return tsStringReference(tsStringUTF8(n+": "+m))
  }));prototype.descriptors["toString"]=&tsDescriptor{writable:true,configurable:true};prototype.order=append(prototype.order,"stack");prototype.descriptors["stack"]=&tsDescriptor{accessor:true,configurable:true,getter:tsNamedNativeMethod("get stack",0,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsErrorStackGet(loop,receiver)}),setter:tsNamedNativeMethod("set stack",1,func(loop *tsLoop,receiver tsValue,args ...tsValue)tsValue{return tsErrorStackSet(loop,receiver,tsArg(args,0))})}

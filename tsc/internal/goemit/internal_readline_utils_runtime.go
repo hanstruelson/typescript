@@ -80,7 +80,7 @@ func tsInternalReadlineNamedKey(code string) (string,bool,bool) {
 		"[a":"up","[b":"down","[c":"right","[d":"left","[e":"clear","[2$":"insert","[3$":"delete","[5$":"pageup","[6$":"pagedown","[7$":"home","[8$":"end",
 		"Oa":"up","Ob":"down","Oc":"right","Od":"left","Oe":"clear","[2^":"insert","[3^":"delete","[5^":"pageup","[6^":"pagedown","[7^":"home","[8^":"end","[Z":"tab",
 	}
-	name,ok:=keys[code];shift:=strings.HasSuffix(code,"$")||code=="[Z"||len(code)==2&&code[0]=='['&&code[1]>='a'&&code[1]<='e';ctrl:=len(code)==2&&code[0]=='O'&&code[1]>='a'&&code[1]<='e'
+	name:=keys[code];shift:=strings.HasSuffix(code,"$")||code=="[Z"||len(code)==2&&code[0]=='['&&code[1]>='a'&&code[1]<='e';ctrl:=len(code)==2&&code[0]=='O'&&code[1]>='a'&&code[1]<='e'
 	if name=="" { return "undefined",false,false }
 	return name,ctrl,shift||code=="[Z"
 }
@@ -136,8 +136,8 @@ func tsInternalReadlineUtilsModule(loop *tsLoop) tsValue {
 		module:=tsNewObject();escape:=tsStringReference(tsStringUTF8("\x1b"));csiFn:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{return tsInternalReadlineCSIValue(loop,tsArg(args,0),args[1:])});csiFn.name="CSI";csiFn.length=1;csiFn.properties=tsNewObject();csi:=tsFunctionValue(csiFn)
 		csiFn.properties.set("kEscape",escape);for _,entry:=range []struct{name,value string}{{"kClearToLineBeginning","1K"},{"kClearToLineEnd","0K"},{"kClearLine","2K"},{"kClearScreenDown","0J"}}{csiFn.properties.set(entry.name,tsInternalReadlineCSIValue(loop,tsArrayValue(&tsArray{values:[]tsValue{tsStringReference(tsStringUTF8(entry.value))}}),nil))}
 		module.set("CSI",csi);module.set("kSubstringSearch",tsNewSymbol(tsStringUTF8("kSubstringSearch")))
-		module.set("charLengthLeft",tsNamedNativeMethod("charLengthLeft",2,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNumberValue(float64(tsInternalReadlineCharLengthLeft(loop,tsStringValue(tsArg(args,0)),int(tsArg(args,1).ToInt32()))))}))
-		module.set("charLengthAt",tsNamedNativeMethod("charLengthAt",2,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNumberValue(float64(tsInternalReadlineCharLengthAt(loop,tsStringValue(tsArg(args,0)),int(tsArg(args,1).ToInt32()))))}))
+		module.set("charLengthLeft",tsNamedNativeMethod("charLengthLeft",2,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNumberValue(float64(tsInternalReadlineCharLengthLeft(loop,tsStringValue(tsArg(args,0)),int(tsArg(args,1).ToInt32(loop)))))}))
+		module.set("charLengthAt",tsNamedNativeMethod("charLengthAt",2,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNumberValue(float64(tsInternalReadlineCharLengthAt(loop,tsStringValue(tsArg(args,0)),int(tsArg(args,1).ToInt32(loop)))))}))
 		module.set("commonPrefix",tsNamedNativeMethod("commonPrefix",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsInternalReadlinePrefix(loop,tsArg(args,0))}))
 		module.set("reverseString",tsNamedNativeMethod("reverseString",3,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{from,to:=tsArg(args,1),tsArg(args,2);if tsIsUndefined(from){from=tsStringReference(tsStringUTF8("\r"))};if tsIsUndefined(to){to=tsStringReference(tsStringUTF8("\r"))};return tsInternalReadlineReverse(loop,tsArg(args,0),from,to)}))
 		module.set("emitKeys",tsNamedNativeMethod("emitKeys",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsInternalReadlineDecoderObject(loop,tsArg(args,0))}))

@@ -138,14 +138,14 @@ func tsNodeCPFork(loop *tsLoop,args []tsValue) tsValue {
 	forkOptions:=tsNodeCPObjectCopy(options);process:=tsNodeProcessModule(loop)
 	execPath:=tsNodeCPGet(loop,tsObjectValue(forkOptions),"execPath");if !tsTruthy(execPath) { execPath=tsNodeCPGet(loop,process,"execPath") };if execPath.kind!=tsStringKind { tsFSInvalid("options.execPath","a string") };if strings.IndexByte(tsText(execPath),0)>=0 { tsFSInvalid("options.execPath","a string without null bytes") }
 	execArgv:=tsNodeCPGet(loop,tsObjectValue(forkOptions),"execArgv");processExecArgv:=tsNodeCPGet(loop,process,"execArgv");if tsIsUndefined(execArgv) { execArgv=processExecArgv }
-	execArgvTexts,execArgvValues:=tsNodeCPArgs(loop,execArgv)
-	if tsStrictEqual(execArgv,processExecArgv) { processEval:=tsNodeCPGet(loop,process,"_eval");if !tsNullish(processEval) { last:=-1;for index,item:=range execArgvValues { if tsStrictEqual(item,processEval) { last=index } };if last>0 { execArgvValues=append(append([]tsValue(nil),execArgvValues[:last-1]...),execArgvValues[last+1:]...);execArgvTexts=execArgvTexts[:0];for _,item:=range execArgvValues { execArgvTexts=append(execArgvTexts,tsText(item)) } } } }
-	argTexts,argValues:=tsNodeCPArgs(loop,argValue);forkArgs:=append(append([]string(nil),execArgvTexts...),modulePathText);forkArgs=append(forkArgs,argTexts...);forkOptions.set("execArgv",tsArrayValue(&tsArray{values:execArgvValues}))
+	_,execArgvValues:=tsNodeCPArgs(loop,execArgv)
+	if tsStrictEqual(execArgv,processExecArgv) { processEval:=tsNodeCPGet(loop,process,"_eval");if !tsNullish(processEval) { last:=-1;for index,item:=range execArgvValues { if tsStrictEqual(item,processEval) { last=index } };if last>0 { execArgvValues=append(append([]tsValue(nil),execArgvValues[:last-1]...),execArgvValues[last+1:]...) } } }
+	tsNodeCPArgs(loop,argValue);forkOptions.set("execArgv",tsArrayValue(&tsArray{values:execArgvValues}))
 	stdio:=tsNodeCPGet(loop,tsObjectValue(forkOptions),"stdio")
 	if stdio.kind==tsStringKind { stdio=tsNodeCPStdioStringToArray(loop,stdio,true) } else if stdio.kind==tsArrayKind { array:=(*tsArray)(stdio.ref);hasIPC:=false;ipcCount:=0;for _,entry:=range array.values { if entry.kind==tsStringKind&&tsText(entry)=="ipc" { hasIPC=true;ipcCount++ } };if !hasIPC { panic(tsThrown{tsNodeCPError("TypeError","ERR_CHILD_PROCESS_IPC_REQUIRED","The IPC channel is required in options.stdio")}) };if ipcCount>1 { panic(tsThrown{tsNodeCPError("Error","ERR_IPC_ONE_PIPE","Only one IPC channel is allowed")}) } } else if !tsTruthy(stdio) { if tsTruthy(tsNodeCPGet(loop,tsObjectValue(forkOptions),"silent")) { stdio=tsNodeCPStdioStringToArray(loop,tsNodeCPKey("pipe"),true) } else { stdio=tsNodeCPStdioStringToArray(loop,tsNodeCPKey("inherit"),true) } } else { tsFSInvalid("options.stdio","a string or array") }
-	forkOptions.set("stdio",stdio);forkOptions.set("shell",tsBooleanValue(false));child:=tsNodeCPStart(loop,tsText(execPath),forkArgs,tsObjectValue(forkOptions),false)
-	_ = argValues
-	return child
+	forkOptions.set("stdio",stdio);forkOptions.set("shell",tsBooleanValue(false))
+	tsRuntimeUnsupported("node:child_process fork()","the Go program cannot launch another JavaScript runtime to execute a dynamic module file")
+	return tsU
 }
 func tsNodeCPNormalizeStdio(loop *tsLoop,value tsValue) []tsValue {
 	if value.kind==tsStringKind{mode:=tsText(value);switch mode{case "ignore","pipe","overlapped","inherit":out:=[]tsValue{value,value,value};return out;default:tsNodeCPInvalidOption("stdio",value)}}
@@ -186,7 +186,7 @@ func tsNodeCPCheckExecSyncError(loop *tsLoop,result tsValue,args tsValue,command
 }
 func tsNodeCPWriteInheritedStderr(loop *tsLoop,options,result tsValue){stdio:=tsNodeCPGet(loop,options,"stdio");if !tsTruthy(stdio){value:=tsNodeCPGet(loop,result,"stderr");if tsNullish(value){return};if value.kind==tsStringKind{_,_=os.Stderr.WriteString(tsText(value))}else{_,_=os.Stderr.Write(tsNodeBufferVisibleBytes(value))}}}
 func tsNodeCPExecFileSync(loop *tsLoop,args []tsValue) tsValue {
-	file,argValue,options,_:=tsNodeCPNormalizeExecFileArgs(loop,args);texts,values:=tsNodeCPArgs(loop,argValue);result:=tsNodeCPSpawnSync(loop,[]tsValue{file,argValue,options});tsNodeCPWriteInheritedStderr(loop,options,result);argv0:=tsNodeCPGet(loop,options,"argv0");if tsNullish(argv0){argv0=file};errArgs:=[]tsValue{argv0};errArgs=append(errArgs,values...);failure:=tsNodeCPCheckExecSyncError(loop,result,tsArrayValue(&tsArray{values:errArgs}),tsU);if !tsIsUndefined(failure){panic(tsThrown{failure})};_ = texts;return tsNodeCPGet(loop,result,"stdout")
+	file,argValue,options,_:=tsNodeCPNormalizeExecFileArgs(loop,args);_,values:=tsNodeCPArgs(loop,argValue);result:=tsNodeCPSpawnSync(loop,[]tsValue{file,argValue,options});tsNodeCPWriteInheritedStderr(loop,options,result);argv0:=tsNodeCPGet(loop,options,"argv0");if tsNullish(argv0){argv0=file};errArgs:=[]tsValue{argv0};errArgs=append(errArgs,values...);failure:=tsNodeCPCheckExecSyncError(loop,result,tsArrayValue(&tsArray{values:errArgs}),tsU);if !tsIsUndefined(failure){panic(tsThrown{failure})};return tsNodeCPGet(loop,result,"stdout")
 }
 func tsNodeCPExecSync(loop *tsLoop,args []tsValue) tsValue {
 	command,options,_:=tsNodeCPNormalizeExecArgs(loop,args);result:=tsNodeCPSpawnSync(loop,[]tsValue{command,tsU,options});tsNodeCPWriteInheritedStderr(loop,options,result);failure:=tsNodeCPCheckExecSyncError(loop,result,tsU,command);if !tsIsUndefined(failure){panic(tsThrown{failure})};return tsNodeCPGet(loop,result,"stdout")

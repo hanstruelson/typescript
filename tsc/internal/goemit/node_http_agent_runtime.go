@@ -54,7 +54,7 @@ func tsNodeHTTPAgentOnFree(loop *tsLoop,agent,socket,options tsValue)tsValue{
 func tsNodeHTTPAgentDestroyOneFree(loop *tsLoop,agent tsValue){free:=tsNodeHTTPAgentGet(loop,agent,"freeSockets");for _,key:=range tsObjectKeys(free).values{for _,socket:=range tsNodeHTTPAgentArray(tsGet(loop,free,key)).values{if !tsTruthy(tsNodeHTTPAgentGet(loop,socket,"destroyed")){tsNodeHTTPAgentCall(loop,socket,"destroy");return}}}}
 func tsNodeHTTPAgentEnableKeylog(loop *tsLoop,agent tsValue,event tsValue)tsValue{
 	if tsText(event)!="keylog"||!tsIsUndefined(tsGet(loop,agent,tsNodeHTTPAgentSingleton.kOnKeylog)){return tsU};maybe:=tsGet(loop,agent,tsNodeHTTPAgentSingleton.kMaybeKeylog);tsNodeHTTPAgentCall(loop,agent,"removeListener",tsNodeHTTPAgentKey("newListener"),maybe)
-	keylog:=tsFunctionValue(tsNamedNativeMethod("onkeylog",1,func(loop *tsLoop,socket tsValue,args ...tsValue)tsValue{tsNodeHTTPAgentEmit(loop,agent,"keylog",tsArg(args,0),socket);return tsU}));tsSet(loop,agent,tsNodeHTTPAgentSingleton.kOnKeylog,keylog)
+	keylog:=tsNamedNativeMethod("onkeylog",1,func(loop *tsLoop,socket tsValue,args ...tsValue)tsValue{tsNodeHTTPAgentEmit(loop,agent,"keylog",tsArg(args,0),socket);return tsU});tsSet(loop,agent,tsNodeHTTPAgentSingleton.kOnKeylog,keylog)
 	sockets:=tsNodeHTTPAgentGet(loop,agent,"sockets");for _,key:=range tsObjectKeys(sockets).values{for _,socket:=range tsNodeHTTPAgentArray(tsGet(loop,sockets,key)).values{tsNodeHTTPAgentCall(loop,socket,"on",tsNodeHTTPAgentKey("keylog"),keylog)}};return tsU
 }
 func tsNodeHTTPAgentInstallListeners(loop *tsLoop,agent,socket,options tsValue){

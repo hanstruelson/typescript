@@ -15,6 +15,29 @@ type nativeFunction struct {
 	result          primitive
 }
 
+func nativeFunctionHasBareReturn(node *ast.Node) bool {
+	if node == nil || node.Body() == nil {
+		return false
+	}
+	found := false
+	var visit func(*ast.Node)
+	visit = func(current *ast.Node) {
+		if found || current == nil {
+			return
+		}
+		if current != node && ast.IsFunctionLike(current) {
+			return
+		}
+		if current.Kind == ast.KindReturnStatement && current.AsReturnStatement().Expression == nil {
+			found = true
+			return
+		}
+		current.ForEachChild(func(child *ast.Node) bool { visit(child); return false })
+	}
+	visit(node)
+	return found
+}
+
 func (e *emitter) planNativeFunctions() {
 	e.nativeFunctions = map[*ast.Node]*nativeFunction{}
 	e.stableCallbacks = map[*ast.Node]*ast.Node{}
@@ -23,6 +46,9 @@ func (e *emitter) planNativeFunctions() {
 			continue
 		}
 		result := e.primitiveFunctionReturn(node)
+		if result.kind != "" && result.nulls&2 == 0 && nativeFunctionHasBareReturn(node) {
+			continue
+		}
 		if result.kind == "" && result.nulls != 2 || result.kind != "" && result.nulls != 0 {
 			continue
 		}
@@ -56,7 +82,7 @@ func (e *emitter) planNativeFunctions() {
 			if cell != nil && nativeStableCallbackBinding(node, cell.owner) && cell.constant && init != nil && (init.Kind == ast.KindArrowFunction || init.Kind == ast.KindFunctionExpression) && init.Name() == nil && nativeCallbackBody(init) && len(init.TypeParameters()) == 0 {
 				e.stableCallbacks[node] = init
 				result := e.primitiveFunctionReturn(init)
-				valid := result.kind != "" && result.nulls == 0 || result.kind == "" && result.nulls == 2
+				valid := (result.kind != "" && result.nulls == 0 || result.kind == "" && result.nulls == 2) && !(result.kind != "" && result.nulls&2 == 0 && nativeFunctionHasBareReturn(init))
 				fn := &nativeFunction{name: e.unique("NativeCallback"), node: init, result: result}
 				for _, param := range init.Parameters() {
 					p := e.primitive(param)

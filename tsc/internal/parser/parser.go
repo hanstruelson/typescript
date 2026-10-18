@@ -5620,12 +5620,12 @@ func (p *Parser) parseLaunchElementAccessArguments() *ast.Expression {
 				parts = append(parts, p.slicePartOrUndefined(step, pos).AsNode())
 			}
 			rangeNode := p.factory.NewArrayLiteralExpression(p.newNodeList(core.NewTextRange(pos, p.nodePos()), parts), false)
-			axis = p.finishNode(rangeNode, pos).AsExpression()
+			axis = p.finishNode(rangeNode, pos)
 			axis.Flags |= ast.NodeFlagsSliceRange
 		}
 		if axis == nil {
 			p.parseErrorAtCurrentToken(diagnostics.Expression_expected)
-			axis = p.finishNode(p.newIdentifier(""), p.nodePos()).AsExpression()
+			axis = p.finishNode(p.newIdentifier(""), p.nodePos())
 		}
 		axes = append(axes, axis)
 		if p.token != ast.KindCommaToken {
@@ -5642,7 +5642,7 @@ func (p *Parser) parseLaunchElementAccessArguments() *ast.Expression {
 	}
 	if hasRange && len(axes) == 1 {
 		args := p.factory.NewArrayLiteralExpression(p.newNodeList(core.NewTextRange(pos, p.nodePos()), []*ast.Node{axes[0].AsNode()}), false)
-		result := p.finishNode(args, pos).AsExpression()
+		result := p.finishNode(args, pos)
 		result.Flags |= ast.NodeFlagsSliceArguments
 		return result
 	}
@@ -5651,7 +5651,7 @@ func (p *Parser) parseLaunchElementAccessArguments() *ast.Expression {
 		comma := p.factory.NewToken(ast.KindCommaToken)
 		comma.Loc = core.NewTextRange(commaPositions[index-1], commaPositions[index-1]+1)
 		binary := p.factory.NewBinaryExpression(nil, result, nil, comma, axes[index])
-		result = p.finishNode(binary, pos).AsExpression()
+		result = p.finishNode(binary, pos)
 	}
 	if hasRange || len(axes) > 1 {
 		result.Flags |= ast.NodeFlagsSliceArguments
@@ -5663,7 +5663,7 @@ func (p *Parser) slicePartOrUndefined(expression *ast.Expression, pos int) *ast.
 	if expression != nil {
 		return expression
 	}
-	return p.finishNodeWithEnd(p.factory.NewKeywordExpression(ast.KindUndefinedKeyword), pos, pos).AsExpression()
+	return p.finishNodeWithEnd(p.factory.NewKeywordExpression(ast.KindUndefinedKeyword), pos, pos)
 }
 
 func (p *Parser) parseCallExpressionRest(pos int, expression *ast.Expression) *ast.Expression {

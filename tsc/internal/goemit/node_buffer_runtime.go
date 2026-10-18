@@ -237,6 +237,7 @@ func tsNodeBufferValidatedIndex(loop *tsLoop, value tsValue, name string) int {
 
 func tsNodeBufferSearchOffset(length int, offset float64, needleLength int, forward bool) int {
 	length64 := int64(length)
+	needle64 := int64(needleLength)
 	offset64 := int64(offset)
 	if offset64 < 0 {
 		if offset64+length64 >= 0 {
@@ -559,7 +560,7 @@ func tsNodeBufferStrictUTF16(units []uint16) ([]rune, bool) {
 		unit := units[i]
 		if unit >= 0xd800 && unit <= 0xdbff {
 			if i+1 >= len(units) || units[i+1] < 0xdc00 || units[i+1] > 0xdfff { return nil, false }
-			runes = append(runes, utf16.DecodeRune(unit, units[i+1])); i++; continue
+			runes = append(runes, utf16.DecodeRune(rune(unit), rune(units[i+1]))); i++; continue
 		}
 		if unit >= 0xdc00 && unit <= 0xdfff { return nil, false }
 		runes = append(runes, rune(unit))

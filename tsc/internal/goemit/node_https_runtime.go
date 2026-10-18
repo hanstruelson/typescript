@@ -20,7 +20,7 @@ func tsNodeHTTPSCall(loop *tsLoop,receiver tsValue,name string,args ...tsValue) 
 func tsNodeHTTPSPointer(value tsValue) uintptr { if value.kind==tsObjectKind{return uintptr(unsafe.Pointer(value.ref))};return 0 }
 func tsNodeHTTPSCacheFor(agent tsValue)*tsNodeHTTPSessionCache { if tsNodeHTTPSingleton.sessions==nil{tsNodeHTTPSingleton.sessions=map[uintptr]*tsNodeHTTPSessionCache{}};key:=tsNodeHTTPSPointer(agent);cache:=tsNodeHTTPSingleton.sessions[key];if cache==nil{cache=&tsNodeHTTPSessionCache{entries:map[string]tsValue{}};tsNodeHTTPSingleton.sessions[key]=cache};return cache }
 
-func tsNodeHTTPSJSON(loop *tsLoop,value tsValue) string { global:=tsObjectValue(tsGlobalObject());json:=tsNodeHTTPSGet(loop,global,"JSON");stringify:=tsNodeHTTPSGet(loop,json,"stringify");if stringify.kind==tsFunctionKind{result:=tsCallReceiver(loop,stringify,json,value);if result.kind==tsStringKind{return tsText(result)}};return "undefined" }
+func tsNodeHTTPSJSON(loop *tsLoop,value tsValue) string { global:=tsGlobalObject();json:=tsNodeHTTPSGet(loop,global,"JSON");stringify:=tsNodeHTTPSGet(loop,json,"stringify");if stringify.kind==tsFunctionKind{result:=tsCallReceiver(loop,stringify,json,value);if result.kind==tsStringKind{return tsText(result)}};return "undefined" }
 func tsNodeHTTPSPoolPart(loop *tsLoop,value tsValue) string {
 	if tsNullish(value){return tsText(value)}
 	if value.kind==tsArrayKind{parts:=[]string{};for _,entry:=range (*tsArray)(value.ref).values{parts=append(parts,tsNodeHTTPSPoolPart(loop,entry))};return strings.Join(parts,",")}
@@ -105,7 +105,7 @@ func tsNodeHTTPSAgentInit(loop *tsLoop){
 }
 
 func tsNodeHTTPSRequest(loop *tsLoop,args []tsValue)tsValue{
-	values:=append([]tsValue{},args...);options:=tsNewObject();global:=tsObjectValue(tsGlobalObject());urlCtor:=tsNodeHTTPSGet(loop,global,"URL")
+	values:=append([]tsValue{},args...);options:=tsNewObject();global:=tsGlobalObject();urlCtor:=tsNodeHTTPSGet(loop,global,"URL")
 	if len(values)>0&&values[0].kind==tsStringKind{url:=tsConstruct(urlCtor,values[0]);options=(*tsObject)(tsInternalURLToHTTPOptions(loop,[]tsValue{url}).ref);values=values[1:]}else if len(values)>0&&tsInstanceOf(values[0],urlCtor){options=(*tsObject)(tsInternalURLToHTTPOptions(loop,[]tsValue{values[0]}).ref);values=values[1:]}
 	if len(values)>0&&!tsNullish(values[0])&&values[0].kind!=tsFunctionKind{tsObjectSpread(options,tsObjectValue(options));tsObjectSpread(options,values[0]);values=values[1:]}
 	options.set("_defaultAgent",tsNodeHTTPSingleton.globalAgent);callArgs:=[]tsValue{tsObjectValue(options)};callArgs=append(callArgs,values...);http:=tsNodeHTTPModule(loop);return tsConstruct(tsNodeHTTPSGet(loop,http,"ClientRequest"),callArgs...)

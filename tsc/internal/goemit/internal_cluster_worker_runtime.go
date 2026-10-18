@@ -82,7 +82,7 @@ func tsInternalClusterWorkerCreate(loop *tsLoop, args []tsValue) tsValue {
 		for _, eventName := range []string{"error", "message"} {
 			eventName := eventName
 			listener := tsFunctionValue(tsFunc(func(loop *tsLoop, values ...tsValue) tsValue {
-				return tsCallReceiver(loop, tsGet(loop, value, tsStringReference(tsStringUTF8("emit"))), value, tsStringReference(tsStringUTF8(eventName)), values...)
+				return tsCallReceiver(loop, tsGet(loop, value, tsStringReference(tsStringUTF8("emit"))), value, append([]tsValue{tsStringReference(tsStringUTF8(eventName))}, values...)...)
 			}))
 			on := tsGet(loop, process, tsStringReference(tsStringUTF8("on")))
 			if on.kind == tsFunctionKind { tsCallReceiver(loop, on, process, tsStringReference(tsStringUTF8(eventName)), listener) }

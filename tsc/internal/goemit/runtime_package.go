@@ -354,26 +354,28 @@ func runtimeExportPlanForEmitter() (*runtimeExportPlan, error) {
 }
 
 func applySourceEdits(source []byte, edits map[int]string) []byte {
-	source = append([]byte(nil), source...)
 	positions := make([]int, 0, len(edits))
 	for position := range edits {
 		positions = append(positions, position)
 	}
-	for i := 0; i < len(positions); i++ {
-		for j := i + 1; j < len(positions); j++ {
-			if positions[j] > positions[i] {
-				positions[i], positions[j] = positions[j], positions[i]
-			}
-		}
-	}
+	sort.Ints(positions)
+	var result bytes.Buffer
+	result.Grow(len(source))
+	last := 0
 	for _, position := range positions {
+		if position < last || position > len(source) {
+			continue
+		}
 		end := position
 		for end < len(source) && (source[end] == '_' || source[end] >= '0' && source[end] <= '9' || source[end] >= 'a' && source[end] <= 'z' || source[end] >= 'A' && source[end] <= 'Z') {
 			end++
 		}
-		source = append(source[:position], append([]byte(edits[position]), source[end:]...)...)
+		result.Write(source[last:position])
+		result.WriteString(edits[position])
+		last = end
 	}
-	return source
+	result.Write(source[last:])
+	return result.Bytes()
 }
 
 func transformGeneratedBody(body []byte, plan *runtimeExportPlan, imports map[string]string) ([]byte, error) {

@@ -41,7 +41,7 @@ func (b *machineBuilder) initializeParameter(param *ast.Node, index int) {
 		return
 	}
 	if cell := b.e.bindings[param]; cell != nil {
-		b.emit(cell.name + ".init(" + value + ")")
+		b.emit(cell.name + ".init(loop," + value + ")")
 		b.validateParameter(param)
 	}
 }

@@ -184,7 +184,7 @@ func tsInternalStreamIsFinished(loop *tsLoop,stream,options tsValue) tsValue {
     return tsBooleanValue(true)
 }
 
-func tsInternalStreamErrored(loop *tsLoop,stream,writable bool) tsValue {
+func tsInternalStreamErrored(loop *tsLoop,stream tsValue,writable bool) tsValue {
     if !tsInternalStreamIsNode(loop,stream){return tsNull}
     name:="readableErrored";stateName:="_readableState";if writable{name="writableErrored";stateName="_writableState"}
     value:=tsInternalStreamUtilsGet(loop,stream,name);if tsTruthy(value){return value}

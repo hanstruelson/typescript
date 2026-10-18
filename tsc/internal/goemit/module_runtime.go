@@ -17,10 +17,42 @@ type tsModule struct {
  exports map[string]*tsExport
  requests []*tsModuleRequest
  queued, finished, failed bool
+	started, evaluating      bool
+	commonJSPartial          tsValue
  failure tsValue
 }
 func tsNewModule(loop *tsLoop,name string) *tsModule {module:= &tsModule{name:name,loop:loop,exports:make(map[string]*tsExport)};loop.modules=append(loop.modules,module);return module}
-func tsGlobSet(root tsValue,path []string,value tsValue){if root.kind!=tsObjectKind||len(path)==0{panic("Invalid glob import object path")};current:=(*tsObject)(root.ref);for _,name:=range path[:len(path)-1]{child:=current.get(name);if child.kind==tsUndefinedKind{next:=tsNewObject();current.set(name,tsObjectValue(next));current=next}else if child.kind==tsObjectKind{current=(*tsObject)(child.ref)}else{panic("Glob import path collides with a file name")}};current.set(path[len(path)-1],value)}
+func tsRequireDefault(module *tsModule) tsValue {return module.read("default")}
+func tsRequireDefaultSync(loop *tsLoop,module *tsModule) tsValue {
+	if module.finished { return module.read("default") }
+	if module.evaluating {
+		if module.commonJSPartial.kind!=tsUndefinedKind { return module.commonJSPartial }
+		module.exportMu.RLock();entry:=module.exports["default"];module.exportMu.RUnlock()
+		if entry!=nil&&entry.ready { return module.read("default") }
+		return tsU
+	}
+	module.initializeOnce.Do(func(){module.started=true;module.initialize(module)})
+	for !module.finished&&!module.failed {
+		if module.machine!=nil&&!module.machine.blocked {
+			module.machine.suspended=false
+			module.machine.resume()
+			continue
+		}
+		if len(loop.ready)>0 {
+			callback:=loop.ready[0];loop.ready[0]=nil;loop.ready=loop.ready[1:];loop.invoke(callback)
+			continue
+		}
+		break
+	}
+	if module.failed { panic(tsThrown{module.failure}) }
+	if !module.finished {
+		if module.commonJSPartial.kind!=tsUndefinedKind { return module.commonJSPartial }
+		panic(tsThrown{tsErrorValue(&tsRuntimeError{name:"TypeError",message:"Cannot synchronously require an unfinished module: "+module.name})})
+	}
+	return module.read("default")
+}
+func tsCommonJSAssign(slot *tsValue,value tsValue) tsValue {*slot=value;return value}
+func tsGlobSet(loop *tsLoop,root tsValue,path []string,value tsValue){if root.kind!=tsObjectKind||len(path)==0{panic("Invalid glob import object path")};current:=(*tsObject)(root.ref);for _,name:=range path[:len(path)-1]{child:=current.get(loop,name);if child.kind==tsUndefinedKind{next:=tsNewObject();current.set(name,tsObjectValue(next));current=next}else if child.kind==tsObjectKind{current=(*tsObject)(child.ref)}else{panic("Glob import path collides with a file name")}};current.set(path[len(path)-1],value)}
 // Initializers always run on the registry's owner loop. Requests from workers
 // wait through task completion, while sharing the same module and export cells.
 func(module *tsModule)load(loop *tsLoop)*tsPromise {
@@ -62,7 +94,7 @@ func (module *tsModule) schedule(){
  module.loop.ready=append(module.loop.ready,func(){
   module.queued=false
   if module.finished || module.failed || len(module.requests)==0 {return}
-  module.initializeOnce.Do(func(){module.initialize(module)})
+  module.initializeOnce.Do(func(){module.started=true;module.initialize(module)})
   if !module.machine.blocked {module.machine.suspended=false;module.machine.resume()}
  })
 }

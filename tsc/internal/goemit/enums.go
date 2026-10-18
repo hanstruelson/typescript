@@ -13,7 +13,7 @@ func (b *machineBuilder) enumDeclaration(node *ast.Node) {
 	if cell == nil {
 		return
 	}
-	b.emit("if !" + cell.name + ".initialized {" + cell.name + ".init(tsNewObject())}")
+	b.emit("if !" + cell.name + ".initialized {" + cell.name + ".init(loop,tsNewObject())}")
 	object := b.temp(cell.name + ".get()")
 	previous := ""
 	for _, member := range node.AsEnumDeclaration().Members.Nodes {

@@ -3,7 +3,7 @@ package goemit
 // internalStreamStateRuntime translates Node's high-water-mark defaults and
 // per-stream option validation.
 const internalStreamStateRuntime = `
-var tsInternalStreamState struct {
+var tsInternalStreamStateSingleton struct {
     sync.Mutex
     bytes int
     objects int
@@ -12,14 +12,14 @@ var tsInternalStreamState struct {
 }
 
 func tsInternalStreamStateInit() {
-    tsInternalStreamState.Lock()
-    if !tsInternalStreamState.initialized {
-        tsInternalStreamState.bytes = 64 * 1024
-        if runtime.GOOS == "windows" { tsInternalStreamState.bytes = 16 * 1024 }
-        tsInternalStreamState.objects = 16
-        tsInternalStreamState.initialized = true
+    tsInternalStreamStateSingleton.Lock()
+    if !tsInternalStreamStateSingleton.initialized {
+        tsInternalStreamStateSingleton.bytes = 64 * 1024
+        if runtime.GOOS == "windows" { tsInternalStreamStateSingleton.bytes = 16 * 1024 }
+        tsInternalStreamStateSingleton.objects = 16
+        tsInternalStreamStateSingleton.initialized = true
     }
-    tsInternalStreamState.Unlock()
+    tsInternalStreamStateSingleton.Unlock()
 }
 
 func tsInternalStreamStateHighWaterMarkFrom(loop *tsLoop, options, duplexKey tsValue, isDuplex bool) tsValue {
@@ -31,10 +31,10 @@ func tsInternalStreamStateHighWaterMarkFrom(loop *tsLoop, options, duplexKey tsV
 
 func tsInternalStreamStateDefault(objectMode bool) int {
     tsInternalStreamStateInit()
-    tsInternalStreamState.Lock()
-    defer tsInternalStreamState.Unlock()
-    if objectMode { return tsInternalStreamState.objects }
-    return tsInternalStreamState.bytes
+    tsInternalStreamStateSingleton.Lock()
+    defer tsInternalStreamStateSingleton.Unlock()
+    if objectMode { return tsInternalStreamStateSingleton.objects }
+    return tsInternalStreamStateSingleton.bytes
 }
 
 func tsInternalStreamStateSetDefault(loop *tsLoop, objectMode, value tsValue) tsValue {
@@ -42,9 +42,9 @@ func tsInternalStreamStateSetDefault(loop *tsLoop, objectMode, value tsValue) ts
         tsInternalValidatorInvalidType("value", "a non-negative integer", value)
     }
     tsInternalStreamStateInit()
-    tsInternalStreamState.Lock()
-    if tsTruthy(objectMode) { tsInternalStreamState.objects = int(tsNumber(value)) } else { tsInternalStreamState.bytes = int(tsNumber(value)) }
-    tsInternalStreamState.Unlock()
+    tsInternalStreamStateSingleton.Lock()
+    if tsTruthy(objectMode) { tsInternalStreamStateSingleton.objects = int(tsNumber(value)) } else { tsInternalStreamStateSingleton.bytes = int(tsNumber(value)) }
+    tsInternalStreamStateSingleton.Unlock()
     return tsU
 }
 
@@ -64,11 +64,11 @@ func tsInternalStreamStateGetHighWaterMark(loop *tsLoop, state, options, duplexK
 
 func tsInternalStreamStateModule(loop *tsLoop) tsValue {
     tsInternalStreamStateInit()
-    tsInternalStreamState.Lock()
-    if tsInternalStreamState.module != nil { module := tsInternalStreamState.module; tsInternalStreamState.Unlock(); return tsObjectValue(module) }
+    tsInternalStreamStateSingleton.Lock()
+    if tsInternalStreamStateSingleton.module != nil { module := tsInternalStreamStateSingleton.module; tsInternalStreamStateSingleton.Unlock(); return tsObjectValue(module) }
     module := tsNewObject()
-    tsInternalStreamState.module = module
-    tsInternalStreamState.Unlock()
+    tsInternalStreamStateSingleton.module = module
+    tsInternalStreamStateSingleton.Unlock()
     module.set("getHighWaterMark", tsNamedNativeMethod("getHighWaterMark", 4, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
         return tsInternalStreamStateGetHighWaterMark(loop, tsArg(args, 0), tsArg(args, 1), tsArg(args, 2), tsTruthy(tsArg(args, 3)))
     }))

@@ -50,7 +50,7 @@ func (b *machineBuilder) statementLabel(node *ast.Node, label string) {
 		return
 	}
 	switch node.Kind {
-	case ast.KindEmptyStatement, ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration:
+	case ast.KindEmptyStatement, ast.KindInterfaceDeclaration, ast.KindTypeAliasDeclaration, ast.KindJSTypeAliasDeclaration:
 	case ast.KindEnumDeclaration:
 		b.enumDeclaration(node)
 	case ast.KindClassDeclaration:
@@ -336,9 +336,9 @@ func (b *machineBuilder) forOfStatement(node *ast.Node, label string) {
 		b.bindPattern(decl.Name(), iterator+".value", lexical)
 	} else if cell.lexical {
 		b.allocate(cell)
-		b.emit(cell.name + ".init(" + iterator + ".value)")
+		b.emit(cell.name + ".init(loop," + iterator + ".value)")
 	} else {
-		b.emit(cell.name + ".set(" + iterator + ".value)")
+		b.emit(cell.name + ".set(loop," + iterator + ".value)")
 	}
 	b.statement(n.Statement)
 	b.jump(test)
@@ -376,7 +376,7 @@ func (b *machineBuilder) tryStatement(node *ast.Node) {
 			cell := b.e.bindings[c.VariableDeclaration]
 			b.allocate(cell)
 			if cell != nil {
-				b.emit(cell.name + ".init(m.thrown)")
+				b.emit(cell.name + ".init(loop,m.thrown)")
 			}
 		}
 		b.statement(c.Block)

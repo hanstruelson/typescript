@@ -910,7 +910,7 @@ func (r *EmitResolver) GetLaunchOperatorOverrideDeclaration(node *ast.Node, meth
 	}
 	r.checkerMu.Lock()
 	defer r.checkerMu.Unlock()
-	t := r.checker.getTypeAtLocation(node)
+	t := r.checker.GetTypeAtLocation(node)
 	property := r.checker.getPropertyOfType(t, methodName)
 	if property == nil {
 		return nil
@@ -931,8 +931,8 @@ func (r *EmitResolver) GetLaunchBinaryOperatorOverrideReceiver(node *ast.Node, m
 	r.checkerMu.Lock()
 	defer r.checkerMu.Unlock()
 	binary := node.AsBinaryExpression()
-	leftType := r.checker.getTypeAtLocation(binary.Left)
-	rightType := r.checker.getTypeAtLocation(binary.Right)
+	leftType := r.checker.GetTypeAtLocation(binary.Left)
+	rightType := r.checker.GetTypeAtLocation(binary.Right)
 	arguments := []*Type{leftType, rightType}
 	if r.checker.getLaunchOperatorOverrideSignatureForArguments(leftType, methodName, arguments) != nil {
 		return binary.Left

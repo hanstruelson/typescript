@@ -16,6 +16,30 @@ type tsNodeHTTPParserState struct {
 	bodyStart, bodyDelivered int
 }
 
+func tsNodeHTTPCommonWordByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' || value >= '0' && value <= '9' || value == '_'
+}
+
+func tsNodeHTTPCommonHasBoundaryToken(value, token string) bool {
+	lowerValue := strings.ToLower(value)
+	lowerToken := strings.ToLower(token)
+	for offset := 0; offset <= len(lowerValue)-len(lowerToken); {
+		index := strings.Index(lowerValue[offset:], lowerToken)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(lowerToken)
+		beforeWord := start > 0 && tsNodeHTTPCommonWordByte(lowerValue[start-1])
+		afterWord := end < len(lowerValue) && tsNodeHTTPCommonWordByte(lowerValue[end])
+		if !beforeWord && !afterWord {
+			return true
+		}
+		offset = start + 1
+	}
+	return false
+}
+
 type tsNodeHTTPConnectionListState struct { all, active []tsValue }
 
 var tsNodeHTTPCommonSingleton struct {
@@ -102,7 +126,7 @@ func tsNodeHTTPCommonHTTPToken(value string) bool {
 	if value == "" { return false }
 	for _, ch := range []byte(value) {
 		if ch >= '0' && ch <= '9' || ch >= 'A' && ch <= 'Z' || ch >= 'a' && ch <= 'z' { continue }
-		switch ch { case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~': continue }
+		switch ch { case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '\x60', '|', '~': continue }
 		return false
 	}
 	return true
@@ -202,7 +226,7 @@ func tsNodeHTTPCommonConnectionListValues(_ *tsLoop, receiver tsValue, active bo
 func tsNodeHTTPCommonConnectionListCreate(loop *tsLoop) tsValue {
 	object := tsNewObject()
 	object.prototype = tsObjectValue(tsNodeHTTPCommonSingleton.connectionsPrototype)
-	tsNodeHTTPCommonSingleton.connections[uintptr(object)] = &tsNodeHTTPConnectionListState{}
+	tsNodeHTTPCommonSingleton.connections[uintptr(unsafe.Pointer(object))] = &tsNodeHTTPConnectionListState{}
 	return tsObjectValue(object)
 }
 func tsNodeHTTPCommonConnectionListMethod(loop *tsLoop, receiver tsValue, name string, args []tsValue) tsValue {
@@ -459,7 +483,7 @@ parseNextMessage:
 		offset := 0
 		for offset < len(state.buffer) && (state.buffer[offset] == '\r' || state.buffer[offset] == '\n') { offset++ }
 		if offset < len(state.buffer) {
-			if state.lenientFlags&32 == 0 { return tsNodeHTTPCommonParseError(loop, parser, offset, "HPE_CLOSED_CONNECTION", "Data after `Connection: close`") }
+			if state.lenientFlags&32 == 0 { return tsNodeHTTPCommonParseError(loop, parser, offset, "HPE_CLOSED_CONNECTION", "Data after \x60Connection: close\x60") }
 			state.buffer = nil
 			return tsNumberValue(float64(len(chunk)))
 		}
@@ -538,7 +562,7 @@ parseNextMessage:
 		}
 	}
 	hasChunked, chunkedLast := tsNodeHTTPCommonTransferChunked(transfer)
-	if state.parserType == 1 && transfer != "" && !chunkedLast && state.lenientFlags&8 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Request has invalid `Transfer-Encoding`") }
+	if state.parserType == 1 && transfer != "" && !chunkedLast && state.lenientFlags&8 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Request has invalid \x60Transfer-Encoding\x60") }
 	if transfer != "" && lengthValue != "" && state.lenientFlags&2 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_UNEXPECTED_CONTENT_LENGTH", "Content-Length can't be present with Transfer-Encoding") }
 	keepAlive := major > 0 && minor > 0
 	if tsNodeHTTPCommonHeaderHasToken(connection, "close") { keepAlive = false } else if tsNodeHTTPCommonHeaderHasToken(connection, "keep-alive") { keepAlive = true }
@@ -621,7 +645,7 @@ parseNextMessage:
 }
 func tsNodeHTTPCommonParserCreate(loop *tsLoop) tsValue {
 	parser := tsNewObject(); parser.prototype = tsObjectValue(tsNodeHTTPCommonSingleton.prototype)
-	state := &tsNodeHTTPParserState{}; tsNodeHTTPCommonSingleton.states[uintptr(parser.ref)] = state
+	state := &tsNodeHTTPParserState{}; tsNodeHTTPCommonSingleton.states[uintptr(unsafe.Pointer(parser))] = state
 	tsNodeHTTPCommonCleanParser(loop, tsObjectValue(parser))
 	tsNodeHTTPCommonSet(loop, tsObjectValue(parser), "_type", tsNumberValue(0))
 	return tsObjectValue(parser)
@@ -731,7 +755,7 @@ func tsNodeHTTPCommonParserOnMessageCompleteCallback(loop *tsLoop, parser tsValu
 }
 func tsNodeHTTPCommonParserConstructorCallback(loop *tsLoop, _ tsValue, _ ...tsValue) tsValue {
 	parser := tsNodeHTTPCommonParserCreate(loop)
-	for index, callback := range map[int]tsValue{1:tsFunctionValue(tsNamedNativeMethod("parserOnHeaders", 2, tsNodeHTTPCommonParserOnHeaders)),2:tsFunctionValue(tsNamedNativeMethod("parserOnHeadersComplete", 9, tsNodeHTTPCommonParserOnHeadersComplete)),3:tsFunctionValue(tsNamedNativeMethod("parserOnBody", 2, tsNodeHTTPCommonParserOnBodyCallback)),4:tsFunctionValue(tsNamedNativeMethod("parserOnMessageComplete", 0, tsNodeHTTPCommonParserOnMessageCompleteCallback))} { tsSet(loop, parser, tsNodeHTTPCommonIndex(index), callback) }
+	for index, callback := range map[int]tsValue{1:tsNamedNativeMethod("parserOnHeaders", 2, tsNodeHTTPCommonParserOnHeaders),2:tsNamedNativeMethod("parserOnHeadersComplete", 9, tsNodeHTTPCommonParserOnHeadersComplete),3:tsNamedNativeMethod("parserOnBody", 2, tsNodeHTTPCommonParserOnBodyCallback),4:tsNamedNativeMethod("parserOnMessageComplete", 0, tsNodeHTTPCommonParserOnMessageCompleteCallback)} { tsSet(loop, parser, tsNodeHTTPCommonIndex(index), callback) }
 	return parser
 }
 func tsNodeHTTPCommonCloseParserInstance(loop *tsLoop, parser tsValue) { tsNodeHTTPCommonCall(loop, parser, "close") }
@@ -797,8 +821,6 @@ func tsNodeHTTPCommonModule(loop *tsLoop) tsValue {
 	module.set("validateHeaderValue", tsNamedNativeMethod("validateHeaderValue", 2, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { return tsNodeHTTPCommonValidateHeaderValue(loop, tsArg(args, 0), tsArg(args, 1)) }))
 	module.set("_checkIsHttpToken", tsNamedNativeMethod("_checkIsHttpToken", 1, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { check := tsGet(loop, tsInternalValidatorsModule(loop), tsNodeHTTPCommonKey("checkIsHttpToken")); return tsCall(loop, check, tsArg(args, 0)) }))
 	module.set("_checkInvalidHeaderChar", tsNamedNativeMethod("_checkInvalidHeaderChar", 2, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { if tsTruthy(tsArg(args, 1)) { return tsBooleanValue(tsNodeHTTPCommonInvalidHeaderValue(loop, tsArg(args, 0), tsU)) }; return tsBooleanValue(tsNodeHTTPCommonStrictHeaderValue(loop, tsArg(args, 0))) }))
-	module.set("chunkExpression", tsConstruct(tsRegExpConstructor(), tsNodeHTTPCommonKey("(?:^|\\W)chunked(?:$|\\W)"), tsNodeHTTPCommonKey("i")))
-	module.set("continueExpression", tsConstruct(tsRegExpConstructor(), tsNodeHTTPCommonKey("(?:^|\\W)100-continue(?:$|\\W)"), tsNodeHTTPCommonKey("i")))
 	module.set("CRLF", tsNodeHTTPCommonKey("\r\n"))
 	module.set("freeParser", tsNamedNativeMethod("freeParser", 3, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { return tsNodeHTTPCommonFreeParser(loop, tsArg(args, 0), tsArg(args, 1), tsArg(args, 2)) }))
 	module.set("isLenient", tsNamedNativeMethod("isLenient", 0, func(loop *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsNodeHTTPCommonIsLenient(loop) }))

@@ -23,6 +23,14 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 	if cell := b.e.binding(node); cell != nil {
 		return cell.name + ".get()"
 	}
+	if b.e.commonJS {
+		switch node.Text() {
+		case "module":
+			return b.e.commonJSModule
+		case "exports":
+			return b.e.commonJSExports
+		}
+	}
 	if imported := b.e.imports[b.e.reference(node)]; imported != "" {
 		return b.builtin(imported)
 	}
@@ -92,7 +100,10 @@ func (b *machineBuilder) identifierValue(node *ast.Node, report bool) string {
 		// permits host globals supplied by the embedding environment.
 		return "tsGlobalIdentifier(loop," + strconv.Quote(node.Text()) + ")"
 	}
-	return "tsU"
+	// `typeof missingName` is the one global lookup that must not raise a
+	// ReferenceError. Reading the global object returns undefined when absent,
+	// while still recognizing host globals such as Node's process.
+	return "tsGet(loop,tsGlobalObject(loop)," + strconv.Quote(node.Text()) + ")"
 }
 func (b *machineBuilder) builtin(name string) string {
 	if strings.HasPrefix(name, "node-module|") {
@@ -929,7 +940,7 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 			for at := b; at != nil; at = at.parent {
 				if at.argumentsCell != "" {
 					cell := at.argumentsCell
-					return cell + ".get()", func(value string) string { return cell + ".set(" + value + ")" }
+					return cell + ".get()", func(value string) string { return cell + ".set(loop," + value + ")" }
 				}
 				if at.owner != nil && ast.IsFunctionLike(at.owner) && at.owner.Kind != ast.KindArrowFunction {
 					break
@@ -938,12 +949,23 @@ func (b *machineBuilder) lvalue(node *ast.Node) (string, func(string) string) {
 		}
 		if cell := b.e.binding(node); cell != nil {
 			pointer := b.typedTemp(cell.name, cell.pointerType())
-			return pointer + ".get()", func(value string) string {
+				return pointer + ".get()", func(value string) string {
 				method := "set"
 				if cell.primitive.kind != "" && b.tempType(value) == cell.primitive.goType() {
 					method = "setNative"
 				}
-				return pointer + "." + method + "(" + value + ")"
+				if method == "setNative" {
+					return pointer + "." + method + "(" + value + ")"
+				}
+				return pointer + "." + method + "(loop," + value + ")"
+			}
+		}
+		if b.e.commonJS {
+			switch node.Text() {
+			case "module":
+				return b.e.commonJSModule, func(value string) string { return "tsCommonJSAssign(&" + b.e.commonJSModule + "," + value + ")" }
+			case "exports":
+				return b.e.commonJSExports, func(value string) string { return "tsCommonJSAssign(&" + b.e.commonJSExports + "," + value + ")" }
 			}
 		}
 		if !strictFunction(b.owner) {
@@ -1079,6 +1101,7 @@ func (b *machineBuilder) update(node *ast.Node, operator ast.Kind, postfix bool)
 	}
 	return value
 }
+
 type launchOperatorOverrideResolver interface {
 	GetLaunchOperatorOverrideDeclaration(*ast.Node, string) *ast.Node
 }

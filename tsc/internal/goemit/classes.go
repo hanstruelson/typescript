@@ -312,7 +312,7 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 			make.WriteString("class.parent=tsClassPointer(" + parent.name + ".get());")
 		}
 	}
-	fmt.Fprintf(&make, "class.construct=func(args ...tsValue) tsValue {self:=&%s{loop:loop, properties:tsNewProperties()};self.properties.class=class", c.name)
+	fmt.Fprintf(&make, "class.construct=func(_ *tsLoop, args ...tsValue) tsValue {self:=&%s{loop:loop, properties:tsNewProperties()};self.properties.class=class", c.name)
 	for _, capture := range c.environment {
 		fmt.Fprintf(&make, ";self.%s=%s", capture.name, capture.name)
 	}
@@ -326,7 +326,7 @@ func (b *machineBuilder) classDeclaration(node *ast.Node) {
 			b.emit(classValue + ".computedKeys[" + strconv.Quote(classMemberName(member)) + "]=tsPropertyKey(" + key + ")")
 		}
 	}
-	b.emit(cell.name + ".init(" + classValue + ")")
+	b.emit(cell.name + ".init(loop," + classValue + ")")
 	if b.e.dynamicPrototypes {
 		var prototype strings.Builder
 		prototype.WriteString("func()*tsObject {class:=tsClassPointer(" + cell.name + ".get());object:=tsNewObject();object.set(\"constructor\",tsClassValue(class));object.descriptors=map[string]*tsDescriptor{\"constructor\":{writable:true,configurable:true}};")

@@ -15578,6 +15578,21 @@ func (c *Checker) getModuleSpecifierForImportOrExport(node *ast.Node) *ast.Node 
 		return getModuleSpecifierFromNode(node.Parent)
 	case ast.KindExportSpecifier:
 		return getModuleSpecifierFromNode(node.Parent.Parent)
+	case ast.KindBindingElement:
+		// JavaScript imports commonly use destructured CommonJS requires, e.g.
+		// const { join } = require("path"). Treat the require literal as the
+		// module specifier while resolving the imported binding.
+		root := ast.GetRootDeclaration(node)
+		if ast.IsVariableDeclaration(root) {
+			initializer := root.AsVariableDeclaration().Initializer
+			if initializer != nil && initializer.Kind == ast.KindCallExpression && ast.IsRequireCall(initializer, false) {
+				call := initializer.AsCallExpression()
+				if len(call.Arguments.Nodes) == 1 && call.Arguments.Nodes[0].Kind == ast.KindStringLiteral {
+					return call.Arguments.Nodes[0]
+				}
+			}
+		}
+		return nil
 	}
 	panic("Unhandled case in getModuleSpecifierForImportOrExport")
 }

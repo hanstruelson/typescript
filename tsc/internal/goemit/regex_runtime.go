@@ -137,7 +137,7 @@ func tsInitRegExp() {
 			flagText, valid = tsRegExpCanonicalFlags(flagText)
 			if !valid { tsRegExpSyntaxFailure("Invalid regular expression flags") }
 			if regexp, ok := tsRegExpLiteralSearch(patternText, flagText); ok { return regexp }
-			tsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal")
+			tsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal (received /" + patternText.String() + "/" + flagText + ")")
 			return tsU
 		}
 		constructor.properties = tsNewObject()
@@ -661,7 +661,7 @@ func tsDynamicRegExp(loop *tsLoop, args ...tsValue) tsValue {
 	flagText, valid := tsRegExpCanonicalFlags(flagText)
 	if !valid { tsRegExpSyntaxFailure("Invalid regular expression flags") }
 	if regexp, ok := tsRegExpLiteralSearch(patternText, flagText); ok { return regexp }
-	tsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal")
+	tsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal (received /" + patternText.String() + "/" + flagText + ")")
 	return tsU
 }
 

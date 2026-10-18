@@ -100,7 +100,7 @@ func tsInternalSharedPerformanceNow(loop *tsLoop) float64 {
     return tsNumber(tsCallReceiver(loop,now,performance))
 }
 
-func tsInternalSharedPerformanceEntry(name,kind string,start,duration float64,detail tsValue) tsValue {
+func tsInternalSharedPerformanceEntry(loop *tsLoop,name,kind string,start,duration float64,detail tsValue) tsValue {
     out:=tsNewObject();out.set("name",tsStringReference(tsStringUTF8(name)));out.set("entryType",tsStringReference(tsStringUTF8(kind)))
     out.set("startTime",tsNumberValue(start));out.set("duration",tsNumberValue(duration));if tsIsUndefined(detail){detail=tsU};out.set("detail",detail)
     out.set("toJSON",tsNamedNativeMethod("toJSON",0,func(_ *tsLoop,_ tsValue,_ ...tsValue)tsValue{copy:=tsNewObject();for _,key:=range []string{"name","entryType","startTime","duration","detail"}{copy.set(key,out.get(key))};return tsObjectValue(copy)}))
@@ -128,16 +128,16 @@ func tsInternalSharedStopPerf(loop *tsLoop,target,key,additional tsValue) {
     start:=tsGet(loop,context,tsStringReference(tsStringUTF8("startTime")))
     detail:=tsGet(loop,context,tsStringReference(tsStringUTF8("detail")));extra:=tsU;if !tsNullish(additional){extra=tsGet(loop,additional,tsStringReference(tsStringUTF8("detail")))}
     if !tsIsUndefined(detail)||!tsIsUndefined(extra) {
-        merged:=tsNewObject();for _,source:=range []tsValue{detail,extra}{if !tsNullish(source){for _,key:=range tsObjectKeys(source).values{name:=tsText(key);tsSet(loop,merged,key,tsGet(loop,source,key))}}};detail=tsObjectValue(merged)
+        merged:=tsNewObject();for _,source:=range []tsValue{detail,extra}{if !tsNullish(source){for _,key:=range tsObjectKeys(source).values{tsSet(loop,merged,key,tsGet(loop,source,key))}}};detail=tsObjectValue(merged)
     }
     name:=tsText(tsGet(loop,context,tsStringReference(tsStringUTF8("name"))));kind:=tsText(tsGet(loop,context,tsStringReference(tsStringUTF8("type"))))
-    entry:=tsInternalSharedPerformanceEntry(name,kind,tsNumber(start),tsInternalSharedPerformanceNow(loop)-tsNumber(start),detail)
+    entry:=tsInternalSharedPerformanceEntry(loop,name,kind,tsNumber(start),tsInternalSharedPerformanceNow(loop)-tsNumber(start),detail)
     tsInternalSharedEnqueueNodeEntry(loop,entry)
 }
 
-func tsInternalSharedPerformanceNodeEntry() tsValue {
+func tsInternalSharedPerformanceNodeEntry(loop *tsLoop) tsValue {
     constructor:=&tsFunction{constructible:true,name:"PerformanceNodeEntry",length:5,properties:tsNewObject()}
-    constructor.construct=func(_ *tsLoop,args ...tsValue)tsValue{return tsInternalSharedPerformanceEntry(tsText(tsArg(args,0)),tsText(tsArg(args,1)),tsNumber(tsArg(args,2)),tsNumber(tsArg(args,3)),tsArg(args,4))}
+    constructor.construct=func(loop *tsLoop,args ...tsValue)tsValue{return tsInternalSharedPerformanceEntry(loop,tsText(tsArg(args,0)),tsText(tsArg(args,1)),tsNumber(tsArg(args,2)),tsNumber(tsArg(args,3)),tsArg(args,4))}
     constructor.properties.set("name",tsStringReference(tsStringUTF8("PerformanceNodeEntry")));constructor.properties.set("length",tsNumberValue(5))
     return tsFunctionValue(constructor)
 }
@@ -161,13 +161,13 @@ func tsInternalSharedNodeObserverObserve(loop *tsLoop,state *tsInternalSharedNod
     for kind:=range state.types{tsInternalSharedSingleton.observerCounts[kind]++}
     found:=false;for _,observer:=range tsInternalSharedSingleton.observers{if observer.ref==unsafe.Pointer(state.object){found=true;break}}
     if !found{tsInternalSharedSingleton.observers=append(tsInternalSharedSingleton.observers,tsObjectValue(state.object))}
-    visibleTypes:=tsNewCollection(true);for kind:=range state.types{visibleTypes.put(tsStringReference(tsStringUTF8(kind)),tsStringReference(tsStringUTF8(kind)))};state.object.set("types",tsCollectionValue(visibleTypes))
+    visibleTypes:=tsNewCollection(true);for kind:=range state.types{tsSet(loop,visibleTypes,tsStringReference(tsStringUTF8(kind)),tsStringReference(tsStringUTF8(kind)))};state.object.set("types",visibleTypes)
     return tsU
 }
 
 func tsInternalSharedNodeObserverDisconnect(state *tsInternalSharedNodeObserver) tsValue {
     for kind:=range state.types{tsInternalSharedSingleton.observerCounts[kind]--};state.types=map[string]bool{};state.buffer=nil
-    state.object.set("types",tsCollectionValue(tsNewCollection(true)));state.object.set("buffer",tsArrayValue(&tsArray{}))
+    state.object.set("types",tsNewCollection(true));state.object.set("buffer",tsArrayValue(&tsArray{}))
     kept:=[]tsValue{};for _,observer:=range tsInternalSharedSingleton.observers{if observer.ref!=unsafe.Pointer(state.object){kept=append(kept,observer)}};tsInternalSharedSingleton.observers=kept
     return tsU
 }
@@ -193,7 +193,7 @@ func tsInternalSharedNodeObserverConstructor() tsValue {
         object:=tsNewObject();state:=&tsInternalSharedNodeObserver{object:object,callback:callback,owner:tsArg(args,1),types:map[string]bool{},buffer:[]tsValue{},loop:loop}
         frameModule:=tsInternalAsyncContextFrameModule(loop);current:=tsGet(loop,frameModule,tsStringReference(tsStringUTF8("currentGraphFrame")));state.frame=tsCallReceiver(loop,current,frameModule)
         tsInternalSharedNodeObserverStates[object]=state
-        object.set("callback",callback);object.set("owner",state.owner);object.set("types",tsCollectionValue(tsNewCollection(true)));object.set("buffer",tsArrayValue(&tsArray{}));object.set("scheduled",tsBooleanValue(false));object.set("frame",state.frame)
+        object.set("callback",callback);object.set("owner",state.owner);object.set("types",tsNewCollection(true));object.set("buffer",tsArrayValue(&tsArray{}));object.set("scheduled",tsBooleanValue(false));object.set("frame",state.frame)
         object.set("observe",tsNamedNativeMethod("observe",1,func(loop *tsLoop,receiver tsValue,values ...tsValue)tsValue{return tsInternalSharedNodeObserverObserve(loop,tsInternalSharedNodeObserverStates[(*tsObject)(receiver.ref)],tsArg(values,0))}))
         object.set("disconnect",tsNamedNativeMethod("disconnect",0,func(_ *tsLoop,receiver tsValue,_ ...tsValue)tsValue{return tsInternalSharedNodeObserverDisconnect(tsInternalSharedNodeObserverStates[(*tsObject)(receiver.ref)])}))
         object.set("bufferEntry",tsNamedNativeMethod("bufferEntry",1,func(loop *tsLoop,receiver tsValue,values ...tsValue)tsValue{return tsInternalSharedNodeObserverBuffer(loop,tsInternalSharedNodeObserverStates[(*tsObject)(receiver.ref)],tsArg(values,0))}))
@@ -273,7 +273,7 @@ func tsInternalSharedModule(loop *tsLoop) tsValue {
         module.set("stopPerf",tsNamedNativeMethod("stopPerf",3,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{tsInternalSharedStopPerf(loop,tsArg(args,0),tsArg(args,1),tsArg(args,2));return tsU}))
         module.set("enqueueNodeEntry",tsNamedNativeMethod("enqueueNodeEntry",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{tsInternalSharedEnqueueNodeEntry(loop,tsArg(args,0));return tsU}))
         module.set("kNodeEntryTypes",tsInternalSharedSingleton.nodeEntryTypes)
-        module.set("PerformanceNodeEntry",tsInternalSharedPerformanceNodeEntry())
+        module.set("PerformanceNodeEntry",tsInternalSharedPerformanceNodeEntry(loop))
         module.set("isStoppedModuleGraphRunning",tsNamedNativeMethod("isStoppedModuleGraphRunning",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{frames:=tsInternalAsyncContextFrameModule(loop);current:=tsGet(loop,frames,tsStringReference(tsStringUTF8("current")));frame:=tsCallReceiver(loop,current,frames);return tsBooleanValue(tsInternalSharedIsFrameStopped(loop,frame))}))
         suffix:="\nThis is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n"
         module.set("kInternalAssertionSuffix",tsStringReference(tsStringUTF8(suffix)))

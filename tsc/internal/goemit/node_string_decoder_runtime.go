@@ -185,7 +185,7 @@ func tsNodeStringDecoderModule() tsValue {
                 default:
                     if len(args) < 2 { tsFSInvalid("offset", "a number") }
                     data := tsStringDecoderBytes(tsArg(args,0))
-                    offset := int(tsArg(args,1).ToInt32())
+                    offset := int(tsArg(args,1).ToInt32(loop))
                     if offset < 0 || offset > len(data) { return tsStringReference(tsStringUnits(nil)) }
                     return tsStringReference(tsStringDecoderWrite(state,data[offset:]))
                 }

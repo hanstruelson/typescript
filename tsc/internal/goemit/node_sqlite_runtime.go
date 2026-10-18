@@ -5,7 +5,7 @@ package goemit
 // github.com/mattn/go-sqlite3; this fragment owns the Node API and value bridge.
 const nodeSQLiteRuntime = `
 type tsNodeSQLiteDB struct{object,limitsObject *tsObject;location string;opened,readonly,transaction,defensive,allowExtension,extensions,foreignKeys,doubleQuoted bool;timeout int;readBigInts,returnArrays,allowBare,allowUnknown bool;totalChanges,lastInsertRowID int64;callbackFailure any;functions,functionOptions,aggregates map[string]tsValue;authorizer tsValue;limits,limitMax map[string]int;statements map[*tsObject]bool;pool *sql.DB;conn *sql.Conn;native *sqlite3.SQLiteConn}
-type tsNodeSQLiteStatement struct{object *tsObject;db tsValue;sql string;finalized,safeIntegers,returnArrays,allowBare,allowUnknown,stepping,readonly,executed,tagStore bool;columns,declared,nullable,databases,tables,origins []string;parameterNames []string;lastBindings []any;params int;stmt *sql.Stmt;iteratorClose func()}
+type tsNodeSQLiteStatement struct{object *tsObject;db tsValue;sql string;finalized,safeIntegers,returnArrays,allowBare,allowUnknown,stepping,readonly,executed,tagStore bool;columns,declared,databases,tables,origins []string;nullable []bool;parameterNames []string;lastBindings []any;params int;stmt *sql.Stmt;iteratorClose func()}
 type tsNodeSQLiteSession struct{object *tsObject;db tsValue;closed bool;native *sqlite3.SQLiteSession}
 type tsNodeSQLiteTagStore struct{object *tsObject;db tsValue;capacity uint64;cache map[string]tsValue;order []string}
 var tsNodeSQLiteSingleton struct{sync.Once;module tsValue;dbProto,stmtProto,sessionProto,tagProto *tsObject;dbClass,stmtClass,sessionClass tsValue;dbs map[*tsObject]*tsNodeSQLiteDB;statements map[*tsObject]*tsNodeSQLiteStatement;sessions map[*tsObject]*tsNodeSQLiteSession;tags map[*tsObject]*tsNodeSQLiteTagStore;constants tsValue}
@@ -24,7 +24,7 @@ func tsNodeSQLiteDefaultLimits()map[string]int{return map[string]int{"length":10
 func tsNodeSQLiteLimits(loop *tsLoop,receiver tsValue)tsValue{
 	db:=tsNodeSQLiteDBFor(receiver);if db==nil{tsPropertyFailure("DatabaseSync method called on an incompatible receiver")}
 	if db.limitsObject!=nil{return tsObjectValue(db.limitsObject)}
-	object:=tsNewObject();object.prototype=tsObjectValue(tsObjectPrototype());names:=[]string{"length","sqlLength","column","exprDepth","compoundSelect","vdbeOp","functionArg","attach","likePatternLength","variableNumber","triggerDepth"}
+	object:=tsNewObject();object.prototype=tsObjectPrototype(loop);names:=[]string{"length","sqlLength","column","exprDepth","compoundSelect","vdbeOp","functionArg","attach","likePatternLength","variableNumber","triggerDepth"}
 	for _,name:=range names{
 		property:=name;object.set(property,tsNumberValue(float64(db.limits[property])))
 		tsNodeSQLiteAccessor(object,property,func(loop *tsLoop,_ tsValue)tsValue{current:=tsNodeSQLiteRequireDB(receiver);return tsNumberValue(float64(current.limits[property]))},func(_ *tsLoop,_ tsValue,value tsValue)tsValue{
@@ -87,7 +87,7 @@ func tsNodeSQLiteExecute(loop *tsLoop,statement tsValue,args []tsValue,mode stri
 	if mode=="get"{return tsU}
 	return tsArrayValue(out)
 }
-func tsNodeSQLiteStatement(loop *tsLoop,dbValue tsValue,sqlValue,options tsValue)tsValue{
+func tsNodeSQLiteNewStatement(loop *tsLoop,dbValue tsValue,sqlValue,options tsValue)tsValue{
 	db:=tsNodeSQLiteRequireDB(dbValue)
 	if sqlValue.kind!=tsStringKind{tsFSInvalid("sql","a string")}
 	sqlText:=tsText(sqlValue)
@@ -297,7 +297,7 @@ func tsNodeSQLiteDatabaseMethod(loop *tsLoop,receiver tsValue,name string,args [
 		if result!=nil{db.lastInsertRowID,_=result.LastInsertId()};if db.native!=nil{db.transaction=!db.native.AutoCommit()}
 		return tsU
 	case "prepare":
-		return tsNodeSQLiteStatement(loop,receiver,tsArg(args,0),tsArg(args,1))
+		return tsNodeSQLiteNewStatement(loop,receiver,tsArg(args,0),tsArg(args,1))
 	case "location":
 		return tsNodeSQLiteKey(db.location)
 	case "enableDefensive":
@@ -335,7 +335,7 @@ func tsNodeSQLiteDatabaseMethod(loop *tsLoop,receiver tsValue,name string,args [
 		for _,key:=range []string{"useBigIntArguments","varargs","directOnly"}{value:=tsNodeSQLiteGet(loop,options,key);if !tsIsUndefined(value){if value.kind!=tsBooleanKind{tsFSInvalid("options."+key,"a boolean")};normalized.set(key,value)}}
 		inverse:=tsNodeSQLiteGet(loop,options,"inverse");if !tsIsUndefined(inverse)&&inverse.kind!=tsFunctionKind{tsFSInvalid("options.inverse","a function")};normalized.set("inverse",inverse)
 		db=tsNodeSQLiteRequireDB(receiver)
-		if _,err:=tsNodeSQLiteRegisterAggregate(loop,db,tsText(tsArg(args,0)),tsObjectValue(normalized));err!=nil{panic(tsThrown{tsNodeSQLiteError("ERR_SQLITE_ERROR",err.Error())})}
+		if err:=tsNodeSQLiteRegisterAggregate(loop,db,tsText(tsArg(args,0)),tsObjectValue(normalized));err!=nil{panic(tsThrown{tsNodeSQLiteError("ERR_SQLITE_ERROR",err.Error())})}
 		return tsU
 	case "createSession":
 		options:=tsArg(args,0);table,database:="","main"
@@ -461,7 +461,7 @@ func tsNodeSQLiteTagMethod(loop *tsLoop,r tsValue,name string,args []tsValue)tsV
 		text:=sql.String();stmt:=state.cache[text]
 		if cached:=tsNodeSQLiteStatementFor(stmt);cached!=nil&&cached.finalized{delete(state.cache,text);for i,key:=range state.order{if key==text{state.order=append(state.order[:i],state.order[i+1:]...);break}};stmt=tsU}
 		if tsIsUndefined(stmt){
-			stmt=tsNodeSQLiteStatement(loop,state.db,tsNodeSQLiteKey(text),tsU);if prepared:=tsNodeSQLiteStatementFor(stmt);prepared!=nil{prepared.tagStore=true}
+			stmt=tsNodeSQLiteNewStatement(loop,state.db,tsNodeSQLiteKey(text),tsU);if prepared:=tsNodeSQLiteStatementFor(stmt);prepared!=nil{prepared.tagStore=true}
 			if state.capacity>0{state.cache[text]=stmt;state.order=append(state.order,text);if uint64(len(state.order))>state.capacity{oldest:=state.order[0];delete(state.cache,oldest);state.order=state.order[1:]}}
 		}else{
 			for i,key:=range state.order{if key==text{state.order=append(state.order[:i],state.order[i+1:]...);break}}

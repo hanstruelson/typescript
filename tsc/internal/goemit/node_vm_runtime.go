@@ -49,37 +49,11 @@ func tsNodeVMValidateModule(value tsValue) *tsNodeVMModuleState {
 	if value.kind!=tsObjectKind{return nil}
 	state:=tsNodeVMSingleton.modules[uintptr(value.ref)];if state==nil{panic(tsThrown{tsFSException("TypeError","ERR_INVALID_THIS","Value of \"this\" must be of type Module")})};return state
 }
-func tsNodeVMTrimSource(source string) string {
-	source=strings.TrimSpace(source)
-	for strings.HasSuffix(source,";"){source=strings.TrimSpace(strings.TrimSuffix(source,";"))}
-	if strings.HasPrefix(source,"return "){source=strings.TrimSpace(strings.TrimPrefix(source,"return "))}
-	return source
-}
-func tsNodeVMLiteral(loop *tsLoop, source string, context tsValue) (tsValue,bool) {
-	source=tsNodeVMTrimSource(source)
-	if source=="" { return tsU,true }
-	switch source {case "undefined":return tsU,true;case "null":return tsNull,true;case "true":return tsBooleanValue(true),true;case "false":return tsBooleanValue(false),true;case "NaN":return tsNumberValue(math.NaN()),true;case "Infinity":return tsNumberValue(math.Inf(1)),true;case "{}":return tsObjectValue(tsNewObject()),true;case "[]":return tsArrayValue(&tsArray{}),true}
-	if (strings.HasPrefix(source,"\"")&&strings.HasSuffix(source,"\"")) || (strings.HasPrefix(source,"'")&&strings.HasSuffix(source,"'")) {
-		if strings.HasPrefix(source,"\""){if value,err:=strconv.Unquote(source);err==nil{return tsStringReference(tsStringUTF8(value)),true}}
-		value:=strings.Trim(source,"'");value=strings.ReplaceAll(value,"\\n","\n");value=strings.ReplaceAll(value,"\\t","\t");value=strings.ReplaceAll(value,"\\'","'");return tsStringReference(tsStringUTF8(value)),true
-	}
-	if number,err:=strconv.ParseFloat(source,64);err==nil{return tsNumberValue(number),true}
-	if strings.HasPrefix(source,"globalThis."){source=strings.TrimPrefix(source,"globalThis.")}
-	if strings.HasPrefix(source,"this."){source=strings.TrimPrefix(source,"this.")}
-	if source!=""&&strings.IndexFunc(source,func(r rune)bool{return !(r=='_'||r=='$'||r>='a'&&r<='z'||r>='A'&&r<='Z'||r>='0'&&r<='9')})<0 {
-		if context.kind==tsObjectKind {value:=tsGet(loop,context,tsStringReference(tsStringUTF8(source)));if !tsIsUndefined(value){return value,true}}
-	}
-	for _,operator:=range []string{"+","-","*","/"}{if index:=strings.Index(source,operator);index>0{left,okLeft:=tsNodeVMLiteral(loop,source[:index],context);right,okRight:=tsNodeVMLiteral(loop,source[index+1:],context);if okLeft&&okRight{if operator=="+"&&(left.kind==tsStringKind||right.kind==tsStringKind){return tsStringReference(tsStringUTF8(tsText(left)+tsText(right))),true};a,b:=tsNumber(left),tsNumber(right);switch operator{case "+":return tsNumberValue(a+b),true;case "-":return tsNumberValue(a-b),true;case "*":return tsNumberValue(a*b),true;case "/":return tsNumberValue(a/b),true}}}}
-	return tsU,false
-}
 func tsNodeVMEvaluateSource(loop *tsLoop, source string, context tsValue) tsValue {
-	text:=strings.TrimSpace(source)
-	for _,prefix:=range []string{"const ","let ","var "}{if strings.HasPrefix(text,prefix){text=strings.TrimSpace(strings.TrimPrefix(text,prefix));break}}
-	if equal:=strings.Index(text,"=");equal>0&&!strings.Contains(text,"==") {
-		name:=strings.TrimSpace(text[:equal]);if strings.HasPrefix(name,"globalThis."){name=strings.TrimPrefix(name,"globalThis.")};if strings.HasPrefix(name,"this."){name=strings.TrimPrefix(name,"this.")}
-		if name!=""{if value,ok:=tsNodeVMLiteral(loop,text[equal+1:],context);ok{if context.kind==tsObjectKind{tsSet(loop,context,tsStringReference(tsStringUTF8(name)),value)};return value}}
-	}
-	if value,ok:=tsNodeVMLiteral(loop,text,context);ok{return value}
+	_ = loop
+	_ = source
+	_ = context
+	tsRuntimeUnsupported("node:vm dynamic source evaluation","the Go program is statically compiled and cannot execute JavaScript source strings")
 	return tsU
 }
 func tsNodeVMContextOptions(loop *tsLoop,options tsValue)*tsNodeVMContextState{
@@ -117,12 +91,9 @@ func tsNodeVMPrepareScriptOptions(loop *tsLoop,value tsValue,allowFilenameString
 }
 func tsNodeVMNewScript(loop *tsLoop, source, options tsValue) tsValue {
 	if tsIsUndefined(source){source=tsStringReference(tsStringUTF8(""))}else if source.kind!=tsStringKind{source=tsStringReference(tsStringUTF8(tsText(source)))}
-	opts:=tsNodeVMPrepareScriptOptions(loop,options,true)
-	object:=tsNewObject();object.prototype=tsGet(loop,tsNodeVMSingleton.scriptConstructor,tsStringReference(tsStringUTF8("prototype")));value:=tsObjectValue(object)
-	state:=tsNewObject();state.set("source",source);state.set("options",opts);state.set("sourceMapURL",tsNodeVMSourceMapURL(tsText(source)));state.set("cachedDataProduced",tsBooleanValue(false));state.set("cachedDataRejected",tsU);state.set("produceCachedData",tsGet(loop,opts,tsStringReference(tsStringUTF8("produceCachedData"))))
-	if cached:=tsGet(loop,opts,tsStringReference(tsStringUTF8("cachedData")));!tsIsUndefined(cached){state.set("cachedDataRejected",tsBooleanValue(true))}
-	tsNodeVMSingleton.scripts[uintptr(value.ref)]=tsObjectValue(state)
-	return value
+	_ = tsNodeVMPrepareScriptOptions(loop,options,true)
+	tsRuntimeUnsupported("node:vm Script compilation","the Go program is statically compiled and cannot compile JavaScript source strings")
+	return tsU
 }
 func tsNodeVMRunOptions(loop *tsLoop,value tsValue)tsValue{
 	opts:=tsNodeVMOptions(value)
@@ -133,9 +104,12 @@ func tsNodeVMRunOptions(loop *tsLoop,value tsValue)tsValue{
 	return opts
 }
 func tsNodeVMRunScript(loop *tsLoop,source string,context,options tsValue)tsValue{
-	if context.kind==tsObjectKind||context.kind==tsInstanceKind{if state:=tsNodeVMSingleton.contextOptions[uintptr(context.ref)];state!=nil{if !state.allowStrings&&(strings.Contains(source,"eval(")||strings.Contains(source,"new Function")||strings.Contains(source,"Function(")){panic(tsThrown{tsFSException("EvalError","ERR_EVAL_DISABLED","Code generation from strings disallowed for this context")})};if !state.allowWasm&&(strings.Contains(source,"WebAssembly.compile")||strings.Contains(source,"new WebAssembly.Module")){panic(tsThrown{tsFSException("CompileError","ERR_WEBASSEMBLY_COMPILE_ERROR","Wasm code generation disallowed by embedder")})}}}
+	_ = loop
+	_ = source
+	_ = context
 	_ = options
-	return tsNodeVMEvaluateSource(loop,source,context)
+	tsRuntimeUnsupported("node:vm script execution","the Go program is statically compiled and cannot execute JavaScript source strings")
+	return tsU
 }
 func tsNodeVMRunObjectOptions(loop *tsLoop,value tsValue)tsValue{
 	if value.kind==tsStringKind{opts:=tsNewObject();opts.set("filename",value);return tsObjectValue(opts)}
@@ -157,7 +131,7 @@ func tsNodeVMLex(source string)[]tsNodeVMLexeme{
 		if current=='/'&&index+1<len(source)&&source[index+1]=='/'{index+=2;for index<len(source)&&source[index]!='\n'{index++};continue}
 		if current=='/'&&index+1<len(source)&&source[index+1]=='*'{index+=2;for index+1<len(source)&&!(source[index]=='*'&&source[index+1]=='/'){if source[index]=='\n'{line++};index++};if index+1<len(source){index+=2};continue}
 		start:=index;tokenLine:=line
-		if current=='\''||current=='"'||current=='`'{quote:=current;index++;for index<len(source){if source[index]=='\\'{index+=2;continue};if source[index]==quote{break};if source[index]=='\n'{line++};index++};end:=index;if index<len(source){index++};tokens=append(tokens,tsNodeVMLexeme{text:tsNodeVMDecodeString(source[start+1:end],quote),kind:'s',line:tokenLine});continue}
+		if current=='\''||current=='"'||current==0x60{quote:=current;index++;for index<len(source){if source[index]=='\\'{index+=2;continue};if source[index]==quote{break};if source[index]=='\n'{line++};index++};end:=index;if index<len(source){index++};tokens=append(tokens,tsNodeVMLexeme{text:tsNodeVMDecodeString(source[start+1:end],quote),kind:'s',line:tokenLine});continue}
 		if tsNodeVMIdentifierByte(current){index++;for index<len(source)&&tsNodeVMIdentifierByte(source[index]){index++};tokens=append(tokens,tsNodeVMLexeme{text:source[start:index],kind:'i',line:tokenLine});continue}
 		index++;tokens=append(tokens,tsNodeVMLexeme{text:source[start:index],kind:'p',line:tokenLine})
 	}
@@ -211,16 +185,9 @@ func tsNodeVMExportBindings(source string)map[string]string{
 	return bindings
 }
 func tsNodeVMEvaluateModuleBody(loop *tsLoop,state *tsNodeVMModuleState)tsValue{
-	for _,line:=range strings.Split(state.source,"\n"){
-		for _,part:=range strings.Split(line,";"){
-			statement:=strings.TrimSpace(part);if statement==""||strings.HasPrefix(statement,"import ")||strings.HasPrefix(statement,"export {")||strings.HasPrefix(statement,"export *"){continue}
-			if strings.HasPrefix(statement,"export default "){value,ok:=tsNodeVMLiteral(loop,strings.TrimSpace(strings.TrimPrefix(statement,"export default ")),state.context);if ok{tsSet(loop,state.context,tsStringReference(tsStringUTF8("default")),value)};continue}
-			statement=strings.TrimSpace(strings.TrimPrefix(statement,"export "))
-			tsNodeVMEvaluateSource(loop,statement,state.context)
-		}
-	}
-	tsNodeVMEnsureNamespace(state)
-	for _,name:=range state.exportNames{local:=state.exportBindings[name];if local==""{local=name};value:=tsGet(loop,state.context,tsStringReference(tsStringUTF8(local)));tsSet(loop,state.namespace,tsStringReference(tsStringUTF8(name)),value)}
+	_ = loop
+	_ = state
+	tsRuntimeUnsupported("node:vm SourceTextModule evaluation","the Go program is statically compiled and cannot execute JavaScript module source strings")
 	return tsU
 }
 func tsNodeVMCreateModule(loop *tsLoop,kind string,source tsValue,exportNames []string,callback,options tsValue) tsValue {
@@ -229,10 +196,11 @@ func tsNodeVMCreateModule(loop *tsLoop,kind string,source tsValue,exportNames []
 	identifier:=tsGet(loop,opts,tsStringReference(tsStringUTF8("identifier")));if !tsIsUndefined(identifier)&&identifier.kind!=tsStringKind{tsFSInvalid("options.identifier","a string")}
 	if kind=="source"&&source.kind!=tsStringKind{tsFSInvalid("sourceText","a string")}
 	if kind=="source"{for _,name:=range []string{"lineOffset","columnOffset"}{value:=tsGet(loop,opts,tsStringReference(tsStringUTF8(name)));if !tsIsUndefined(value)&&(!tsIsNumeric(value)||math.Trunc(tsNumber(value))!=tsNumber(value)||tsNumber(value)<math.MinInt32||tsNumber(value)>math.MaxInt32){tsFSInvalid("options."+name,"an integer")}};if cached:=tsGet(loop,opts,tsStringReference(tsStringUTF8("cachedData")));!tsIsUndefined(cached)&&cached.kind!=tsTypedArrayKind&&cached.kind!=tsDataViewKind{tsFSInvalid("options.cachedData","Buffer, TypedArray, or DataView")}}
-	if tsIsUndefined(context){context=tsGlobalObject()}
-	if tsIsUndefined(identifier){var id uint64;if contextProvided{if contextState:=tsNodeVMSingleton.contextOptions[uintptr(context.ref)];contextState!=nil{id=contextState.moduleID;contextState.moduleID++}}else{id=tsNodeVMSingleton.globalID;tsNodeVMSingleton.globalID++};identifier=tsStringReference(tsStringUTF8("vm:module("+strconv.FormatUint(id,10)+")"))}
 	initialize:=tsGet(loop,opts,tsStringReference(tsStringUTF8("initializeImportMeta")));dynamicImport:=tsGet(loop,opts,tsStringReference(tsStringUTF8("importModuleDynamically")))
 	for _,entry:=range []struct{name string;value tsValue}{{"initializeImportMeta",initialize},{"importModuleDynamically",dynamicImport}}{if !tsIsUndefined(entry.value)&&entry.value.kind!=tsFunctionKind{tsFSInvalid("options."+entry.name,"a function")}}
+	if kind=="source"{tsRuntimeUnsupported("node:vm SourceTextModule compilation","the Go program is statically compiled and cannot compile JavaScript module source strings")}
+	if tsIsUndefined(context){context=tsGlobalObject()}
+	if tsIsUndefined(identifier){var id uint64;if contextProvided{if contextState:=tsNodeVMSingleton.contextOptions[uintptr(context.ref)];contextState!=nil{id=contextState.moduleID;contextState.moduleID++}}else{id=tsNodeVMSingleton.globalID;tsNodeVMSingleton.globalID++};identifier=tsStringReference(tsStringUTF8("vm:module("+strconv.FormatUint(id,10)+")"))}
 	if kind=="synthetic"&&callback.kind!=tsFunctionKind{tsFSInvalid("evaluateCallback","a function")}
 	prototype:=tsGet(loop,tsNodeVMSingleton.moduleConstructor,tsStringReference(tsStringUTF8("prototype")));if kind=="source"{prototype=tsGet(loop,tsNodeVMSingleton.sourceConstructor,tsStringReference(tsStringUTF8("prototype")))}else if kind=="synthetic"{prototype=tsGet(loop,tsNodeVMSingleton.syntheticConstructor,tsStringReference(tsStringUTF8("prototype")))}
 	object:=tsNewObject();object.prototype=prototype;value:=tsObjectValue(object)
@@ -243,7 +211,7 @@ func tsNodeVMCreateModule(loop *tsLoop,kind string,source tsValue,exportNames []
 	return value
 }
 func tsNodeVMEnsureNamespace(state *tsNodeVMModuleState){
-	if state.namespace.kind==tsObjectKind{return};namespace:=tsNewObject();namespace.prototype=tsNull;for _,name:=range state.exportNames{namespace.set(name,tsU)};state.namespace=tsObjectValue(namespace);tsNodeVMSingleton.namespaces[uintptr(namespace)]=true
+	if state.namespace.kind==tsObjectKind{return};namespace:=tsNewObject();namespace.prototype=tsNull;for _,name:=range state.exportNames{namespace.set(name,tsU)};state.namespace=tsObjectValue(namespace);tsNodeVMSingleton.namespaces[uintptr(unsafe.Pointer(namespace))]=true
 }
 func tsNodeVMStatusCode(status string) int {
 	switch status {
@@ -334,7 +302,7 @@ func tsNodeVMLinkGraph(loop *tsLoop, module, linker tsValue, complete func(tsRes
 		specifier := tsStringReference(tsStringUTF8(state.requests[current]))
 		attributes := tsObjectValue(tsNewObject())
 		if current < len(state.requestAttributes) {
-			attributes = state.requestAttributes[current]
+			attributes = tsValue(state.requestAttributes[current])
 		}
 		linkOptions := tsNewObject()
 		linkOptions.set("attributes", attributes)
@@ -361,7 +329,7 @@ func tsNodeVMLinkGraph(loop *tsLoop, module, linker tsValue, complete func(tsRes
 				return
 			}
 			dependency := tsNodeVMValidateModule(result.value)
-			if !tsStrictEqual(dependency.context, state.context) {
+			if !tsStrictEqual(tsValue(dependency.context), tsValue(state.context)) {
 				failure := tsNodeVMModuleFailure("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context")
 				state.failure = failure
 				state.status = "errored"
@@ -442,16 +410,16 @@ func tsNodeVMInstantiate(state *tsNodeVMModuleState) tsValue {
 func tsNodeVMEvaluateGraph(loop *tsLoop,module tsValue,visited map[uintptr]bool)tsValue{
 	state:=tsNodeVMValidateModule(module)
 	if state.status=="evaluated"{return tsU}
-	if state.status=="errored"{return state.failure}
+	if state.status=="errored"{return tsValue(state.failure)}
 	if state.status!="linked"&&state.status!="evaluating"{return tsNodeVMModuleFailure("ERR_VM_MODULE_STATUS","Module must be linked before evaluation")}
 	key:=uintptr(module.ref);if visited[key]{return tsU};visited[key]=true
 	state.status="evaluating"
-	for _,dependency:=range state.dependencies{if tsNodeVMIsModule(dependency){if failure:=tsNodeVMEvaluateGraph(loop,dependency,visited);!tsIsUndefined(failure){state.failure=failure;state.status="errored";return failure}}}
+	for _,dependency:=range state.dependencies{if tsNodeVMIsModule(tsValue(dependency)){if failure:=tsNodeVMEvaluateGraph(loop,tsValue(dependency),visited);!tsIsUndefined(failure){state.failure=failure;state.status="errored";return failure}}}
 	runCallback:=func(callback func())(failure tsValue,failed bool){defer func(){if recovered:=recover();recovered!=nil{failure=tsUnwrap(recovered);failed=true}}();callback();return tsU,false}
 	if state.kind=="synthetic"&&state.evaluateCallback.kind==tsFunctionKind{
-		if failure,failed:=runCallback(func(){tsCallReceiver(loop,state.evaluateCallback,module)});failed{state.failure=failure;state.status="errored";return failure}
+		if failure,failed:=runCallback(func(){tsCallReceiver(loop,tsValue(state.evaluateCallback),module)});failed{state.failure=failure;state.status="errored";return failure}
 	}else if state.kind=="source"{
-		if state.initializeImportMeta.kind==tsFunctionKind{meta:=tsObjectValue(tsNewObject());if failure,failed:=runCallback(func(){tsCall(loop,state.initializeImportMeta,meta,module)});failed{state.failure=failure;state.status="errored";return failure}}
+		if state.initializeImportMeta.kind==tsFunctionKind{meta:=tsObjectValue(tsNewObject());if failure,failed:=runCallback(func(){tsCall(loop,tsValue(state.initializeImportMeta),meta,module)});failed{state.failure=failure;state.status="errored";return failure}}
 		if failure,failed:=runCallback(func(){tsNodeVMEvaluateModuleBody(loop,state)});failed{state.failure=failure;state.status="errored";return failure}
 	}
 	state.status="evaluated";state.evaluationResult=tsU
@@ -467,7 +435,7 @@ func tsNodeVMInstallModuleMethods(loop *tsLoop, prototype *tsObject) {
 			case "identifier":
 				return tsStringReference(tsStringUTF8(state.identifier))
 			case "context":
-				return state.context
+				return tsValue(state.context)
 			case "status":
 				return tsStringReference(tsStringUTF8(state.status))
 			case "namespace":
@@ -475,12 +443,12 @@ func tsNodeVMInstallModuleMethods(loop *tsLoop, prototype *tsObject) {
 					tsNodeVMInvalid("ERR_VM_MODULE_STATUS", "Module namespace is not available before linking")
 				}
 				tsNodeVMEnsureNamespace(state)
-				return state.namespace
+				return tsValue(state.namespace)
 			case "error":
 				if state.status != "errored" {
 					tsNodeVMInvalid("ERR_VM_MODULE_STATUS", "Module is not errored")
 				}
-				return state.failure
+				return tsValue(state.failure)
 			case "moduleRequests":
 				if state.kind != "source" {
 					return tsU
@@ -560,7 +528,7 @@ func tsNodeVMInstallModuleMethods(loop *tsLoop, prototype *tsObject) {
 			return tsPromiseValue(loop.resolved(tsNodeVMModuleFailure("ERR_VM_MODULE_STATUS", "Module must be linked, evaluated or errored before evaluating"), true))
 		}
 		if state.status == "errored" {
-			return tsPromiseValue(loop.resolved(state.failure, true))
+			return tsPromiseValue(loop.resolved(tsValue(state.failure), true))
 		}
 		if state.status == "evaluated" {
 			return tsPromiseValue(loop.resolved(tsU, false))
@@ -592,7 +560,7 @@ func tsNodeVMInstallModuleMethods(loop *tsLoop, prototype *tsObject) {
 				tsNodeVMInvalid("ERR_VM_MODULE_NOT_MODULE", "Expected a Module")
 			}
 			dependency := tsNodeVMValidateModule(item)
-			if !tsStrictEqual(dependency.context, state.context) {
+			if !tsStrictEqual(tsValue(dependency.context), tsValue(state.context)) {
 				tsNodeVMInvalid("ERR_VM_MODULE_DIFFERENT_CONTEXT", "Linked modules must use the same context")
 			}
 			resolved[index] = item
@@ -669,7 +637,7 @@ func tsNodeVMInstallModuleMethods(loop *tsLoop, prototype *tsObject) {
 		}
 		state.exports[exportName] = tsArg(args, 1)
 		tsNodeVMEnsureNamespace(state)
-		tsSet(loop, state.namespace, name, tsArg(args, 1))
+		tsSet(loop, tsValue(state.namespace), name, tsArg(args, 1))
 		return tsU
 	}))
 }
@@ -701,12 +669,13 @@ func tsNodeVMModule(loop *tsLoop) tsValue {
 		module.set("compileFunction",tsNamedNativeMethod("compileFunction",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{
 			body:=tsArg(args,0);if body.kind!=tsStringKind{tsFSInvalid("code","a string")}
 			params:=tsArg(args,1);if tsIsUndefined(params){params=tsArrayValue(&tsArray{})};if params.kind!=tsArrayKind{tsFSInvalid("params","an array")}
-			names:=[]string{};for _,value:=range (*tsArray)(params.ref).values{if value.kind!=tsStringKind{tsFSInvalid("params","an array of strings")};names=append(names,tsText(value))}
+			for _,value:=range (*tsArray)(params.ref).values{if value.kind!=tsStringKind{tsFSInvalid("params","an array of strings")}}
 			opts:=tsNodeVMPrepareScriptOptions(loop,tsArg(args,2),false);context:=tsGet(loop,opts,tsStringReference(tsStringUTF8("parsingContext")));if tsIsUndefined(context){context=tsGlobalObject()}else if !tsNodeVMIsContext(context){tsFSInvalid("options.parsingContext","a vm.Context")}
-			base:=tsObjectValue(tsNodeTLSObjectCopy(context));extensions:=tsGet(loop,opts,tsStringReference(tsStringUTF8("contextExtensions")));if !tsIsUndefined(extensions){if extensions.kind!=tsArrayKind{tsFSInvalid("options.contextExtensions","an array")};for index,extension:=range (*tsArray)(extensions.ref).values{if extension.kind!=tsObjectKind&&extension.kind!=tsInstanceKind{tsFSInvalid("options.contextExtensions["+strconv.Itoa(index)+"]","an object")};copy:=tsNodeTLSObjectCopy(extension);for _,key:=range copy.order{base.ref.(*tsObject).set(key,copy.values[key])}}}
+			extensions:=tsGet(loop,opts,tsStringReference(tsStringUTF8("contextExtensions")));if !tsIsUndefined(extensions){if extensions.kind!=tsArrayKind{tsFSInvalid("options.contextExtensions","an array")};for index,extension:=range (*tsArray)(extensions.ref).values{if extension.kind!=tsObjectKind&&extension.kind!=tsInstanceKind{tsFSInvalid("options.contextExtensions["+strconv.Itoa(index)+"]","an object")}}}
 			if importer:=tsGet(loop,opts,tsStringReference(tsStringUTF8("importModuleDynamically")));!tsIsUndefined(importer)&&importer.kind!=tsFunctionKind&&!tsStrictEqual(importer,tsGet(loop,tsNodeVMSingleton.constants,tsStringReference(tsStringUTF8("USE_MAIN_CONTEXT_DEFAULT_LOADER")))){tsFSInvalid("options.importModuleDynamically","a function")}
-			source:=tsText(body);invoke:=func(loop *tsLoop,values ...tsValue)tsValue{environment:=tsObjectValue(tsNodeTLSObjectCopy(base));for index,name:=range names{tsSet(loop,environment,tsStringReference(tsStringUTF8(name)),tsArg(values,index))};if state:=tsNodeVMSingleton.contextOptions[uintptr(context.ref)];state!=nil&&(!state.allowStrings&&(strings.Contains(source,"eval(")||strings.Contains(source,"new Function")||strings.Contains(source,"Function("))||!state.allowWasm&&(strings.Contains(source,"WebAssembly.compile")||strings.Contains(source,"new WebAssembly.Module"))){panic(tsThrown{tsFSException("EvalError","ERR_EVAL_DISABLED","Code generation from strings disallowed for this context")})};return tsNodeVMEvaluateSource(loop,source,environment)}
-			function:=tsFunc(invoke);function.name="";function.length=len(names);function.constructible=true;function.construct=func(loop *tsLoop,values ...tsValue)tsValue{return invoke(loop,values...)};return tsFunctionValue(function)
+			_ = body
+			tsRuntimeUnsupported("node:vm compileFunction()","the Go program is statically compiled and cannot compile JavaScript function source strings")
+			return tsU
 		}))
 		module.set("isModuleNamespaceObject",tsNamedNativeMethod("isModuleNamespaceObject",1,func(_ *tsLoop,_ tsValue,args ...tsValue)tsValue{value:=tsArg(args,0);if value.kind!=tsObjectKind{return tsBooleanValue(false)};return tsBooleanValue(tsNodeVMSingleton.namespaces[uintptr(value.ref)])}))
 		module.set("measureMemory",tsNamedNativeMethod("measureMemory",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{options:=tsArg(args,0);if !tsIsUndefined(options)&&options.kind!=tsObjectKind&&options.kind!=tsInstanceKind{tsFSInvalid("options","an object")};mode:=tsGet(loop,options,tsStringReference(tsStringUTF8("mode")));if tsIsUndefined(mode){mode=tsStringReference(tsStringUTF8("summary"))};if mode.kind!=tsStringKind||(tsText(mode)!="summary"&&tsText(mode)!="detailed"){tsNodeVMInvalid("ERR_INVALID_ARG_VALUE","options.mode must be summary or detailed")};execution:=tsGet(loop,options,tsStringReference(tsStringUTF8("execution")));if tsIsUndefined(execution){execution=tsStringReference(tsStringUTF8("default"))};if execution.kind!=tsStringKind||(tsText(execution)!="default"&&tsText(execution)!="eager"){tsNodeVMInvalid("ERR_INVALID_ARG_VALUE","options.execution must be default or eager")};jsc:=tsNodeBunJSCModule(loop);memory:=tsCallReceiver(loop,tsGet(loop,jsc,tsStringReference(tsStringUTF8("memoryUsage"))),jsc);current:=tsGet(loop,memory,tsStringReference(tsStringUTF8("current")));peak:=tsGet(loop,memory,tsStringReference(tsStringUTF8("peak")));upper:=peak;if tsNumber(peak)<tsNumber(current){upper=current};measurement:=func()tsValue{value:=tsNewObject();value.set("jsMemoryEstimate",current);value.set("jsMemoryRange",tsArrayValue(&tsArray{values:[]tsValue{current,upper}}));return tsObjectValue(value)};out:=tsNewObject();out.set("total",measurement());if tsText(mode)=="detailed"{out.set("current",measurement());other:=&tsArray{};for range tsNodeVMSingleton.contexts{other.values=append(other.values,measurement())};out.set("other",tsArrayValue(other))};return tsPromiseValue(loop.resolved(tsObjectValue(out),false))}))

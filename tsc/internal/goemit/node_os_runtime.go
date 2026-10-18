@@ -228,7 +228,7 @@ func tsNodeOSConstants() tsValue {
 	return tsObjectValue(out)
 }
 
-func tsNodeOSModule() tsValue {
+func tsNodeOSModule(loop *tsLoop) tsValue {
 	tsNodeOSSingleton.Do(func() {
 		out := tsNewObject(); total, free := tsNodeOSMemory()
 		out.set("EOL", tsStringReference(tsStringUTF8("\n"))); if runtime.GOOS == "windows" { out.set("EOL", tsStringReference(tsStringUTF8("\r\n"))) }
@@ -247,7 +247,7 @@ func tsNodeOSModule() tsValue {
 		out.set("userInfo", tsNamedNativeMethod("userInfo", 0, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { return tsNodeOSUserInfo(loop, args) }))
 		out.set("endianness", tsNamedNativeMethod("endianness", 0, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue { endian := "LE"; switch runtime.GOARCH { case "ppc64", "s390x", "mips", "mips64": endian = "BE" }; return tsStringReference(tsStringUTF8(endian)) }))
 		out.set("getPriority", tsNamedNativeMethod("getPriority", 1, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid := 0; if len(args)>0 && !tsIsUndefined(args[0]) { pid = tsNodeOSInt32(args[0],"pid",tsU,tsU) }; value, err := syscall.Getpriority(syscall.PRIO_PROCESS, pid); if err != nil { tsNodeOSFailure("Error", err) }; return tsNumberValue(float64(value)) }))
-		out.set("setPriority", tsNamedNativeMethod("setPriority", 2, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid, priority := 0, tsU; if len(args)==1 { priority = tsNodeOSInt32(args[0],"priority",tsNumberValue(-20),tsNumberValue(19)) } else { pid=tsNodeOSInt32(tsArg(args,0),"pid",tsU,tsU); priority=tsNodeOSInt32(tsArg(args,1),"priority",tsNumberValue(-20),tsNumberValue(19)) }; if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, priority); err != nil { tsNodeOSFailure("Error", err) }; return tsU }))
+		out.set("setPriority", tsNamedNativeMethod("setPriority", 2, func(_ *tsLoop, _ tsValue, args ...tsValue) tsValue { pid, priority := 0, 0; if len(args)==1 { priority = tsNodeOSInt32(args[0],"priority",tsNumberValue(-20),tsNumberValue(19)) } else { pid=tsNodeOSInt32(tsArg(args,0),"pid",tsU,tsU); priority=tsNodeOSInt32(tsArg(args,1),"priority",tsNumberValue(-20),tsNumberValue(19)) }; if err := syscall.Setpriority(syscall.PRIO_PROCESS, pid, priority); err != nil { tsNodeOSFailure("Error", err) }; return tsU }))
 		tsNodeOSSingleton.value = out
 	})
 	return tsObjectValue(tsNodeOSSingleton.value)

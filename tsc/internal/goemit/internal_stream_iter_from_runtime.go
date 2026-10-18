@@ -106,7 +106,7 @@ func tsNodeIterFromSyncSource(loop *tsLoop, source tsValue) []tsValue {
 	flush()
 	return output
 }
-func tsNodeIterFromIteratorObject(values []tsValue, async bool) tsValue {
+func tsNodeIterFromIteratorObject(loop *tsLoop,values []tsValue, async bool) tsValue {
 	index := 0
 	object := tsNewObject()
 	if async {
@@ -121,15 +121,15 @@ func tsNodeIterFromIteratorObject(values []tsValue, async bool) tsValue {
 	object.set(tsPropertyKey(tsWellKnownSymbol("iterator")), tsNamedNativeMethod("[Symbol.iterator]", 0, func(_ *tsLoop, receiver tsValue, _ ...tsValue) tsValue { return receiver }))
 	return tsObjectValue(object)
 }
-func tsNodeIterFromIterable(values []tsValue, async bool) tsValue {
-	result := tsNodeIterFromIteratorObject(values, async)
+func tsNodeIterFromIterable(loop *tsLoop,values []tsValue, async bool) tsValue {
+	result := tsNodeIterFromIteratorObject(loop,values, async)
 	if async { return result }
 	return result
 }
-func tsNodeIterFromEmpty(async bool) tsValue { return tsNodeIterFromIterable(nil, async) }
-func tsNodeIterFromArrayBatch(input tsValue, async bool) tsValue {
+func tsNodeIterFromEmpty(loop *tsLoop,async bool) tsValue { return tsNodeIterFromIterable(loop,nil, async) }
+func tsNodeIterFromArrayBatch(loop *tsLoop,input tsValue, async bool) tsValue {
 	items := (*tsArray)(input.ref).values
-	return tsNodeIterFromIterable(tsNodeIterFromBatchSlices(items, true), async)
+	return tsNodeIterFromIterable(loop,tsNodeIterFromBatchSlices(items, true), async)
 }
 func tsNodeIterFromAsyncValue(loop *tsLoop, value tsValue, chunks []tsValue, done func([]tsValue, tsValue)) {
 	if tsNodeUtilType("isPromise", value) { loop.await(value, func(result tsResult) { if result.rejected { done(chunks, result.value) } else { tsNodeIterFromAsyncValue(loop, result.value, chunks, done) } }); return }
@@ -202,19 +202,19 @@ func tsNodeIterFromNormalizeAsyncValue(value tsValue) tsValue {
 }
 func tsNodeIterFromFromSync(loop *tsLoop, input tsValue) tsValue {
 	if tsNullish(input) { tsNodeIterFromInvalid("input", "a non-null value", input) }
-	if tsNodeIterFromIsPrimitive(input) { return tsNodeIterFromIterable([]tsValue{tsNodeIterFromArray([]tsValue{tsNodeIterFromPrimitiveToUint8Array(loop, input)})}, false) }
-	if input.kind == tsArrayKind { array := (*tsArray)(input.ref); if array.length() == 0 { return tsNodeIterFromEmpty(false) }; if tsNodeIterFromIsType(array.at(0), "isUint8Array") { all := true; for _, item := range array.values { if !tsNodeIterFromIsType(item, "isUint8Array") { all = false; break } }; if all { return tsNodeIterFromArrayBatch(input, false) } } }
+	if tsNodeIterFromIsPrimitive(input) { return tsNodeIterFromIterable(loop,[]tsValue{tsNodeIterFromArray([]tsValue{tsNodeIterFromPrimitiveToUint8Array(loop, input)})}, false) }
+	if input.kind == tsArrayKind { array := (*tsArray)(input.ref); if array.length() == 0 { return tsNodeIterFromEmpty(loop,false) }; if tsNodeIterFromIsType(array.at(0), "isUint8Array") { all := true; for _, item := range array.values { if !tsNodeIterFromIsType(item, "isUint8Array") { all = false; break } }; if all { return tsNodeIterFromArrayBatch(loop,input, false) } } }
 	types := tsInternalStreamIterTypesModule(loop); toStreamable := tsGet(loop, types, tsStringReference(tsStringUTF8("toStreamable"))); if tsNodeIterFromHasProtocol(loop, input, toStreamable) { return tsNodeIterFromFromSync(loop, tsCallReceiver(loop, tsGet(loop, input, toStreamable), input)) }
 	if tsNodeIterFromIsAsyncIterable(loop, input) { tsNodeIterFromInvalid("input", "a synchronous input (not AsyncIterable)", input) }
 	if tsNodeUtilType("isPromise", input) || (input.kind == tsObjectKind && tsGet(loop, input, tsStringReference(tsStringUTF8("then"))).kind == tsFunctionKind) { tsNodeIterFromInvalid("input", "a synchronous input (not Promise)", input) }
 	if !tsNodeIterFromIsSyncIterable(loop, input) { tsNodeIterFromInvalid("input", "a string, ArrayBuffer, ArrayBufferView, Iterable, or toStreamable value", input) }
-	return tsNodeIterFromIterable(tsNodeIterFromSyncSource(loop, input), false)
+	return tsNodeIterFromIterable(loop,tsNodeIterFromSyncSource(loop, input), false)
 }
 func tsNodeIterFromFrom(loop *tsLoop, input tsValue) tsValue {
 	if tsNullish(input) { tsNodeIterFromInvalid("input", "a non-null value", input) }
 	types := tsInternalStreamIterTypesModule(loop); validated := tsGet(loop, types, tsStringReference(tsStringUTF8("kValidatedSource"))); if tsTruthy(tsGet(loop, input, validated)) { return input }
-	if tsNodeIterFromIsPrimitive(input) { return tsNodeIterFromIterable([]tsValue{tsNodeIterFromArray([]tsValue{tsNodeIterFromPrimitiveToUint8Array(loop, input)})}, true) }
-	if input.kind == tsArrayKind { array := (*tsArray)(input.ref); if array.length() == 0 { return tsNodeIterFromEmpty(true) }; if tsNodeIterFromIsType(array.at(0), "isUint8Array") { all := true; for _, item := range array.values { if !tsNodeIterFromIsType(item, "isUint8Array") { all = false; break } }; if all { return tsNodeIterFromArrayBatch(input, true) } } }
+	if tsNodeIterFromIsPrimitive(input) { return tsNodeIterFromIterable(loop,[]tsValue{tsNodeIterFromArray([]tsValue{tsNodeIterFromPrimitiveToUint8Array(loop, input)})}, true) }
+	if input.kind == tsArrayKind { array := (*tsArray)(input.ref); if array.length() == 0 { return tsNodeIterFromEmpty(loop,true) }; if tsNodeIterFromIsType(array.at(0), "isUint8Array") { all := true; for _, item := range array.values { if !tsNodeIterFromIsType(item, "isUint8Array") { all = false; break } }; if all { return tsNodeIterFromArrayBatch(loop,input, true) } } }
 	toAsync := tsGet(loop, types, tsStringReference(tsStringUTF8("toAsyncStreamable"))); if tsNodeIterFromHasProtocol(loop, input, toAsync) { result := tsCallReceiver(loop, tsGet(loop, input, toAsync), input); if !tsNullish(result) && tsTruthy(tsGet(loop, result, validated)) { return result }; return tsNodeIterFromDeferredAsyncResult(loop, result) }
 	toSync := tsGet(loop, types, tsStringReference(tsStringUTF8("toStreamable"))); if tsNodeIterFromHasProtocol(loop, input, toSync) { return tsNodeIterFromFrom(loop, tsCallReceiver(loop, tsGet(loop, input, toSync), input)) }
 	if !tsNodeIterFromIsSyncIterable(loop, input) && !tsNodeIterFromIsAsyncIterable(loop, input) { tsNodeIterFromInvalid("input", "a string, ArrayBuffer, ArrayBufferView, Iterable, AsyncIterable, toStreamable, or toAsyncStreamable value", input) }

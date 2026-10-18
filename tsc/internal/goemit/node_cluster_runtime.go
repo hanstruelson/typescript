@@ -33,7 +33,7 @@ func tsNodeClusterRemoveHandlesForWorker(loop *tsLoop, worker tsValue, channelGo
 	}
 }
 func tsNodeClusterRemoveWorker(loop *tsLoop, worker tsValue) {
-	if tsIsNullish(worker) { tsPropertyFailure("ERR_INTERNAL_ASSERTION") }
+	if tsNullish(worker) { tsPropertyFailure("ERR_INTERNAL_ASSERTION") }
 	id := int(tsNumber(tsGet(loop, worker, tsNodeClusterKey("id"))))
 	delete((*tsObject)(tsNodeClusterSingleton.workers.ref).values, strconv.Itoa(id))
 	if len((*tsObject)(tsNodeClusterSingleton.workers.ref).values) == 0 {
@@ -124,10 +124,10 @@ func tsNodeClusterFork(loop *tsLoop,environment tsValue) tsValue {
 	worker:=tsConstruct(loop,tsNodeClusterSingleton.workerConstructor,options)
 	workerState:=tsInternalClusterWorkerFor(worker)
 	if workerState!=nil{
-		messageListener:=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{return tsCallReceiver(loop,tsGet(loop,tsNodeClusterSingleton.module,tsNodeClusterKey("emit")),tsNodeClusterSingleton.module,tsNodeClusterKey("message"),append([]tsValue{worker},args...)...)}))
+		messageListener:=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{return tsCallReceiver(loop,tsGet(loop,tsNodeClusterSingleton.module,tsNodeClusterKey("emit")),tsNodeClusterSingleton.module,append([]tsValue{tsNodeClusterKey("message"),worker},args...)...)}))
 		on:=tsGet(loop,worker,tsNodeClusterKey("on"));tsCallReceiver(loop,on,worker,tsNodeClusterKey("message"),messageListener)
 		protocolListener:=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{tsNodeClusterOnMessage(loop,worker,tsArg(args,0));return tsU}));if procOn:=tsGet(loop,child,tsNodeClusterKey("on"));procOn.kind==tsFunctionKind{tsCallReceiver(loop,procOn,child,tsNodeClusterKey("message"),protocolListener)}
-		for _,eventName:=range []string{"exit","disconnect"}{eventName:=eventName;listener:=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{if eventName=="exit"{connected:=tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("isConnected")),worker);if !tsTruthy(connected){tsNodeClusterRemoveHandlesForWorker(loop,worker,true);tsNodeClusterRemoveWorker(loop,worker)};tsSet(loop,worker,tsNodeClusterKey("state"),tsNodeClusterKey("dead"));tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("emit")),worker,tsNodeClusterKey("exit"),args...);tsCallReceiver(loop,tsGet(loop,tsNodeClusterSingleton.module,tsNodeClusterKey("emit")),tsNodeClusterSingleton.module,tsNodeClusterKey("exit"),append([]tsValue{worker},args...)...)}else{tsNodeClusterRemoveHandlesForWorker(loop,worker,true);dead:=tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("isDead")),worker);if tsTruthy(dead){tsNodeClusterRemoveWorker(loop,worker)};tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("emit")),worker,tsNodeClusterKey("disconnect"));tsCallReceiver(loop,tsGet(loop,tsNodeClusterSingleton.module,tsNodeClusterKey("emit")),tsNodeClusterSingleton.module,tsNodeClusterKey("disconnect"),worker)};return tsU}))
+		for _,eventName:=range []string{"exit","disconnect"}{eventName:=eventName;listener:=tsFunctionValue(tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{if eventName=="exit"{connected:=tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("isConnected")),worker);if !tsTruthy(connected){tsNodeClusterRemoveHandlesForWorker(loop,worker,true);tsNodeClusterRemoveWorker(loop,worker)};tsSet(loop,worker,tsNodeClusterKey("state"),tsNodeClusterKey("dead"));tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("emit")),worker,append([]tsValue{tsNodeClusterKey("exit")},args...)...);tsCallReceiver(loop,tsGet(loop,tsNodeClusterSingleton.module,tsNodeClusterKey("emit")),tsNodeClusterSingleton.module,append([]tsValue{tsNodeClusterKey("exit"),worker},args...)...)}else{tsNodeClusterRemoveHandlesForWorker(loop,worker,true);dead:=tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("isDead")),worker);if tsTruthy(dead){tsNodeClusterRemoveWorker(loop,worker)};tsCallReceiver(loop,tsGet(loop,worker,tsNodeClusterKey("emit")),worker,tsNodeClusterKey("disconnect"));tsCallReceiver(loop,tsGet(loop,tsNodeClusterSingleton.module,tsNodeClusterKey("emit")),tsNodeClusterSingleton.module,tsNodeClusterKey("disconnect"),worker)};return tsU}))
 			procOn:=tsGet(loop,child,tsNodeClusterKey("once"));if procOn.kind==tsFunctionKind{tsCallReceiver(loop,procOn,child,tsNodeClusterKey(eventName),listener)}
 		}
 	}

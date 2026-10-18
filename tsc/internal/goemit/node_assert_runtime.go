@@ -289,7 +289,7 @@ func tsNodeAssertDecorate(loop *tsLoop,value tsValue, strict bool) tsValue {
 }
 
 func tsNodeAssertConstructor() tsValue {
-	fn:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{tsPropertyFailure("Class constructor Assert cannot be invoked without new")});fn.name="Assert";fn.length=1;fn.constructible=true
+	fn:=tsFunc(func(loop *tsLoop,args ...tsValue)tsValue{tsPropertyFailure("Class constructor Assert cannot be invoked without new");return tsU});fn.name="Assert";fn.length=1;fn.constructible=true
 	fn.construct=func(loop *tsLoop,args ...tsValue)tsValue{instance:=tsNewObject();options:=tsArg(args,0);strictValue:=tsFSProperty(options,"strict");strict:=tsIsUndefined(strictValue)||tsTruthy(strictValue);for _,name:=range []string{"ok","fail","equal","notEqual","deepEqual","notDeepEqual","deepStrictEqual","notDeepStrictEqual","strictEqual","notStrictEqual","partialDeepStrictEqual","throws","doesNotThrow","rejects","doesNotReject","ifError","match","doesNotMatch"}{method:=name;if strict{switch name{case "equal":method="strictEqual";case "notEqual":method="notStrictEqual";case "deepEqual":method="deepStrictEqual";case "notDeepEqual":method="notDeepStrictEqual"}};instance.set(name,tsNodeAssertMethod(method))};return tsObjectValue(instance)}
 	return tsFunctionValue(fn)
 }

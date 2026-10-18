@@ -194,9 +194,9 @@ func (b *machineBuilder) forInStatement(node *ast.Node, label string) {
 			b.e.fail(decl, "for-in requires an identifier binding")
 		} else if cell.lexical {
 			b.allocate(cell)
-			b.emit(cell.name + ".init(" + iterator + ".value)")
+			b.emit(cell.name + ".init(loop," + iterator + ".value)")
 		} else {
-			b.emit(cell.name + ".set(" + iterator + ".value)")
+			b.emit(cell.name + ".set(loop," + iterator + ".value)")
 		}
 	} else {
 		_, write := b.lvalue(n.Initializer)

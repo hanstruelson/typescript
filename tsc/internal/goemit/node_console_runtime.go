@@ -26,7 +26,7 @@ func tsNodeConsolePrint(writer io.Writer, args ...tsValue) {
 	fmt.Fprintln(writer)
 }
 
-func tsNodeConsoleModule() tsValue {
+func tsNodeConsoleModule(loop *tsLoop) tsValue {
 	tsNodeConsoleSingleton.Do(func() {
 		out := tsNewObject()
 		tsNodeConsoleSingleton.counts = make(map[string]uint64)
@@ -84,6 +84,7 @@ func tsNodeConsoleModule() tsValue {
 			} else if existing := globalObject.get("console"); existing.kind == tsObjectKind {
 				tsNodeConsoleSingleton.value = (*tsObject)(existing.ref)
 			}
+		}
 	})
 	return tsObjectValue(tsNodeConsoleSingleton.value)
 }

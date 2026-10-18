@@ -64,7 +64,7 @@ func tsNodeNativeReadableRead(loop *tsLoop,state *tsNodeNativeReadableState,maxT
 	state.remaining=tsNodeNativeReadableHandleResult(loop,state,result,chunk);return tsU
 }
 func tsNodeNativeReadableDestroy(loop *tsLoop,state *tsNodeNativeReadableState,errorValue,callback tsValue) {
-	if state!=nil {tsNodeNativeReadablePointerCall(loop,state,"cancel",errorValue);readable:=tsNodeReadableStateFor(state.stream);if readable!=nil&&readable.flowing&&!readable.ended&&!readable.sync{readable.buffer=nil;readable.bufferIndex=0;readable.length=0;tsNodeReadableSyncState(readable)}}
+	if state!=nil {tsNodeNativeReadablePointerCall(loop,state,"cancel",errorValue);readable:=tsNodeReadableStateFor(state.stream);if readable!=nil&&readable.flowing&&!readable.ended&&!readable.sync{readable.buffer=nil;readable.length=0;tsNodeReadableSyncState(readable)}}
 	if callback.kind==tsFunctionKind {cb:=callback;context:=loop.asyncContext;loop.ready=append(loop.ready,func(){tsWithAsyncContext(loop,context,func(){tsCall(loop,cb,errorValue)})})}
 }
 func tsNodeNativeReadableRef(loop *tsLoop,state *tsNodeNativeReadableState,ref bool) tsValue {

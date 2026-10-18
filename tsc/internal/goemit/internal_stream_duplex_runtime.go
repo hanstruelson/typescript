@@ -7,7 +7,7 @@ var tsNodeDuplexSingleton struct { sync.Once; constructor *tsFunction; prototype
 func tsNodeDuplexKey(name string) tsValue { return tsStringReference(tsStringUTF8(name)) }
 func tsNodeDuplexInit(loop *tsLoop) {
 	tsNodeDuplexSingleton.Do(func() {
-		readable:=tsValue(tsNodeReadableModuleValue(loop))
+		readable:=tsInternalStreamReadableModule(loop)
 		writable:=tsInternalStreamWritableModule(loop)
 		readableCtor:=tsGet(loop,readable,tsNodeDuplexKey("Readable"))
 		writableCtor:=tsGet(loop,writable,tsNodeDuplexKey("Writable"))

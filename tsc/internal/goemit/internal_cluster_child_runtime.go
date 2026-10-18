@@ -18,7 +18,7 @@ var tsInternalClusterChild tsInternalClusterChildState
 func tsInternalClusterChildKey(name string) tsValue { return tsStringReference(tsStringUTF8(name)) }
 func tsInternalClusterChildGet(loop *tsLoop, value tsValue, name string) tsValue { return tsGet(loop, value, tsInternalClusterChildKey(name)) }
 func tsInternalClusterChildSet(loop *tsLoop, value tsValue, name string, item tsValue) { tsSet(loop, value, tsInternalClusterChildKey(name), item) }
-func tsInternalClusterChildEvent(loop *tsLoop, target tsValue, event string, args ...tsValue) tsValue { return tsCallReceiver(loop, tsInternalClusterChildGet(loop, target, "emit"), target, tsInternalClusterChildKey(event), args...) }
+func tsInternalClusterChildEvent(loop *tsLoop, target tsValue, event string, args ...tsValue) tsValue { return tsCallReceiver(loop, tsInternalClusterChildGet(loop, target, "emit"), target, append([]tsValue{tsInternalClusterChildKey(event)}, args...)...) }
 func tsInternalClusterChildDeleteHandle(key string) { delete(tsInternalClusterChild.handles, key) }
 func tsInternalClusterChildRemoveIndex(key string, index int) {
 	set := tsInternalClusterChild.indexes[key]
@@ -177,7 +177,7 @@ func tsInternalClusterChildGetServer(loop *tsLoop, obj, options, callback tsValu
 		if !indexSet.values[index] { return tsU }
 		state := tsInternalClusterWorkerFor(tsInternalClusterChild.worker); if state != nil { state.object.set("state", tsInternalClusterChildKey("listening")) }
 		addressMethod := tsInternalClusterChildGet(loop, obj, "address"); info := tsU; if addressMethod.kind == tsFunctionKind { info = tsCallReceiver(loop, addressMethod, obj) }
-		message.set("act", tsInternalClusterChildKey("listening")); if tsIsNullish(info) { message.set("port", port) } else { actualPort := tsInternalClusterChildGet(loop, info, "port"); if !tsIsNullish(actualPort) && tsTruthy(actualPort) { message.set("port", actualPort) } }
+		message.set("act", tsInternalClusterChildKey("listening")); if tsNullish(info) { message.set("port", port) } else { actualPort := tsInternalClusterChildGet(loop, info, "port"); if !tsNullish(actualPort) && tsTruthy(actualPort) { message.set("port", actualPort) } }
 		tsInternalClusterChildSend(loop, tsObjectValue(message), tsU); return tsU
 	}))
 	once := tsInternalClusterChildGet(loop, obj, "once"); if once.kind == tsFunctionKind { tsCallReceiver(loop, once, obj, tsInternalClusterChildKey("listening"), onListening) }
@@ -215,9 +215,9 @@ func tsInternalClusterChildInit(loop *tsLoop) {
 		tsInternalClusterChild.process = tsNodeProcessModule(loop); tsInternalClusterChild.handles = map[string]tsValue{}; tsInternalClusterChild.indexes = map[string]*tsInternalClusterChildIndex{}; tsInternalClusterChild.callbacks = map[uint64]tsValue{}
 		module := tsNodeEventCreate(loop, tsU, tsU); tsInternalClusterChild.module = module
 		shared := tsInternalSharedModule(loop); tsInternalClusterChild.ownerKey = tsInternalClusterChildGet(loop, shared, "kClusterOwner")
-		module.set("isWorker", tsBooleanValue(true)); module.set("isMaster", tsBooleanValue(false)); module.set("isPrimary", tsBooleanValue(false)); module.set("worker", tsNull); module.set("Worker", tsInternalClusterWorkerModule(loop))
-		module.set("_setupWorker", tsNamedNativeMethod("_setupWorker", 0, func(loop *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsInternalClusterChildSetup(loop) }))
-		module.set("_getServer", tsNamedNativeMethod("_getServer", 3, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { return tsInternalClusterChildGetServer(loop, tsArg(args, 0), tsArg(args, 1), tsArg(args, 2)) }))
+		(*tsObject)(module.ref).set("isWorker", tsBooleanValue(true)); (*tsObject)(module.ref).set("isMaster", tsBooleanValue(false)); (*tsObject)(module.ref).set("isPrimary", tsBooleanValue(false)); (*tsObject)(module.ref).set("worker", tsNull); (*tsObject)(module.ref).set("Worker", tsInternalClusterWorkerModule(loop))
+		(*tsObject)(module.ref).set("_setupWorker", tsNamedNativeMethod("_setupWorker", 0, func(loop *tsLoop, _ tsValue, _ ...tsValue) tsValue { return tsInternalClusterChildSetup(loop) }))
+		(*tsObject)(module.ref).set("_getServer", tsNamedNativeMethod("_getServer", 3, func(loop *tsLoop, _ tsValue, args ...tsValue) tsValue { return tsInternalClusterChildGetServer(loop, tsArg(args, 0), tsArg(args, 1), tsArg(args, 2)) }))
 		workerPrototype := tsInternalClusterWorker.prototype
 		workerPrototype.set("disconnect", tsNamedNativeMethod("disconnect", 0, func(loop *tsLoop, receiver tsValue, _ ...tsValue) tsValue { state := tsInternalClusterWorkerFor(receiver); if state != nil && tsText(state.object.values["state"]) != "disconnecting" && tsText(state.object.values["state"]) != "destroying" { state.object.set("state", tsInternalClusterChildKey("disconnecting")); tsInternalClusterChildDisconnect(loop, receiver, false) }; return receiver }))
 		workerPrototype.set("_disconnect", tsNamedNativeMethod("_disconnect", 1, func(loop *tsLoop, receiver tsValue, args ...tsValue) tsValue { return tsInternalClusterChildDisconnect(loop, receiver, tsTruthy(tsArg(args, 0))) }))

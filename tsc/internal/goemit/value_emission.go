@@ -120,11 +120,12 @@ type valueSignature struct {
 	results        []string
 }
 type valueEmission struct {
-	scope     string
-	err       error
-	fields    map[string]map[string]string
-	functions map[string][]valueSignature
-	globals   map[string]string
+	scope       string
+	callContext string
+	err         error
+	fields      map[string]map[string]string
+	functions   map[string][]valueSignature
+	globals     map[string]string
 }
 
 func valueType(expr ast.Expr) string {
@@ -201,8 +202,16 @@ func (p *valueEmission) parameters(fn *ast.FuncType, env map[string]string) {
 }
 func valueBase(kind string) string {
 	kind = strings.TrimPrefix(kind, "*")
-	if at := strings.IndexByte(kind, '['); at >= 0 {
-		kind = kind[:at]
+	if strings.HasPrefix(kind, "struct{") {
+		return kind
+	}
+	if strings.HasPrefix(kind, "[]") {
+		return strings.TrimPrefix(kind, "[]")
+	}
+	if strings.HasPrefix(kind, "[") {
+		if end := strings.IndexByte(kind, ']'); end >= 0 {
+			return kind[end+1:]
+		}
 	}
 	return kind
 }
@@ -241,6 +250,13 @@ func (p *valueEmission) signature(call *ast.CallExpr, env map[string]string) val
 				return valueFunctionSignature(fn)
 			}
 		}
+	}
+	// Binding cell methods are emitted as selectors. Their generic receiver
+	// types are intentionally not expanded into the package-wide overload table,
+	// but the one-value set/init ABI is stable across the cell implementations.
+	if selector, ok := call.Fun.(*ast.SelectorExpr); ok && len(call.Args) == 1 &&
+		(selector.Sel.Name == "set" || selector.Sel.Name == "init") {
+		return valueSignature{parameters: []string{"tsValue"}, result: "tsValue", results: []string{"tsValue"}}
 	}
 	candidates := p.functions[valueCallName(call.Fun)]
 	for _, sig := range candidates {
@@ -336,6 +352,13 @@ func (p *valueEmission) kind(expr ast.Expr, env map[string]string) string {
 	case *ast.FuncLit:
 		return valueType(e.Type)
 	case *ast.CallExpr:
+		// Go conversions such as []tsValue(nil) are represented as calls in the
+		// syntax tree. Preserve the target type so later index assignments keep
+		// their element type through append/copy initialization patterns.
+		switch e.Fun.(type) {
+		case *ast.ArrayType, *ast.MapType, *ast.ChanType:
+			return valueType(e.Fun)
+		}
 		if selector, ok := e.Fun.(*ast.SelectorExpr); ok {
 			if selector.Sel.Name == "init" {
 				return "tsValue"
@@ -386,6 +409,8 @@ func (p *valueEmission) kind(expr ast.Expr, env map[string]string) string {
 			return "tsValue"
 		case "tsNodeQUICMakeConstructor", "tsNodeQUICMakeStatsClass", "tsNodeQUICStateConstructor", "tsNodeSQLiteConstructor", "tsInternalMockTimersConstructor", "tsNodeTestNewMockTracker", "tsNodeTestMockFunctionContext":
 			return "tsValue"
+		case "tsNodeVMValidateModule":
+			return "*tsNodeVMModuleState"
 		case "tsObjectPrototype", "tsObjectConstructor", "tsProxyConstructor", "tsFunctionConstructor", "tsFunctionPrototype", "tsClassPrototype", "tsPrototypeOf", "tsRegExpPrototype", "tsErrorPrototype", "tsErrorConstructor", "tsGlobalObject", "tsGeneratorPrototype", "tsGeneratorFunctionPrototype", "tsWellKnownSymbol", "tsSymbolFunction", "tsPathModuleFor", "tsNodeURLPathToFileURL", "tsNodeURLFileURLToPath", "tsNodeOSConstants", "tsNodeOSString", "tsNodeOSNumber", "tsNodeOSCPUs", "tsNodeOSNetworkInterfaces", "tsNodeTimerRejectedIterator", "tsBuiltinClass", "tsInternalPrimordialsGetter", "tsNodeModuleConstructorValue", "tsNodeModuleCompileCacheStatus", "tsNodeParseArgsFunction", "tsNodeUtilSystemErrorMap", "tsNodePerfEntry", "tsNodePerfEntryList", "tsNodePerfGetEntries", "tsNodePerfUtilization", "tsNodePerfObserverConstructor", "tsNodeHistogramValue", "tsInternalSharedPerformanceEntry", "tsInternalSharedNodeEntryList", "tsInternalSharedPerformanceNodeEntry", "tsInternalSharedNodeObserverConstructor", "tsInternalSharedNodeObserverDisconnect", "tsInternalSharedErrorClass", "tsInternalSharedHideFromStack", "tsInternalValidatorCheckRanges", "tsInternalValidatorPath", "tsInternalValidatorFsPath", "tsInternalValidatorCheckLink", "tsInternalValidatorPort", "tsNodeDuplexifyOptions", "tsTypedArrayBufferExtended", "tsTypedArrayBuffer", "tsTypedArrayBigIntElement", "tsBigIntElement", "tsTypedArrayElement", "tsArrayMutate", "tsNodeIterFromIteratorObject", "tsNodeIterFromIterable", "tsNodeIterFromEmpty", "tsNodeIterFromArrayBatch", "tsNodeIterFromAsyncIterator", "tsNodeIterFromNormalizeAsyncValue", "tsNodeIterFromDeferredAsyncResult", "tsNodeIterFromArray", "tsNodeClassicBatchedReadable", "tsNodeCryptoKeyValue", "tsNodeCryptoCallable", "tsNodeCryptoConstructorPrototype", "tsNodeProcessBindingConstants", "tsNodeProcessReallyExit", "tsNodeProcessResourceUsage", "tsNodeProcessConfig", "tsNodeProcessStdin", "tsNodeProcessWriteStream", "tsNodeProcessMemoryUsage", "tsNodeProcessSetUncaughtExceptionCapture", "tsNodeDomainEnter", "tsNodeDomainExit", "tsNodeDiagnosticsChannelConstructor", "tsNodeALSMethod", "tsNodeAsyncResourceMethod", "tsNodeAsyncLocalStorageConstructor", "tsNodeAsyncResourceConstructor", "tsNodeAsyncHooksCreateHook", "tsNodeAssertDecorate", "tsGet", "tsSet", "tsSetPrototype", "tsObjectBuiltin", "tsConstruct", "tsFSProperty", "tsFSOption", "tsFSStats", "tsFSZeroStats", "tsFSDir", "tsFSDirent", "tsFSInvoke", "tsIteratorResult", "tsNodeBuffer", "tsBYOBTransfer", "tsWebStreamValue", "tsFSReadLines", "tsAsyncIteratorObject", "tsBlobObject", "tsNamedNativeMethod", "tsNodeURLParamsObject", "tsNodeURLObject", "tsNodeNetMakeAddr", "tsNodeNetNormalizeArgs", "tsNodeDNSObject", "tsNodeDNSStrings", "tsNodeDNSAsync", "tsNodeDNSLookupAsync", "tsNodeDNSServiceAsync", "tsNodeDNSError", "tsInternalTLSKey", "tsInternalTLSError", "tsInternalTLSSecureRange", "tsInternalTLSStripCipherNames", "tsInternalTLSNormalizePEM", "tsInternalTLSClientOptions", "tsInternalTLSHandshakeError", "tsInternalTLSProcessPFX", "tsInternalTLSUnsealPFX":
 			return "tsValue"
 		case "float64", "float32", "int", "int8", "int16", "int32", "int64", "uint", "uint8", "uint16", "uint32", "uint64", "bool", "string":
@@ -467,7 +492,7 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 	if constructor := constructors[kind]; constructor != "" {
 		return valueWrapper(constructor, expr)
 	}
-	if valueBase(kind) == "tsOptional" {
+	if strings.HasPrefix(valueBase(kind), "tsOptional[") {
 		return &ast.CallExpr{Fun: &ast.SelectorExpr{X: expr, Sel: ast.NewIdent("raw")}}
 	}
 	if strings.HasPrefix(kind, "*") && p.fields[valueBase(kind)]["properties"] == "*tsProperties" {
@@ -480,7 +505,11 @@ func (p *valueEmission) coerce(expr ast.Expr, expected string, env map[string]st
 		if call, ok := expr.(*ast.CallExpr); ok {
 			candidates = fmt.Sprintf("; call %s signatures: %#v", valueCallName(call.Fun), p.functions[valueCallName(call.Fun)])
 		}
-		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue in %s%s", detail.String(), kind, p.scope, candidates)
+		context := ""
+		if p.callContext != "" {
+			context = "; within " + p.callContext
+		}
+		p.err = fmt.Errorf("cannot marshal %s (%s) into tsValue in %s%s%s", detail.String(), kind, p.scope, candidates, context)
 	}
 	return expr
 }
@@ -490,10 +519,21 @@ func (p *valueEmission) expression(expr ast.Expr, env map[string]string) ast.Exp
 	}
 	switch e := expr.(type) {
 	case *ast.CallExpr:
+		previousContext := p.callContext
+		callName := valueCallName(e.Fun)
+		if previousContext == "" {
+			p.callContext = callName
+		} else {
+			p.callContext = previousContext + " -> " + callName
+		}
+		currentContext := p.callContext
+		defer func() { p.callContext = previousContext }()
 		e.Fun = p.expression(e.Fun, env)
 		for i, arg := range e.Args {
+			p.callContext = fmt.Sprintf("%s arg[%d]", currentContext, i)
 			e.Args[i] = p.expression(arg, env)
 		}
+		p.callContext = currentContext
 		if valueCallName(e.Fun) == "append" && len(e.Args) > 1 {
 			element := valueElement(p.kind(e.Args[0], env))
 			for i := 1; i < len(e.Args); i++ {
@@ -513,6 +553,7 @@ func (p *valueEmission) expression(expr ast.Expr, env map[string]string) ast.Exp
 					at = len(sig.parameters) - 1
 				}
 				if at >= 0 && at < len(sig.parameters) {
+					p.callContext = fmt.Sprintf("%s arg[%d]", currentContext, i)
 					e.Args[i] = p.coerce(arg, sig.parameters[at], env)
 				}
 			}

@@ -17,7 +17,7 @@ func tsAssertDiffLines(value []uint16) [][]uint16 {
 	for index,unit:=range value { if unit=='\n' { lines=append(lines,value[start:index]);start=index+1 } }
 	return append(lines,value[start:])
 }
-func tsAssertDiffEqual(a,b []uint16,checkComma bool)bool {
+func tsAssertDiffLineEqual(a,b []uint16,checkComma bool)bool {
 	if len(a)==len(b){for index:=range a{if a[index]!=b[index]{return false}};return true}
 	if !checkComma { return false }
 	larger,smaller:=a,b;if len(larger)<len(smaller){larger,smaller=smaller,larger}
@@ -47,7 +47,7 @@ func tsAssertMyers(actual,expected []uint16,lines,checkComma bool)([]tsAssertDif
 			var x uint32
 			if diagonal==diagonalStart||(diagonal!=diagonalEnd&&graph[index-1]<graph[index+1]){x=graph[index+1]}else{x=graph[index-1]+1}
 			y:=int(x)-diagonal
-			for int(x)<len(a)&&y<len(b)&&tsAssertDiffEqual(a[int(x)],b[y],checkComma){x++;y++}
+			for int(x)<len(a)&&y<len(b)&&tsAssertDiffLineEqual(a[int(x)],b[y],checkComma){x++;y++}
 			graph[index]=x
 			if int(x)>=len(a)&&y>=len(b){return tsAssertMyersBacktrack(trace,a,b,checkComma),tsU}
 		}

@@ -36,7 +36,7 @@ func tsNodeWebAdapterWritableCreate(loop *tsLoop,source,strategy tsValue) tsValu
 		writer.set("write",tsNamedNativeMethod("write",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{if state.closed{if !tsNullish(state.failure){return tsNodeWebAdapterReject(loop,state.failure)};return tsNodeWebAdapterReject(loop,tsFSException("TypeError","ERR_INVALID_STATE","WritableStream is closed"))};result:=callAlgorithm("write",tsArg(args,0));return tsNodeWebAdapterResolve(loop,result)}))
 		writer.set("close",tsNamedNativeMethod("close",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsNodeWebAdapterWritableClose(loop,state,callAlgorithm)}))
 		writer.set("abort",tsNamedNativeMethod("abort",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{return tsNodeWebAdapterWritableAbort(loop,state,tsArg(args,0),callAlgorithm)}))
-		writer.set("releaseLock",tsNamedNativeMethod("releaseLock",0,func(_ *tsLoop,_ tsValue,_ ...tsValue)tsValue{state.locked=false;state.object.set("locked",tsBooleanValue(false));return tsU}))
+		writer.set("releaseLock",tsNamedNativeMethod("releaseLock",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{state.locked=false;tsSet(loop,state.object,tsNodeWebAdapterKey("locked"),tsBooleanValue(false));return tsU}))
 		object.set("locked",tsBooleanValue(true));return tsObjectValue(writer)
 	}))
 	object.set("close",tsNamedNativeMethod("close",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsNodeWebAdapterWritableClose(loop,state,callAlgorithm)}))
@@ -113,9 +113,9 @@ func tsNodeWebAdapterDuplexFromPair(loop *tsLoop,pair,options tsValue) tsValue {
 	write:=tsNamedNativeMethod("write",3,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{callback:=tsArg(args,2);result:=tsCallReceiver(loop,tsNodeWebAdapterGet(loop,writer,"write"),writer,tsArg(args,0));tsNodeWebAdapterAwait(loop,result,func(settled tsResult){if settled.rejected{tsCall(loop,callback,settled.value)}else{tsCall(loop,callback,tsU)}});return tsU})
 	final:=tsNamedNativeMethod("final",1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{callback:=tsArg(args,0);result:=tsCallReceiver(loop,tsNodeWebAdapterGet(loop,writer,"close"),writer);tsNodeWebAdapterAwait(loop,result,func(settled tsResult){if settled.rejected{tsCall(loop,callback,settled.value)}else{tsCall(loop,callback,tsU)}});return tsU})
 	destroy:=tsNamedNativeMethod("destroy",2,func(loop *tsLoop,stream tsValue,args ...tsValue)tsValue{err,callback:=tsArg(args,0),tsArg(args,1);pending:=2;first:=tsU;done:=func(result tsResult){if result.rejected&&tsNullish(first){first=result.value};pending--;if pending==0{if tsTruthy(first){tsCall(loop,callback,first)}else{tsCall(loop,callback,err)}}};for _,entry:=range []struct{name string;target tsValue}{{"abort",writer},{"cancel",reader}}{method:=tsNodeWebAdapterGet(loop,entry.target,entry.name);result:=tsCallReceiver(loop,method,entry.target,err);tsNodeWebAdapterAwait(loop,result,done)};_ = stream;return tsU})
-	settings.set("read",read);settings.set("write",write);settings.set("final",final);settings.set("destroy",destroy)
-	if !tsIsUndefined(tsNodeWebAdapterGet(loop,options,"allowHalfOpen")){settings.set("allowHalfOpen",tsNodeWebAdapterGet(loop,options,"allowHalfOpen"))}
-	duplex:=tsNodeDuplexCreate(loop,tsU,tsObjectValue(settings));return duplex
+	tsSet(loop,settings,tsNodeWebAdapterKey("read"),read);tsSet(loop,settings,tsNodeWebAdapterKey("write"),write);tsSet(loop,settings,tsNodeWebAdapterKey("final"),final);tsSet(loop,settings,tsNodeWebAdapterKey("destroy"),destroy)
+	if !tsIsUndefined(tsNodeWebAdapterGet(loop,options,"allowHalfOpen")){tsSet(loop,settings,tsNodeWebAdapterKey("allowHalfOpen"),tsNodeWebAdapterGet(loop,options,"allowHalfOpen"))}
+	duplex:=tsNodeDuplexCreate(loop,tsU,settings);return duplex
 }
 func tsNodeWebAdapterKnownError(loop *tsLoop,cause tsValue) tsValue { code:=tsGet(loop,cause,tsNodeWebAdapterKey("code"));if tsText(code)=="ERR_STREAM_PREMATURE_CLOSE"{return tsFSException("AbortError","ABORT_ERR","The operation was aborted")};if code.kind==tsStringKind&&strings.HasPrefix(tsText(code),"ERR__ERROR_"){return tsFSException("TypeError",tsText(code),"")};return cause }
 func tsNodeWebAdapterInit(loop *tsLoop) {

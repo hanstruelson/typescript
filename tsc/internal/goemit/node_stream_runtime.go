@@ -47,7 +47,7 @@ func tsNodeStreamOperator(loop *tsLoop,receiver tsValue,args []tsValue,name stri
 }
 func tsNodeStreamPromiseOperator(loop *tsLoop,receiver tsValue,args []tsValue,name string) tsValue {
 	callback:=tsArg(args,0);options:=tsArg(args,1);if name=="reduce"{options=tsArg(args,2)};if name!="toArray"&&callback.kind!=tsFunctionKind{tsInternalValidatorInvalidType("fn","a function",callback)}
-	promise:=loop.promise();iterator:=tsAsyncIterate(receiver);values:=[]tsValue{};hasInitial:=len(args)>1&&name=="reduce";accumulator:=tsArg(args,1);index:=0
+	promise:=loop.promise();iterator:=tsAsyncIterate(receiver);values:=[]tsValue{};hasInitial:=len(args)>1&&name=="reduce";accumulator:=tsArg(args,1)
 	var visit func();visit=func(){
 		if reason:=tsNodeStreamAbort(loop,options);!tsIsUndefined(reason){promise.settle(tsResult{reason,true});return}
 		loop.await(tsPromiseValue(iterator.next(loop)),func(result tsResult){
@@ -64,7 +64,7 @@ func tsNodeStreamPromiseOperator(loop *tsLoop,receiver tsValue,args []tsValue,na
 	};visit();return tsPromiseValue(promise)
 }
 func tsNodeStreamPipelinePromises(loop *tsLoop,args []tsValue) tsValue {
-	values:=append([]tsValue{},args...);options:=tsU;if len(values)>0{last:=values[len(values)-1];if (last.kind==tsObjectKind||last.kind==tsInstanceKind)&&!tsInternalStreamIsNode(loop,last)&&!tsInternalStreamIsIterable(loop,last,tsU)&&!tsInternalStreamIsWeb(loop,last){options=last;values=values[:len(values)-1]}}
+	values:=append([]tsValue{},args...);options:=tsU;if len(values)>0{last:=values[len(values)-1];if (last.kind==tsObjectKind||last.kind==tsInstanceKind)&&!tsInternalStreamIsNode(loop,last)&&!tsTruthy(tsInternalStreamIsIterable(loop,last,tsU))&&!tsInternalStreamIsWeb(loop,last){options=last;values=values[:len(values)-1]}}
 	promise:=loop.promise();callback:=tsFunctionValue(tsFunc(func(_ *tsLoop,results ...tsValue)tsValue{err,value:=tsArg(results,0),tsArg(results,1);if tsTruthy(err){promise.settle(tsResult{err,true})}else{promise.settle(tsResult{value,false})};return tsU}))
 	tsNodePipelineImpl(loop,tsArrayValue(&tsArray{values:values}),callback,options);return tsPromiseValue(promise)
 }
@@ -89,7 +89,7 @@ func tsNodeStreamConsumerConvert(loop *tsLoop,method string,chunks []tsValue,set
 	var fail func(any)
 	fail=func(thrown any){settle(tsResult{tsUnwrap(thrown),true})}
 	defer func(){if thrown:=recover();thrown!=nil{fail(thrown)}}()
-	global:=tsObjectValue(tsGlobalObject());blobConstructor:=tsNodeStreamGet(loop,global,"Blob");blob:=tsConstruct(loop,blobConstructor,tsArrayValue(&tsArray{values:append([]tsValue(nil),chunks...)}))
+	global:=tsGlobalObject();blobConstructor:=tsNodeStreamGet(loop,global,"Blob");blob:=tsConstruct(loop,blobConstructor,tsArrayValue(&tsArray{values:append([]tsValue(nil),chunks...)}))
 	if method=="blob"{settle(tsResult{blob,false});return}
 	methodName:=method;if method=="json"||method=="buffer"{methodName="text";if method=="buffer"{methodName="arrayBuffer"}}
 	convert:=tsNodeStreamGet(loop,blob,methodName);result:=tsCallReceiver(loop,convert,blob)
@@ -114,7 +114,7 @@ func tsNodeStreamConsumers(loop *tsLoop) tsValue {
 	for _,name:=range []string{"arrayBuffer","bytes","text","json","buffer","blob"}{method:=name;module.set(method,tsNamedNativeMethod(method,1,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{promise:=loop.promise();tsNodeStreamConsumerCollect(loop,tsArg(args,0),method,promise);return tsPromiseValue(promise)}))};module.set("default",tsObjectValue(module));tsNodeStreamSingleton.consumers=tsObjectValue(module);return tsNodeStreamSingleton.consumers
 }
 func tsNodeStreamWeb(loop *tsLoop) tsValue {
-	if !tsIsUndefined(tsNodeStreamSingleton.web){return tsNodeStreamSingleton.web};object:=tsNewObject();global:=tsObjectValue(tsGlobalObject());for _,name:=range []string{"ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader","ReadableStreamBYOBRequest","ReadableByteStreamController","ReadableStreamDefaultController","TransformStream","TransformStreamDefaultController","WritableStream","WritableStreamDefaultWriter","WritableStreamDefaultController","ByteLengthQueuingStrategy","CountQueuingStrategy","TextEncoderStream","TextDecoderStream","CompressionStream","DecompressionStream"}{object.set(name,tsGet(loop,global,tsNodeStreamKey(name)))};object.set("default",tsObjectValue(object));tsNodeStreamSingleton.web=tsObjectValue(object);return tsNodeStreamSingleton.web
+	if !tsIsUndefined(tsNodeStreamSingleton.web){return tsNodeStreamSingleton.web};object:=tsNewObject();global:=tsGlobalObject();for _,name:=range []string{"ReadableStream","ReadableStreamDefaultReader","ReadableStreamBYOBReader","ReadableStreamBYOBRequest","ReadableByteStreamController","ReadableStreamDefaultController","TransformStream","TransformStreamDefaultController","WritableStream","WritableStreamDefaultWriter","WritableStreamDefaultController","ByteLengthQueuingStrategy","CountQueuingStrategy","TextEncoderStream","TextDecoderStream","CompressionStream","DecompressionStream"}{object.set(name,tsGet(loop,global,tsNodeStreamKey(name)))};object.set("default",tsObjectValue(object));tsNodeStreamSingleton.web=tsObjectValue(object);return tsNodeStreamSingleton.web
 }
 func tsNodeStreamModule(loop *tsLoop) tsValue {
 	tsNodeStreamSingleton.Do(func(){

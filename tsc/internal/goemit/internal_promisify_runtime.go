@@ -75,9 +75,6 @@ func tsInternalPromisifyModule(loop *tsLoop) tsValue {
     if tsInternalPromisify.module!=nil{return tsObjectValue(tsInternalPromisify.module)}
     module:=tsNewObject()
     validate:=tsGet(loop,tsInternalValidatorsModule(loop),tsStringReference(tsStringUTF8("validateFunction")))
-    defineCustom:=tsNamedNativeMethod("defineCustomPromisify",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{
-        target,callback:=tsArg(args,0),tsArg(args,1);tsInternalPromisifyDefine(loop,target,callback,tsInternalPromisify.customSymbol,false,true);return callback
-    })
     defineArgs:=tsNamedNativeMethod("defineCustomPromisifyArgs",2,func(loop *tsLoop,_ tsValue,args ...tsValue)tsValue{
         target,items:=tsArg(args,0),tsArg(args,1);tsInternalPromisifyDefine(loop,target,items,tsInternalPromisify.argsSymbol,false,false);return items
     })

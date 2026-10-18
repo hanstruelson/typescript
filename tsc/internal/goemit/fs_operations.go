@@ -216,20 +216,20 @@ func tsFSValidateRmOptions(loop *tsLoop, path, options tsValue) tsValue {
     recursive, force := false, false
     maxRetries, retryDelay := int64(0), int64(100)
     if !tsIsUndefined(options) {
-        if options.kind!=tsObjectKind&&options.kind!=tsInstanceKind { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE",`The "options" argument must be of type object.`)}) }
+		if options.kind!=tsObjectKind&&options.kind!=tsInstanceKind { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE","The \"options\" argument must be of type object.")}) }
         readOwn:=func(name string)(tsValue,bool){if !tsPrototypeOwn(options,name){return tsU,false};return tsGet(loop,options,tsStringReference(tsStringUTF8(name))),true}
         for _,entry:=range []struct{name string;target *bool}{{"recursive",&recursive},{"force",&force}} {
             if value,present:=readOwn(entry.name);present {
-                if value.kind!=tsBooleanKind { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE",`The "options.`+entry.name+`" property must be of type boolean.`)}) }
+				if value.kind!=tsBooleanKind { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE",fmt.Sprintf("The \"options.%s\" property must be of type boolean.",entry.name))}) }
                 *entry.target=tsTruthy(value)
             }
         }
         readUint32:=func(name string,fallback int64)int64 {
             value,present:=readOwn(name);if !present{return fallback}
-            if !tsIsNumeric(value) { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE",`The "options.`+name+`" property must be a number.`)}) }
+			if !tsIsNumeric(value) { panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE",fmt.Sprintf("The \"options.%s\" property must be a number.",name))}) }
             number:=tsNumber(value)
             if math.IsNaN(number)||math.IsInf(number,0)||math.Trunc(number)!=number||number<0||number>4294967295 {
-                panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE",`The value of "options.`+name+`" is out of range.`)})
+				panic(tsThrown{tsFSException("RangeError","ERR_OUT_OF_RANGE",fmt.Sprintf("The value of \"options.%s\" is out of range.",name))})
             }
             return int64(number)
         }
@@ -277,7 +277,7 @@ func tsFSMetadataField(field reflect.Value, bigint bool)tsValue{
 }
 func tsFSTimestampValues(stamp time.Time,bigint bool)(tsValue,tsValue){
     if bigint{nanoseconds:=new(big.Int).Mul(big.NewInt(stamp.Unix()),big.NewInt(1000000000));nanoseconds.Add(nanoseconds,big.NewInt(int64(stamp.Nanosecond())));milliseconds:=new(big.Int).Quo(new(big.Int).Set(nanoseconds),big.NewInt(1000000));return tsBigIntValue(milliseconds),tsBigIntValue(nanoseconds)}
-    return tsNumberValue(float64(stamp.Unix())*1000+float64(stamp.Nanosecond())/1e6),tsU)
+    return tsNumberValue(float64(stamp.Unix())*1000+float64(stamp.Nanosecond())/1e6),tsU
 }
 func tsFSTimestamp(out *tsObject,name string,stamp time.Time,bigint bool){milliseconds,nanoseconds:=tsFSTimestampValues(stamp,bigint);out.set(name+"Ms",milliseconds);if bigint{out.set(name+"Ns",nanoseconds)};if out.nativeDates!=nil{delete(out.nativeDates,name)}}
 func tsFSStats(info os.FileInfo, options tsValue) tsValue {

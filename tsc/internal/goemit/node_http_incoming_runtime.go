@@ -164,7 +164,7 @@ func tsNodeHTTPIncomingRead(loop *tsLoop, receiver tsValue) tsValue {
 	if body&done != 0 || body == none { tsCall(loop, tsInternalHTTPGet(loop, internal, "emitEOFIncomingMessage"), receiver) }
 	if tsIsUndefined(tsNodeHTTPIncomingGet(loop, handle, "ondata")) {
 		callback := tsFunctionValue(tsFunc(func(loop *tsLoop, args ...tsValue) tsValue {
-			return tsCall(loop, tsInternalHTTPGet(loop, internal, "onDataIncomingMessage"), receiver, args...)
+			return tsCall(loop, tsInternalHTTPGet(loop, internal, "onDataIncomingMessage"), append([]tsValue{receiver}, args...)...)
 		}))
 		tsNodeHTTPIncomingSet(loop, handle, "ondata", callback)
 	}

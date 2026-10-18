@@ -178,7 +178,7 @@ func (b *machineBuilder) tempType(name string) string {
 }
 func (b *machineBuilder) validateParameter(param *ast.Node) {
 	if cell := b.e.bindings[param]; cell != nil && cell.primitive.kind != "" {
-		b.emit(cell.name + ".require()")
+		b.emit(cell.name + ".require(loop)")
 	}
 }
 func (b *machineBuilder) returnValue(value string) string {

@@ -143,7 +143,7 @@ func tsNodeQUICTLSIdentity(loop *tsLoop, identity tsValue) (cryptotls.Certificat
 func tsNodeQUICCertPool(loop *tsLoop, value tsValue) (*x509.CertPool, error) {
 	values := tsNodeQUICInputList(value)
 	if len(values) == 0 { return nil, nil }
-	pool := cryptotls.NewCertPool()
+	pool := x509.NewCertPool()
 	for _, item := range values {
 		data := tsNodeQUICInputBytes(loop, item)
 		if !bytes.Contains(data, []byte("-----BEGIN")) {
@@ -1713,7 +1713,7 @@ func tsNodeQUICScheduleStreamIdleTimeout(loop *tsLoop, stream tsValue) {
 
 type tsNodeQUICStreamWireState struct {
 	transport *tsNodeQUICTransportStream
-	readEnded, writeEnded bool
+	readEnded, writeEnded, headersSent bool
 }
 
 var tsNodeQUICStreamTransportStates map[uintptr]*tsNodeQUICStreamWireState
@@ -1945,7 +1945,7 @@ func tsNodeQUICCloseTransportSession(session tsValue, application bool, code uin
 		if application {
 			_ = state.conn.CloseWithError(quicgo.ApplicationErrorCode(code), reason)
 		} else {
-			_ = state.conn.CloseWithTransportError(quicgo.TransportErrorCode(code), reason)
+			_ = state.conn.CloseWithError(quicgo.ApplicationErrorCode(code), reason)
 		}
 	}
 }

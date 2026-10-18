@@ -32,7 +32,7 @@ func tsInternalClusterSharedListenConfig(flags int,udp bool) net.ListenConfig {
 			controlErr:=raw.Control(func(fd uintptr) {
 				if reusePort {
 					socketErr=syscall.SetsockoptInt(int(fd),syscall.SOL_SOCKET,syscall.SO_REUSEADDR,1)
-					if socketErr==nil&&(runtime.GOOS=="darwin"||runtime.GOOS=="ios"||runtime.GOOS=="freebsd") { socketErr=syscall.SetsockoptInt(int(fd),syscall.SOL_SOCKET,syscall.SO_REUSEPORT,1) }
+					if socketErr==nil&&(runtime.GOOS=="darwin"||runtime.GOOS=="ios"||runtime.GOOS=="freebsd") { socketErr=syscall.SetsockoptInt(int(fd),syscall.SOL_SOCKET,0x0200,1) }
 				}
 				if socketErr==nil&&ipv6Only&&(strings.HasSuffix(network,"6")||strings.Contains(address,"[")) { socketErr=syscall.SetsockoptInt(int(fd),syscall.IPPROTO_IPV6,syscall.IPV6_V6ONLY,1) }
 			})
@@ -66,7 +66,7 @@ func tsInternalClusterSharedCreate(loop *tsLoop,args []tsValue) tsValue {
 		if udp { network="udp";if addressType=="udp4"{network="udp4"}else if addressType=="udp6"{network="udp6"} } else if addressType=="4" { network="tcp4" } else if addressType=="6" { network="tcp6" }
 		addressText:=net.JoinHostPort(host,strconv.Itoa(portNumber));if portNumber<0||addressType=="-1"{network="unix";addressText=host}
 		if udp {
-			packet,err:=tsInternalClusterSharedListenConfig(flags,true).ListenPacket(context.Background(),network,addressText)
+			listenConfig:=tsInternalClusterSharedListenConfig(flags,true);packet,err:=listenConfig.ListenPacket(context.Background(),network,addressText)
 			if err!=nil{state.errno=tsInternalClusterSharedErrno(err)}else{
 				state.packet=packet;local:=packet.LocalAddr();actualPort:=portNumber
 				if addr,ok:=local.(*net.UDPAddr);ok{actualPort=addr.Port;if udpConn,ok:=packet.(*net.UDPConn);ok{if file,fileErr:=udpConn.File();fileErr==nil{state.descriptor=file}}}
@@ -74,7 +74,7 @@ func tsInternalClusterSharedCreate(loop *tsLoop,args []tsValue) tsValue {
 			}
 		} else {
 			var listener net.Listener;var err error
-			if network=="unix"{listener,err=net.Listen(network,addressText)}else{listener,err=tsInternalClusterSharedListenConfig(flags,false).Listen(context.Background(),network,addressText)}
+			if network=="unix"{listener,err=net.Listen(network,addressText)}else{listenConfig:=tsInternalClusterSharedListenConfig(flags,false);listener,err=listenConfig.Listen(context.Background(),network,addressText)}
 			if err!=nil{state.errno=tsInternalClusterSharedErrno(err)}else{
 				state.listener=listener;var fdValue tsValue=tsNumberValue(-1);actualPort:=portNumber
 				if tcp,ok:=listener.(*net.TCPListener);ok{if addr,ok:=tcp.Addr().(*net.TCPAddr);ok{actualPort=addr.Port};if file,fileErr:=tcp.File();fileErr==nil{state.descriptor=file;fdValue=tsNumberValue(float64(file.Fd()))}}

@@ -39,7 +39,7 @@ func tsInternalReadlineKeypressModule(loop *tsLoop) tsValue {
 		triggerEscape:=tsFunctionValue(tsFunc(func(loop *tsLoop,_ ...tsValue)tsValue{return tsCallReceiver(loop,tsGet(loop,escapeDecoder,tsStringReference(tsStringUTF8("next"))),escapeDecoder,tsStringReference(tsStringUTF8("")))}))
 		var onData,onNewListener tsValue
 		reset:=func(){current:=tsCall(loop,emitKeys,stream);tsCallReceiver(loop,tsGet(loop,current,tsStringReference(tsStringUTF8("next"))),current);tsSet(loop,stream,escapeKey,current);escapeDecoder=current}
-		onData=tsFunctionValue(tsFunc(func(loop *tsLoop,_ tsValue,data ...tsValue)tsValue{
+		onData=tsFunctionValue(tsFunc(func(loop *tsLoop,data ...tsValue)tsValue{
 			listeners:=tsInternalReadlineCallMethod(loop,stream,"listenerCount",tsStringReference(tsStringUTF8("keypress")))
 			if tsNumber(listeners)>0 {
 				if timeout!=nil{loop.clearTimeout(tsTaskValue(timeout));timeout=nil}
@@ -62,7 +62,7 @@ func tsInternalReadlineKeypressModule(loop *tsLoop) tsValue {
 			}
 			return tsU
 		}))
-		onNewListener=tsFunctionValue(tsFunc(func(loop *tsLoop,_ tsValue,values ...tsValue)tsValue{
+		onNewListener=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{
 			if tsText(tsArg(values,0))=="keypress"{tsInternalReadlineCallMethod(loop,stream,"on",tsStringReference(tsStringUTF8("data")),onData);tsInternalReadlineCallMethod(loop,stream,"removeListener",tsStringReference(tsStringUTF8("newListener")),onNewListener)}
 			return tsU
 		}))

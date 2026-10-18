@@ -320,10 +320,10 @@ func tsNodeUtilSystemErrorName(loop *tsLoop,args []tsValue) tsValue {
     if strings.HasPrefix(tsText(name),"Unknown system error"){panic(tsThrown{tsFSException("RangeError","ERR_UNKNOWN_SYSTEM_ERROR",tsText(name))})}
     return name
 }
-func tsNodeUtilSystemErrorMap() tsValue {
+func tsNodeUtilSystemErrorMap(loop *tsLoop) tsValue {
     result:=tsNewCollection(false)
-    for _,entry:=range tsNodeUtilSystemErrors(){pair:=&tsArray{};pair.values=append(pair.values,tsNodeUtilString(entry.name),tsNodeUtilString(tsNodeUtilSystemMessage(entry.name)));result.put(tsNumberValue(float64(entry.code)),tsArrayValue(pair))}
-    return tsCollectionValue(result)
+    for _,entry:=range tsNodeUtilSystemErrors(){pair:=&tsArray{};pair.values=append(pair.values,tsNodeUtilString(entry.name),tsNodeUtilString(tsNodeUtilSystemMessage(entry.name)));tsSet(loop,result,tsNumberValue(float64(entry.code)),tsArrayValue(pair))}
+    return result
 }
 func tsNodeUtilModule(loop *tsLoop) tsValue {
     tsNodeUtilSingleton.Do(func(){

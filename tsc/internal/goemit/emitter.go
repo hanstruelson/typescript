@@ -49,6 +49,9 @@ type emitter struct {
 	directMath          bool
 	coerce              bool
 	strictNulls         bool
+	commonJS            bool
+	commonJSModule      string
+	commonJSExports     string
 	legacyDecorators    bool
 	nativeFunctions     map[*ast.Node]*nativeFunction
 	stableCallbacks     map[*ast.Node]*ast.Node
@@ -359,6 +362,8 @@ type machineBuilder struct {
 	argumentsObject     string
 	argumentsCell       string
 	generator           bool
+	commonJSModule      string
+	commonJSExports     string
 }
 
 func (e *emitter) newMachine(owner *ast.Node, parent *machineBuilder, async bool) *machineBuilder {
@@ -450,7 +455,7 @@ func (b *machineBuilder) enter(nodes []*ast.Node) {
 		if node.Kind == ast.KindFunctionDeclaration && node.Body() != nil {
 			cell := b.e.bindings[node]
 			if cell != nil {
-				b.emit(cell.name + ".init(" + b.function(node) + ")")
+				b.emit(cell.name + ".init(loop," + b.function(node) + ")")
 			}
 		}
 	}
@@ -494,7 +499,7 @@ func (b *machineBuilder) function(node *ast.Node) string {
 	function := child.finish()
 	if node.Kind == ast.KindFunctionExpression && node.Name() != nil {
 		result := b.temp(function)
-		b.emit(b.e.bindings[node].name + ".init(" + result + ")")
+		b.emit(b.e.bindings[node].name + ".init(loop," + result + ")")
 		return result
 	}
 	return function
@@ -526,6 +531,10 @@ func (b *machineBuilder) finish() string {
 	}
 	for _, temp := range b.temps {
 		fmt.Fprintf(&out, "var %s %s\n_ = %s\n", temp, b.tempType(temp), temp)
+	}
+	if b.commonJSModule != "" {
+		fmt.Fprintf(&out, "var %s,%s tsValue\n", b.commonJSModule, b.commonJSExports)
+		fmt.Fprintf(&out, "_ = %s\n_ = %s\n", b.commonJSModule, b.commonJSExports)
 	}
 	fmt.Fprintf(&out, "m := &tsMachine{loop:loop, async:%t,generator:%t}\n", b.async && !b.module && !b.generator, b.generator)
 	if b.generator && b.dynamicReceiver {
@@ -584,8 +593,12 @@ func functionLength(node *ast.Node) int {
 	if node == nil {
 		return 0
 	}
+	functionLike := node.FunctionLikeData()
+	if functionLike == nil || functionLike.Parameters == nil {
+		return 0
+	}
 	length := 0
-	for _, param := range node.Parameters() {
+	for _, param := range functionLike.Parameters.Nodes {
 		p := param.AsParameterDeclaration()
 		if p.Initializer != nil || p.DotDotDotToken != nil {
 			break

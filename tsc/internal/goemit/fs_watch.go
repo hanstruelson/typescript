@@ -195,9 +195,9 @@ func tsFSStatStop(loop *tsLoop,state *tsFSWatchState){
 func tsFSWatchFile(loop *tsLoop,args []tsValue)tsValue{
     path:=tsFSPath(tsArg(args,0));watchKey:=path;absolute,err:=filepath.Abs(path);if err!=nil{panic(tsThrown{tsFSError(err,"watchFile",path,"")})};path=absolute
     options:=tsArg(args,1);callback:=tsArg(args,2);if options.kind==tsFunctionKind{callback=options;options=tsU};if callback.kind!=tsFunctionKind{tsFSInvalid("listener","a function")}
-    options=tsArg(tsFSPrepare(loop,[]tsValue{options}),0);persistent,bigint:=true,false;interval:=int32(5007)
+    options=tsArg(tsFSPrepare(loop,[]tsValue{options}),0);persistent:=true;interval:=int32(5007)
     if options.kind==tsObjectKind||options.kind==tsInstanceKind{
-        persistent=tsFSBooleanOption(options,"persistent",true);bigint=tsFSBooleanOption(options,"bigint",false)
+        persistent=tsFSBooleanOption(options,"persistent",true);_ = tsFSBooleanOption(options,"bigint",false)
         intervalValue:=tsFSProperty(options,"interval");if !tsIsUndefined(intervalValue){if !tsIsNumeric(intervalValue){tsFSInvalid("interval","a number")};interval=int32(tsNumberUint32(tsNumber(intervalValue)))}
     }
     if interval<5{interval=5}

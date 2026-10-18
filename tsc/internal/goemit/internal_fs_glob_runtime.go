@@ -19,7 +19,7 @@ func tsInternalFSGlobModule(loop *tsLoop) tsValue {
 		})
 		class := &tsClass{builtin: "Glob", nativePrototype: tsNewObject()}
 		class.nativePrototype.set("constructor", tsClassValue(class))
-		class.construct = func(args ...tsValue) tsValue {
+		class.construct = func(_ *tsLoop, args ...tsValue) tsValue {
 			pattern, options := tsArg(args, 0), tsArg(args, 1)
 			instance := tsNewObject()
 			instance.nativeClass = class

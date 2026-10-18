@@ -13,10 +13,11 @@ import (
 // paths independently. Glob imports are expanded by the compiler before emit.
 // The resolver is borrowed only while this fragment emits.
 type ModuleInput struct {
-	File    *ast.SourceFile
+	File     *ast.SourceFile
 	Resolver ReferenceResolver
-	Targets map[*ast.Node]string
-	Globs   map[*ast.Node][]GlobFile
+	Targets  map[*ast.Node]string
+	Globs    map[*ast.Node][]GlobFile
+	CommonJS bool
 }
 
 // GlobFile describes one source matched by a glob import. Key is the path
@@ -30,6 +31,7 @@ type GlobFile struct {
 
 func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*ast.Diagnostic) {
 	e := &emitter{file: input.File, resolver: input.Resolver, bindings: make(map[*ast.Node]*binding), imports: make(map[*ast.Node]string), targets: input.Targets, globs: input.Globs, implicitGlobals: make(map[string]bool)}
+	e.commonJS = input.CommonJS
 	e.coerce = !options.CoerceAny.IsFalse()
 	e.strictNulls = options.GetStrictOptionValue(options.StrictNullChecks)
 	if options.SourceMap.IsTrue() || options.InlineSourceMap.IsTrue() {
@@ -53,6 +55,18 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 	}
 	builder := e.newMachine(input.File.AsNode(), nil, true)
 	builder.module = true
+	if input.CommonJS {
+		e.commonJSModule = e.unique("CommonJSModule")
+		e.commonJSExports = e.unique("CommonJSExports")
+		builder.commonJSModule = e.commonJSModule
+		builder.commonJSExports = e.commonJSExports
+		exportsObject := e.unique("CommonJSExportsObject")
+		builder.emit(exportsObject + " := tsObjectValue(tsNewObject())")
+		builder.emit("module.commonJSPartial = " + exportsObject)
+		builder.emit(e.commonJSModule + " = tsObjectValue(tsNewObject())")
+		builder.emit("tsSet(" + e.commonJSModule + ",tsStringKey(\"exports\")," + exportsObject + ")")
+		builder.emit(e.commonJSExports + " = " + exportsObject)
+	}
 	for _, node := range input.File.Statements.Nodes {
 		if node.Kind == ast.KindImportDeclaration && input.Targets[node] == "" {
 			if _, isGlob := input.Globs[node]; isGlob {
@@ -62,6 +76,11 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 		}
 	}
 	builder.statements(input.File.Statements.Nodes)
+	if input.CommonJS {
+		next := builder.block()
+		builder.emit(fmt.Sprintf("m.exportValue(%q,tsGet(%s,tsStringKey(%q)),nil,%d);return", "default", e.commonJSModule, "exports", next))
+		builder.current = next
+	}
 	builder.emit("m.complete(tsU)")
 	return e.classText.String() + e.regexText.String() + builder.finish(), e.diags
 }
@@ -69,9 +88,13 @@ func EmitModule(input ModuleInput, options *core.CompilerOptions) (string, []*as
 // Bundle formats one executable containing a persistent initializer per source.
 func Bundle(names, fragments, roots []string) (string, error) {
 	var out strings.Builder
-	out.WriteString("package main\n\n" + Runtime + ValueRuntime + SliceRuntime + ModuleRuntime + ClassRuntime + TypeRuntime + ConversionRuntime + GrowableArrayRuntime + StringRuntime + RegexRuntime + EqualityRuntime + ObjectRuntime + CollectionRuntime + SetRuntime + ArrayRuntime + ArrayFlattenRuntime + ArrayLikeRuntime + ArrayBuiltinRuntime + BufferRuntime + TypedArrayBuiltinRuntime + NativeArrayAccessRuntime + DecoratorRuntime + "\n")
+	out.WriteString("package main\n\n" + runtimeTemplate() + "\n// TSC_GOEMIT_RUNTIME_END\n")
 	for index, fragment := range fragments {
 		signature := fmt.Sprintf("func tsSourceModule%d(loop *tsLoop,modules map[string]*tsModule,module *tsModule)", index)
+	// RegExp matcher helpers are emitted at package scope. Their generated
+	// sequence is local to each module, so qualify those names while joining
+	// fragments into one Go package.
+	fragment = strings.ReplaceAll(fragment, "tsRegexMatcher", fmt.Sprintf("tsRegexMatcherModule%d_", index))
 		out.WriteString(strings.Replace(fragment, "func(module *tsModule)", signature, 1))
 		out.WriteString("\n")
 	}
@@ -87,7 +110,22 @@ func Bundle(names, fragments, roots []string) (string, error) {
 	}
 	out.WriteString("if err:=loop.run();err!=nil {fmt.Fprintln(os.Stderr,err);os.Exit(1)}\n}\n")
 	formatted, err := formatValueSource([]byte(out.String()))
-	return string(formatted), err
+	if err != nil {
+		return "", err
+	}
+	plan, err := runtimeExportPlanForEmitter()
+	if err != nil {
+		return "", err
+	}
+	imports, err := runtimeImportSpecs(formatted)
+	if err != nil {
+		return "", err
+	}
+	program, err := packageMainSource(formatted, imports, plan)
+	if err != nil {
+		return "", err
+	}
+	return string(program), nil
 }
 func (b *machineBuilder) publish(name, value, cell string) {
 	if !b.module {
@@ -164,12 +202,12 @@ func (b *machineBuilder) localImport(node *ast.Node) {
 	module := b.requestModule(node, names, namespace || len(names) == 0)
 	for _, entry := range bindings {
 		if entry.cell != nil {
-			b.emit(fmt.Sprintf("%s.init(tsImportRef{module:%s,name:%q})", entry.cell.name, module, entry.name))
+			b.emit(fmt.Sprintf("%s.init(loop,tsImportRef{module:%s,name:%q})", entry.cell.name, module, entry.name))
 		}
 	}
 	if namespace {
 		if cell := b.e.bindings[c.NamedBindings]; cell != nil {
-			b.emit(cell.name + ".init(tsNamespace{module:" + module + "})")
+			b.emit(cell.name + ".init(loop,tsNamespace{module:" + module + "})")
 		}
 	}
 }
@@ -230,12 +268,12 @@ func (b *machineBuilder) globImport(node *ast.Node) bool {
 	}
 	if clause.Name() != nil {
 		if cell := b.e.bindings[clause]; cell != nil {
-			b.emit(cell.name + ".init(" + root + ")")
+			b.emit(cell.name + ".init(loop," + root + ")")
 		}
 	}
 	if namedBindings := clause.AsImportClause().NamedBindings; namedBindings != nil && namedBindings.Kind == ast.KindNamespaceImport {
 		if cell := b.e.bindings[namedBindings]; cell != nil {
-			b.emit(cell.name + ".init(" + root + ")")
+			b.emit(cell.name + ".init(loop," + root + ")")
 		}
 	}
 	return true

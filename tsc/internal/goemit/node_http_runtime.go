@@ -18,7 +18,7 @@ func tsNodeHTTPProxyConfigError(loop *tsLoop,internal tsValue,redact,proxy tsVal
 }
 
 func tsNodeHTTPNoopRestore(loop *tsLoop) tsValue {
-	return tsFunctionValue(tsNamedNativeMethod("restore",0,func(_ *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsU}))
+	return tsNamedNativeMethod("restore",0,func(_ *tsLoop,_ tsValue,_ ...tsValue)tsValue{return tsU})
 }
 
 func tsNodeHTTPSetGlobalProxyFromEnv(loop *tsLoop,args []tsValue) tsValue {
@@ -32,7 +32,7 @@ func tsNodeHTTPSetGlobalProxyFromEnv(loop *tsLoop,args []tsValue) tsValue {
 	httpProxy:=tsCall(loop,parse,env,tsNodeHTTPKey("http:"))
 	httpsProxy:=tsCall(loop,parse,env,tsNodeHTTPKey("https:"))
 	if tsIsNull(httpProxy)&&tsIsNull(httpsProxy) { return tsNodeHTTPNoopRestore(loop) }
-	global:=tsObjectValue(tsGlobalObject())
+	global:=tsGlobalObject()
 	urlClass:=tsNodeHTTPGet(loop,global,"URL")
 	canParse:=tsNodeHTTPGet(loop,urlClass,"canParse")
 	if !tsIsNull(httpProxy)&&canParse.kind==tsFunctionKind&&!tsTruthy(tsCallReceiver(loop,canParse,urlClass,httpProxy)) { tsNodeHTTPProxyConfigError(loop,internal,redact,httpProxy) }
@@ -51,11 +51,11 @@ func tsNodeHTTPSetGlobalProxyFromEnv(loop *tsLoop,args []tsValue) tsValue {
 		agentOptions:=tsNewObject();agentOptions.set("keepAlive",tsBooleanValue(true));agentOptions.set("scheduling",tsNodeHTTPKey("lifo"));agentOptions.set("timeout",tsNumberValue(5000));agentOptions.set("proxyEnv",env)
 		tsNodeHTTPSet(loop,httpsModule,"globalAgent",tsConstruct(tsNodeHTTPGet(loop,httpsModule,"Agent"),tsObjectValue(agentOptions)))
 	}
-	return tsFunctionValue(tsNamedNativeMethod("restore",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{
+	return tsNamedNativeMethod("restore",0,func(loop *tsLoop,_ tsValue,_ ...tsValue)tsValue{
 		if !tsIsUndefined(originalHTTP) { tsNodeHTTPSet(loop,httpAgent,"globalAgent",originalHTTP) }
 		if !tsIsUndefined(originalHTTPS) { module:=tsNodeModuleRequire(loop,[]tsValue{tsNodeHTTPKey("https")});tsNodeHTTPSet(loop,module,"globalAgent",originalHTTPS) }
 		return tsU
-	}))
+	})
 }
 
 func tsNodeHTTPModule(loop *tsLoop) tsValue {
@@ -72,7 +72,7 @@ func tsNodeHTTPModule(loop *tsLoop) tsValue {
 	if tsTruthy(tsNodeHTTPGet(loop,tsNodeHTTPGet(loop,process,"env"),"NODE_DEBUG")) {
 		util:=tsNodeUtilModule(loop);debuglog:=tsNodeHTTPGet(loop,util,"debuglog");if debuglog.kind==tsFunctionKind { tsCall(loop,debuglog,tsNodeHTTPKey("http")) }
 	}
-	global:=tsObjectValue(tsGlobalObject())
+	global:=tsGlobalObject()
 	module:=tsNewObject()
 	for _,entry:=range []struct{name string;value tsValue}{
 		{"Agent",tsNodeHTTPGet(loop,agent,"Agent")},{"Server",tsNodeHTTPGet(loop,server,"Server")},{"METHODS",tsNodeHTTPGet(loop,internal,"METHODS")},{"STATUS_CODES",tsNodeHTTPGet(loop,internal,"STATUS_CODES")},

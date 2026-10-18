@@ -140,8 +140,8 @@ func tsNodeQuerystringUnescapeText(value *tsString, decodeSpaces bool) *tsString
 	if err == nil && utf8.ValidString(decoded) {
 		return tsStringUTF8(decoded)
 	}
-	decoded := tsFSDecode(tsNodeQuerystringUnescapeBufferText(value, decodeSpaces), "utf8")
-	return (*tsString)(decoded.ref)
+	decodedValue := tsFSDecode(tsNodeQuerystringUnescapeBufferText(value, decodeSpaces), "utf8")
+	return (*tsString)(decodedValue.ref)
 }
 
 func tsNodeQuerystringHasValidEscape(value []uint16) bool {
@@ -192,11 +192,11 @@ func tsNodeQuerystringReplacePlus(value []uint16, custom bool) *tsString {
 	return tsStringUnits(units)
 }
 
-func tsNodeQuerystringAdd(out *tsObject, key string, value tsValue) {
+func tsNodeQuerystringAdd(loop *tsLoop, out *tsObject, key string, value tsValue) {
 	if current, ok := out.values[key]; ok {
 		if current.kind == tsArrayKind {
 			array := (*tsArray)(current.ref)
-			array.appendItems(value)
+			array.appendItems(loop, value)
 		} else {
 			out.set(key, tsArrayValue(&tsArray{values: []tsValue{current, value}}))
 		}
@@ -248,7 +248,7 @@ func tsNodeQuerystringParse(loop *tsLoop, _ tsValue, args ...tsValue) tsValue {
 				valueValue = tsNodeQuerystringCallDecoder(loop, decoder, valueText, true)
 			}
 			key := tsPropertyKey(keyValue)
-			tsNodeQuerystringAdd(out, key, valueValue)
+			tsNodeQuerystringAdd(loop, out, key, valueValue)
 			pairs++
 		} else if end < len(units) {
 			pairs++

@@ -45,9 +45,9 @@ func (b *machineBuilder) forAwaitStatement(node *ast.Node, label string) {
 		b.bindPattern(decl.Name(), value, lexical)
 	} else if lexical {
 		b.allocate(cell)
-		b.emit(cell.name + ".init(" + value + ")")
+		b.emit(cell.name + ".init(loop," + value + ")")
 	} else {
-		b.emit(cell.name + ".set(" + value + ")")
+		b.emit(cell.name + ".set(loop," + value + ")")
 	}
 	b.statement(n.Statement)
 	b.jump(test)

@@ -6,7 +6,7 @@ package goemit
 const nodeQUICRuntime = `
 type tsNodeQUICEndpointState struct{object *tsObject;options tsValue;closed,closing,listening,destroyed,busy,refed,clientHTTPKnown,clientHTTP,suppressCloseChannels bool;maxPerHost,maxTotal,activeSessions,creationOrder int;idleTimeout time.Duration;idleTimer *time.Timer;address,closeError tsValue;onSession tsValue;stats tsValue;closedPromise *tsPromise;task *tsTask;sniMu sync.RWMutex;sniCertificates map[string]cryptotls.Certificate}
 type tsNodeQUICSessionState struct{object *tsObject;endpoint tsValue;closed,closing,destroyed,opened,client,graceful,gracefulClose,closeApplication bool;closeCode uint64;closeReason string;nextBidi,nextUni int;nextDatagram uint64;maxPendingDatagrams int;streamIdleTimeout time.Duration;streams []tsValue;callbacks map[string]tsValue;stats tsValue;path tsValue;options tsValue;localCertificate *x509.Certificate;openedPromise,closedPromise *tsPromise}
-type tsNodeQUICStreamState struct{object *tsObject;session tsValue;id int;direction string;closed,destroyed,ended,early,opened,outboundSet,writerErrored bool;highWaterMark int;headers,pendingTrailers,writer,writerError,fileHandle tsValue;blob *tsBlob;blobOffset int64;outboundIterator *tsAsyncIterator;callbacks map[string]tsValue;priority tsValue;stats tsValue;closedPromise *tsPromise;idleTimer *time.Timer;drains []*tsPromise}
+type tsNodeQUICStreamState struct{object *tsObject;session tsValue;id int;direction string;closed,destroyed,ended,early,opened,outboundSet,writeEnded,writerErrored bool;highWaterMark int;headers,pendingTrailers,writer,writerError,fileHandle tsValue;blob *tsBlob;blobOffset int64;outboundIterator *tsAsyncIterator;callbacks map[string]tsValue;priority tsValue;stats tsValue;closedPromise *tsPromise;idleTimer *time.Timer;drains []*tsPromise}
 var tsNodeQUICSingleton struct{sync.Once;module,binding,symbols,diagnostics,http2util,states,stats tsValue;endpointProto,sessionProto,streamProto,errorProto *tsObject;endpointClass,sessionClass,streamClass,errorClass tsValue;endpoints map[*tsObject]*tsNodeQUICEndpointState;sessions map[*tsObject]*tsNodeQUICSessionState;streams map[*tsObject]*tsNodeQUICStreamState;quicErrors map[*tsObject]bool;channels map[string]tsValue;private,createDisconnected tsValue;symbolValues map[string]tsValue;nextEndpointOrder int;callbacksInitialized bool}
 func tsNodeQUICKey(s string)tsValue{return tsStringReference(tsStringUTF8(s))}
 func tsNodeQUICGet(loop *tsLoop,v tsValue,n string)tsValue{return tsGet(loop,v,tsNodeQUICKey(n))}
@@ -20,7 +20,7 @@ func tsNodeQUICDefineGetter(proto *tsObject,name string,get func(*tsLoop,tsValue
 func tsNodeQUICZeroStats(loop *tsLoop,names []string)tsValue{_ = loop;o:=tsNewObject();for _,n:=range names{o.set(n,tsBigIntValue(big.NewInt(0)))};return tsObjectValue(o)}
 func tsNodeQUICStatsSet(stats tsValue,name string,value int64){if stats.kind!=tsObjectKind{return};(*tsObject)(stats.ref).set(name,tsBigIntSigned(value))}
 func tsNodeQUICStatsSetUnsigned(stats tsValue,name string,value uint64){if stats.kind!=tsObjectKind{return};(*tsObject)(stats.ref).set(name,tsBigIntValue(new(big.Int).SetUint64(value)))}
-func tsNodeQUICStatsAdd(stats tsValue,name string,value uint64){if stats.kind!=tsObjectKind||value==0{return};record:=(*tsObject)(stats.ref);current:=record.get(name);next:=new(big.Int);if current.kind==tsBigIntKind{next.Set((*big.Int)(current.ref))}else if tsIsNumeric(current){next.SetInt64(int64(tsNumber(current)))};next.Add(next,new(big.Int).SetUint64(value));record.set(name,tsBigIntValue(next))}
+func tsNodeQUICStatsAdd(stats tsValue,name string,value uint64){if stats.kind!=tsObjectKind||value==0{return};record:=(*tsObject)(stats.ref);current:=record.values[name];next:=new(big.Int);if current.kind==tsBigIntKind{next.Set((*big.Int)(current.ref))}else if tsIsNumeric(current){next.SetInt64(int64(tsNumber(current)))};next.Add(next,new(big.Int).SetUint64(value));record.values[name]=tsBigIntValue(next)}
 func tsNodeQUICRecord(loop *tsLoop,v tsValue,n string)tsValue{if v.kind!=tsObjectKind{return tsU};return (*tsObject)(v.ref).get(n)}
 func tsNodeQUICCloneProperties(loop *tsLoop,v tsValue)tsValue{o:=tsNewObject();if v.kind==tsObjectKind||v.kind==tsInstanceKind{for _,k:=range tsEnumerableOwnKeys(loop,v).values{o.set(tsPropertyKey(k),tsGet(loop,v,k))}};return tsObjectValue(o)}
 func tsNodeQUICInstallEmitter(loop *tsLoop,obj *tsObject,proto *tsObject)tsValue{events:=tsNodeEventsModule(loop);ctor:=tsNodeQUICGet(loop,events,"EventEmitter");eventProto:=tsNodeQUICGet(loop,ctor,"prototype");if proto!=nil{proto.prototype=eventProto;obj.prototype=tsObjectValue(proto)}else{obj.prototype=eventProto};return tsNodeEventCreate(loop,tsObjectValue(obj),tsU)}
@@ -38,7 +38,7 @@ func tsNodeQUICProcessEndpointOptions(loop *tsLoop, options tsValue) tsValue {
 	} else if !tsNodeNetIsSocketAddress(address) {
 		address = tsNodeNetSocketAddressNew(loop, address, false, "", 0)
 	}
-	processed.set("address", address)
+	tsSet(loop,processed,tsNodeQUICKey("address"),address)
 	return processed
 }
 func tsNodeQUICCreateEndpoint(loop *tsLoop, options tsValue) tsValue {
@@ -228,7 +228,7 @@ func tsNodeQUICCreateStream(loop *tsLoop, session tsValue, id int, direction str
 	tsNodeQUICStatsSet(state.stats, "createdAt", time.Now().UnixNano())
 	tsNodeQUICStatsSet(state.stats, "openedAt", time.Now().UnixNano())
 	tsNodeQUICStreamTransportStateForInit()
-	tsNodeQUICStreamTransportStates[uintptr(obj)] = &tsNodeQUICStreamWireState{}
+	tsNodeQUICStreamTransportStates[uintptr(unsafe.Pointer(obj))] = &tsNodeQUICStreamWireState{}
 	if sessionState := tsNodeQUICSessionFor(session); sessionState != nil {
 		sessionState.streams = append(sessionState.streams, value)
 		for _, name := range []string{"onheaders", "ontrailers", "oninfo", "onwanttrailers"} {
@@ -627,7 +627,8 @@ func tsNodeQUICWriter(loop *tsLoop, stream tsValue) tsValue {
 	}
 	tsNodeQUICDefineGetter(out, "desiredSize", func(_ *tsLoop, _ tsValue) tsValue {
 		if state == nil || state.closed || state.writerErrored { return tsNull }
-		if current := tsNodeQUICWireStateFor(stream); current == nil || current.transport == nil || current.writeEnded { return tsNull }
+		current := tsNodeQUICWireStateFor(stream)
+		if current == nil || current.transport == nil || current.writeEnded { return tsNull }
 		return tsNumberValue(float64(tsNodeQUICWriterAvailable(state, current.transport)))
 	}, nil)
 	types := tsInternalStreamIterTypesModule(loop)
