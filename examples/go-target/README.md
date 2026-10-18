@@ -37,6 +37,51 @@ Timer callbacks run in deadline order, with Promise reactions drained between
 callbacks. `clearTimeout(handle)` suppresses the callback and wakes a canceled
 worker, so canceled long timers do not keep the process alive.
 
+## Runtime-compiled regular expressions (temporary Linux/amd64 path)
+
+The `dynamic-regex` example builds the pattern from runtime string values and
+passes it through a function parameter to `new RegExp`. The transpiler emits a
+normal RegExp constructor call; at execution time the runtime parses the pattern,
+generates a matcher function expression in memory, and calls `jit.Eval` to
+compile and install that matcher. No generated Go file or subprocess is used
+for the pattern.
+
+This path uses the custom Go fork's in-process JIT and currently supports
+Linux/amd64. Set `GO` to the `go` executable built from that fork, then run from
+the repository root:
+
+```sh
+GO=/path/to/go-fork/bin/go
+"$GO" run ./tsc/cmd/launch --project examples/go-target/dynamic-regex
+"$GO" run -tags gojit ./examples/go-target/dynamic-regex/out/main.go
+```
+
+The output is `/USERS/42`.
+
+For repeated runtime compilation through multiple imported TypeScript modules,
+run the stress fixture:
+
+```sh
+"$GO" run ./tsc/cmd/launch --project examples/go-target/dynamic-regex-stress
+"$GO" run -tags gojit ./examples/go-target/dynamic-regex-stress/out/main.go
+```
+
+It exercises imported and direct `new RegExp` calls, capture results, 32 + 32
+distinct patterns, 16 recompilations of one RegExp with different patterns,
+global `lastIndex` behavior, and a counter shared through an imported module.
+Expected output is `32/32`, `32/32`, `16/16`, `3/4 calls`, and `83/83`.
+The fixture intentionally stays small because each distinct JIT compilation
+retains an executable mapping until process exit.
+
+**Lifetime limitation:** each successfully compiled dynamic RegExp retains its
+JIT code handle so its matcher remains callable. There is no automatic unload
+or GC-driven retirement yet, so each compiled matcher keeps its executable
+mapping until process exit. This temporary path can grow memory without bound
+when an application creates many distinct dynamic patterns. Do not use it for
+untrusted patterns or long-running workloads without an external limit. Static
+RegExp literals continue to use the existing ahead-of-time matcher and do not
+use this JIT path.
+
 ## Async file reading
 
 ```sh

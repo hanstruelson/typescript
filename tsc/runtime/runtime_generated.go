@@ -97390,11 +97390,15 @@ type TsRegExpNamedCapture struct {
 	Indices []int
 }
 type TsRegExp struct {
-	Prototype                                                                       TsValue
-	Metadata                                                                        *TsObject
-	Source                                                                          *TsString
-	Flags                                                                           string
-	Matcher                                                                         TsRegExpMatcher
+	Prototype TsValue
+	Metadata  *TsObject
+	Source    *TsString
+	Flags     string
+	Matcher   TsRegExpMatcher
+	// jitCode pins the in-memory matcher module for this RegExp. Code.Close is
+	// intentionally not called automatically: Go cannot prove that no matcher
+	// function value is still reachable through aliases or active execution.
+	JitCode                                                                         interface{ Close() error }
 	CaptureSlots                                                                    int
 	LastIndex                                                                       int
 	LastIndexValue                                                                  TsValue
@@ -97403,6 +97407,16 @@ type TsRegExp struct {
 	Order                                                                           []string
 	Global, IgnoreCase, Multiline, DotAll, Unicode, UnicodeSets, Sticky, HasIndices bool
 	NamedCaptures                                                                   []TsRegExpNamedCapture
+}
+
+var TsDynamicRegExpCompiler func(*TsLoop, *TsString, string) TsValue
+
+func TsBuildDynamicRegExp(loop *TsLoop, source *TsString, flags string) TsValue {
+	if TsDynamicRegExpCompiler == nil {
+		TsPropertyFailure("Dynamic RegExp compilation is not available in this build")
+		return TsU
+	}
+	return TsDynamicRegExpCompiler(loop, source, flags)
 }
 
 func TsRegExpFromValue(value TsValue) *TsRegExp {
@@ -97516,7 +97530,7 @@ func TsInitRegExp(loop *TsLoop) {
 					clone.Prototype = TsRegExpPrototype(loop)
 					return TsRegExpValue(&clone)
 				}
-				TsPropertyFailure("Dynamic RegExp construction is not supported; use a regular-expression literal")
+				return TsBuildDynamicRegExp(loop, original.Source, flagText)
 			}
 			patternText := TsStringUTF8("")
 			if !TsIsUndefined(pattern) {
@@ -97534,8 +97548,7 @@ func TsInitRegExp(loop *TsLoop) {
 			if regexp, ok := TsRegExpLiteralSearch(loop, patternText, flagText); ok {
 				return regexp
 			}
-			TsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal (received /" + patternText.String() + "/" + flagText + ")")
-			return TsU
+			return TsBuildDynamicRegExp(loop, patternText, flagText)
 		}
 		constructor.Properties = TsNewObject()
 		constructor.Properties.Set("prototype", TsObjectValue(prototype))
@@ -97577,9 +97590,8 @@ func TsInitRegExp(loop *TsLoop) {
 			{"test", 1, func(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
 				return TsBooleanValue(!TsNullish(TsRegExpExec(loop, receiver, TsStringValueWithLoop(loop, TsArg(args, 0)), TsU)))
 			}},
-			{"compile", 2, func(_ *TsLoop, _ TsValue, _ ...TsValue) TsValue {
-				TsPropertyFailure("Dynamic RegExp compilation is not supported; compile-time constant patterns are supported")
-				return TsU
+			{"compile", 2, func(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
+				return TsRegExpCompileDynamic(loop, receiver, args...)
 			}},
 			{"toString", 0, func(loop *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
 				if TsIsPrimitiveValue(receiver) {
@@ -98002,6 +98014,7 @@ func TsRegExpCompileKnown(loop *TsLoop, receiver, method TsValue, args []TsValue
 	regexp.Source = template.Source
 	regexp.Flags = template.Flags
 	regexp.Matcher = template.Matcher
+	regexp.JitCode = template.JitCode
 	regexp.CaptureSlots = template.CaptureSlots
 	regexp.Global = template.Global
 	regexp.IgnoreCase = template.IgnoreCase
@@ -98158,7 +98171,7 @@ func TsDynamicRegExp(loop *TsLoop, args ...TsValue) TsValue {
 			clone.Prototype = TsRegExpPrototype(loop)
 			return TsRegExpValue(&clone)
 		}
-		TsPropertyFailure("Dynamic RegExp construction is not supported; use a regular-expression literal")
+		return TsBuildDynamicRegExp(loop, original.Source, flagText)
 	}
 	patternText := TsStringUTF8("")
 	if !TsIsUndefined(pattern) {
@@ -98175,8 +98188,35 @@ func TsDynamicRegExp(loop *TsLoop, args ...TsValue) TsValue {
 	if regexp, ok := TsRegExpLiteralSearch(loop, patternText, flagText); ok {
 		return regexp
 	}
-	TsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal (received /" + patternText.String() + "/" + flagText + ")")
-	return TsU
+	return TsBuildDynamicRegExp(loop, patternText, flagText)
+}
+
+func TsRegExpCompileDynamic(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
+	if TsRegExpFromValue(receiver) == nil {
+		TsPropertyFailure("RegExp.prototype.compile called on incompatible receiver")
+	}
+	compiled := TsDynamicRegExp(loop, args...)
+	template := TsRegExpFromValue(compiled)
+	if template == nil {
+		TsPropertyFailure("RegExp compile pattern did not produce a regular expression")
+	}
+	regexp := TsRegExpFromValue(receiver)
+	regexp.Source = template.Source
+	regexp.Flags = template.Flags
+	regexp.Matcher = template.Matcher
+	regexp.JitCode = template.JitCode
+	regexp.CaptureSlots = template.CaptureSlots
+	regexp.Global = template.Global
+	regexp.IgnoreCase = template.IgnoreCase
+	regexp.Multiline = template.Multiline
+	regexp.DotAll = template.DotAll
+	regexp.Unicode = template.Unicode
+	regexp.UnicodeSets = template.UnicodeSets
+	regexp.Sticky = template.Sticky
+	regexp.HasIndices = template.HasIndices
+	regexp.NamedCaptures = template.NamedCaptures
+	TsRegExpSetLastIndex(loop, receiver, TsNumberValue(0))
+	return receiver
 }
 
 func TsRegExpCanonicalFlags(flags string) (string, bool) {

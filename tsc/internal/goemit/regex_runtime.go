@@ -12,6 +12,10 @@ type tsRegExp struct {
 	source *tsString
 	flags string
 	matcher tsRegExpMatcher
+	// jitCode pins the in-memory matcher module for this RegExp. Code.Close is
+	// intentionally not called automatically: Go cannot prove that no matcher
+	// function value is still reachable through aliases or active execution.
+	jitCode interface { Close() error }
 	captureSlots int
 	lastIndex int
 	lastIndexValue tsValue
@@ -20,6 +24,16 @@ type tsRegExp struct {
 	order []string
 	global, ignoreCase, multiline, dotAll, unicode, unicodeSets, sticky, hasIndices bool
 	namedCaptures []tsRegExpNamedCapture
+}
+
+var tsDynamicRegExpCompiler func(*tsLoop, *tsString, string) tsValue
+
+func tsBuildDynamicRegExp(loop *tsLoop, source *tsString, flags string) tsValue {
+	if tsDynamicRegExpCompiler == nil {
+		tsPropertyFailure("Dynamic RegExp compilation is not available in this build")
+		return tsU
+	}
+	return tsDynamicRegExpCompiler(loop, source, flags)
 }
 
 func tsRegExpFromValue(value tsValue) *tsRegExp {
@@ -127,7 +141,7 @@ func tsInitRegExp() {
 					clone.prototype = tsRegExpPrototype()
 					return tsRegExpValue(&clone)
 				}
-				tsPropertyFailure("Dynamic RegExp construction is not supported; use a regular-expression literal")
+				return tsBuildDynamicRegExp(loop, original.source, flagText)
 			}
 			patternText := tsStringUTF8("")
 			if !tsIsUndefined(pattern) { patternText = tsStringValueWithLoop(loop, pattern) }
@@ -137,8 +151,7 @@ func tsInitRegExp() {
 			flagText, valid = tsRegExpCanonicalFlags(flagText)
 			if !valid { tsRegExpSyntaxFailure("Invalid regular expression flags") }
 			if regexp, ok := tsRegExpLiteralSearch(patternText, flagText); ok { return regexp }
-			tsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal (received /" + patternText.String() + "/" + flagText + ")")
-			return tsU
+			return tsBuildDynamicRegExp(loop, patternText, flagText)
 		}
 		constructor.properties = tsNewObject()
 		constructor.properties.set("prototype", tsObjectValue(prototype))
@@ -180,9 +193,8 @@ func tsInitRegExp() {
 			{"test", 1, func(loop *tsLoop, receiver tsValue, args ...tsValue) tsValue {
 				return tsBooleanValue(!tsNullish(tsRegExpExec(loop, receiver, tsStringValueWithLoop(loop, tsArg(args, 0)), tsU)))
 			}},
-			{"compile", 2, func(_ *tsLoop, _ tsValue, _ ...tsValue) tsValue {
-				tsPropertyFailure("Dynamic RegExp compilation is not supported; compile-time constant patterns are supported")
-				return tsU
+			{"compile", 2, func(loop *tsLoop, receiver tsValue, args ...tsValue) tsValue {
+				return tsRegExpCompileDynamic(loop, receiver, args...)
 			}},
 			{"toString", 0, func(loop *tsLoop, receiver tsValue, _ ...tsValue) tsValue {
 				if tsIsPrimitiveValue(receiver) { tsPropertyFailure("RegExp.prototype.toString called on incompatible receiver") }
@@ -524,6 +536,7 @@ func tsRegExpCompileKnown(loop *tsLoop, receiver, method tsValue, args []tsValue
 	regexp.source = template.source
 	regexp.flags = template.flags
 	regexp.matcher = template.matcher
+	regexp.jitCode = template.jitCode
 	regexp.captureSlots = template.captureSlots
 	regexp.global = template.global
 	regexp.ignoreCase = template.ignoreCase
@@ -652,7 +665,7 @@ func tsDynamicRegExp(loop *tsLoop, args ...tsValue) tsValue {
 			clone.prototype = tsRegExpPrototype()
 			return tsRegExpValue(&clone)
 		}
-		tsPropertyFailure("Dynamic RegExp construction is not supported; use a regular-expression literal")
+		return tsBuildDynamicRegExp(loop, original.source, flagText)
 	}
 	patternText := tsStringUTF8("")
 	if !tsIsUndefined(pattern) { patternText = tsStringValueWithLoop(loop, pattern) }
@@ -661,8 +674,35 @@ func tsDynamicRegExp(loop *tsLoop, args ...tsValue) tsValue {
 	flagText, valid := tsRegExpCanonicalFlags(flagText)
 	if !valid { tsRegExpSyntaxFailure("Invalid regular expression flags") }
 	if regexp, ok := tsRegExpLiteralSearch(patternText, flagText); ok { return regexp }
-	tsPropertyFailure("Dynamic RegExp syntax is not supported; use a regular-expression literal (received /" + patternText.String() + "/" + flagText + ")")
-	return tsU
+	return tsBuildDynamicRegExp(loop, patternText, flagText)
+}
+
+func tsRegExpCompileDynamic(loop *tsLoop, receiver tsValue, args ...tsValue) tsValue {
+	if tsRegExpFromValue(receiver) == nil {
+		tsPropertyFailure("RegExp.prototype.compile called on incompatible receiver")
+	}
+	compiled := tsDynamicRegExp(loop, args...)
+	template := tsRegExpFromValue(compiled)
+	if template == nil {
+		tsPropertyFailure("RegExp compile pattern did not produce a regular expression")
+	}
+	regexp := tsRegExpFromValue(receiver)
+	regexp.source = template.source
+	regexp.flags = template.flags
+	regexp.matcher = template.matcher
+	regexp.jitCode = template.jitCode
+	regexp.captureSlots = template.captureSlots
+	regexp.global = template.global
+	regexp.ignoreCase = template.ignoreCase
+	regexp.multiline = template.multiline
+	regexp.dotAll = template.dotAll
+	regexp.unicode = template.unicode
+	regexp.unicodeSets = template.unicodeSets
+	regexp.sticky = template.sticky
+	regexp.hasIndices = template.hasIndices
+	regexp.namedCaptures = template.namedCaptures
+	tsRegExpSetLastIndex(loop, receiver, tsNumberValue(0))
+	return receiver
 }
 
 func tsRegExpCanonicalFlags(flags string) (string, bool) {
