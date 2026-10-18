@@ -73,6 +73,9 @@ Expected output is `32/32`, `32/32`, `16/16`, `3/4 calls`, and `83/83`.
 The fixture intentionally stays small because each distinct JIT compilation
 retains an executable mapping until process exit.
 
+The ordered plan for validating this path against imported applications and
+Express is in [DYNAMIC_REGEX_INTEGRATION_PLAN.md](./DYNAMIC_REGEX_INTEGRATION_PLAN.md).
+
 **Lifetime limitation:** each successfully compiled dynamic RegExp retains its
 JIT code handle so its matcher remains callable. There is no automatic unload
 or GC-driven retirement yet, so each compiled matcher keeps its executable
