@@ -1,8 +1,7 @@
 package goemit
 
-// nodeHTTPServerRuntime starts the server adapter at the shared HTTP/1
-// bookkeeping and socket lifecycle helpers. The server class follows after
-// its fallback parser dependency is mapped.
+// nodeHTTPServerRuntime implements the Node HTTP server API on the dedicated
+// HTTP/1 connection and response engine in nodeHTTP1ServerRuntime.
 const nodeHTTPServerRuntime = `
 var tsNodeHTTPServerSingleton struct {
 	sync.Once
@@ -85,6 +84,10 @@ func tsNodeHTTPServerMarkListenerClosed(loop *tsLoop, server, generation tsValue
 }
 func tsNodeHTTPServerSetCloseCallback(loop *tsLoop, self, callback tsValue) {
 	current := tsNodeHTTPServerSym(loop, self, "kCloseCallback")
+	if tsIsUndefined(callback) {
+		tsNodeHTTPServerPut(loop, self, "kCloseCallback", tsU)
+		return
+	}
 	if tsStrictEqual(callback, current) { return }
 	if tsTruthy(current) { panic(tsThrown{tsErrorValue(&tsRuntimeError{name: "Error", message: "Close callback already set"})}) }
 	tsNodeHTTPServerPut(loop, self, "kCloseCallback", callback)
@@ -204,9 +207,9 @@ func tsNodeHTTPServerValidate(loop *tsLoop, name string, value tsValue, extra ..
 	if validator.kind == tsFunctionKind { tsCall(loop, validator, append([]tsValue{value}, extra...)...) }
 }
 func tsNodeHTTPServerStoreOptions(loop *tsLoop, server, options tsValue) {
-	for _, entry := range []struct{name string; fallback float64}{{"requestTimeout",300000},{"keepAliveTimeout",5000},{"keepAliveTimeoutBuffer",1000},{"connectionsCheckingInterval",30000}} {
+	for _, entry := range []struct{name string; http1 float64}{{"requestTimeout",300000},{"keepAliveTimeout",5000},{"keepAliveTimeoutBuffer",1000},{"connectionsCheckingInterval",30000}} {
 		value := tsNodeHTTPServerAPIGet(loop, options, entry.name)
-		if !tsIsUndefined(value) { tsNodeHTTPServerValidate(loop,"validateInteger",value,tsNodeHTTPServerAPIKey(entry.name),tsNumberValue(0)) } else { value=tsNumberValue(entry.fallback) }
+		if !tsIsUndefined(value) { tsNodeHTTPServerValidate(loop,"validateInteger",value,tsNodeHTTPServerAPIKey(entry.name),tsNumberValue(0)) } else { value=tsNumberValue(entry.http1) }
 		tsNodeHTTPServerAPISet(loop,server,entry.name,value)
 	}
 	requestTimeout:=tsNodeHTTPServerAPIGet(loop,server,"requestTimeout"); headersTimeout:=tsNodeHTTPServerAPIGet(loop,options,"headersTimeout")
@@ -278,9 +281,9 @@ func tsNodeHTTPServerResponseKeepAlive(loop *tsLoop,request tsValue) bool {
 	return true
 }
 func tsNodeHTTPServerResponseCloseOnFinish(loop *tsLoop,response,socket tsValue) {
-	if tsTruthy(tsInternalHTTP1FallbackGet(loop,response,"kMustCloseConnection")) { return }
+	if tsTruthy(tsNodeHTTP1ServerGet(loop,response,"kMustCloseConnection")) { return }
 	if tsNullish(socket)||tsTruthy(tsNodeHTTPServerGet(loop,socket,"destroyed")){return}
-	current:=tsNodeHTTPServerGet(loop,socket,"_httpMessage");if !tsNullish(current)&&!tsStrictEqual(current,response){return};queue:=tsInternalHTTP1FallbackSym(loop,socket,"kQueue");if queue.kind==tsArrayKind&&len((*tsArray)(queue.ref).values)>0{return}
+	current:=tsNodeHTTPServerGet(loop,socket,"_httpMessage");if !tsNullish(current)&&!tsStrictEqual(current,response){return};queue:=tsNodeHTTP1ServerSym(loop,socket,"kQueue");if queue.kind==tsArrayKind&&len((*tsArray)(queue.ref).values)>0{return}
 	server:=tsNodeHTTPServerGet(loop,socket,"server");timeout:=tsNodeHTTPServerGet(loop,server,"keepAliveTimeout");buffer:=tsNodeHTTPServerGet(loop,server,"keepAliveTimeoutBuffer")
 	if tsIsNumeric(timeout)&&tsNumber(timeout)>0{extra:=0.0;if tsIsNumeric(buffer){extra=tsNumber(buffer)};tsNodeHTTPServerCall(loop,socket,"setTimeout",tsNumberValue(tsNumber(timeout)+extra))}
 }
@@ -299,7 +302,7 @@ func tsNodeHTTPServerQueuePipelinedOp(loop *tsLoop,response,queue tsValue,kind s
 	(*tsArray)(ops.ref).values=append((*tsArray)(ops.ref).values,tsArrayValue(&tsArray{values:[]tsValue{tsNodeHTTPServerAPIKey(kind),chunk,encoding,callback}}))
 	bytes:=0;if !tsNullish(chunk){bytes=tsNodeHTTPOutgoingByteLength(loop,chunk,encoding)};total:=tsNumber(tsNodeHTTPServerGet(loop,queue,"bytes"))+float64(bytes);tsNodeHTTPServerSet(loop,queue,"bytes",tsNumberValue(total))
 	socket:=tsNodeHTTPServerGet(loop,queue,"socket");if !tsNullish(socket){queuedBytes:=tsNumber(tsNodeHTTPServerGet(loop,socket,"_httpQueuedBytes"))+float64(bytes);tsNodeHTTPServerSet(loop,socket,"_httpQueuedBytes",tsNumberValue(queuedBytes))}
-	mark:=tsNumber(tsNodeHTTPServerGet(loop,response,"writableHighWaterMark"));needDrain:=total>=mark;tsNodeHTTPServerSet(loop,queue,"needDrain",tsBooleanValue(needDrain));if needDrain&&!tsNullish(socket){tsInternalHTTP1FallbackCallPipeline(loop,tsInternalHTTP1FallbackPipeline(loop),"maybePauseFallbackReads",socket)};return !needDrain
+	mark:=tsNumber(tsNodeHTTPServerGet(loop,response,"writableHighWaterMark"));needDrain:=total>=mark;tsNodeHTTPServerSet(loop,queue,"needDrain",tsBooleanValue(needDrain));if needDrain&&!tsNullish(socket){tsNodeHTTP1ServerCallPipeline(loop,tsNodeHTTP1ServerPipeline(loop),"maybePauseHTTP1Reads",socket)};return !needDrain
 }
 func tsNodeHTTPServerResponseWrite(loop *tsLoop,response tsValue,args []tsValue) tsValue {
 	chunk,encoding,callback:=tsArg(args,0),tsArg(args,1),tsArg(args,2)
@@ -307,7 +310,7 @@ func tsNodeHTTPServerResponseWrite(loop *tsLoop,response tsValue,args []tsValue)
 	if callback.kind!=tsFunctionKind{callback=tsU}
 	finished:=tsInternalHTTPGet(loop,tsInternalHTTPModule(loop),"hasServerResponseFinished")
 	if finished.kind==tsFunctionKind&&tsTruthy(tsCall(loop,finished,response,chunk,callback,tsBooleanValue(false))){return tsBooleanValue(false)}
-	queued:=tsInternalHTTP1FallbackSym(loop,response,"kQueueState");if !tsNullish(queued){if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_header")){tsNodeHTTPServerCall(loop,response,"_implicitHeader")};if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_hasBody")){if tsTruthy(tsNodeHTTPServerGet(loop,response,"rejectNonStandardBodyWrites"))&&tsTruthy(chunk){panic(tsThrown{tsFSException("TypeError","ERR_HTTP_BODY_NOT_ALLOWED","Adding content for this request method or response status is not allowed")})};if callback.kind==tsFunctionKind{tsInternalHTTPNextTick(loop,callback)};return tsBooleanValue(true)};return tsBooleanValue(tsNodeHTTPServerQueuePipelinedOp(loop,response,queued,"write",chunk,encoding,callback))}
+	queued:=tsNodeHTTP1ServerSym(loop,response,"kQueueState");if !tsNullish(queued){if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_header")){tsNodeHTTPServerCall(loop,response,"_implicitHeader")};if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_hasBody")){if tsTruthy(tsNodeHTTPServerGet(loop,response,"rejectNonStandardBodyWrites"))&&tsTruthy(chunk){panic(tsThrown{tsFSException("TypeError","ERR_HTTP_BODY_NOT_ALLOWED","Adding content for this request method or response status is not allowed")})};if callback.kind==tsFunctionKind{tsInternalHTTPNextTick(loop,callback)};return tsBooleanValue(true)};return tsBooleanValue(tsNodeHTTPServerQueuePipelinedOp(loop,response,queued,"write",chunk,encoding,callback))}
 	handle:=tsNodeHTTPServerSym(loop,response,"kHandle")
 	if tsNullish(handle){return tsNodeHTTPOutgoingMethod(loop,response,"write",[]tsValue{chunk,encoding,callback})}
 	if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_header")){tsNodeHTTPServerCall(loop,response,"_implicitHeader")}
@@ -332,7 +335,7 @@ func tsNodeHTTPServerResponseEnd(loop *tsLoop,response tsValue,args []tsValue) t
 	if callback.kind!=tsFunctionKind{callback=tsU}
 	finished:=tsInternalHTTPGet(loop,tsInternalHTTPModule(loop),"hasServerResponseFinished")
 	if finished.kind==tsFunctionKind&&tsTruthy(tsCall(loop,finished,response,chunk,callback,tsBooleanValue(true))){return response}
-	queued:=tsInternalHTTP1FallbackSym(loop,response,"kQueueState");if !tsNullish(queued){if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_header")){tsNodeHTTPServerCall(loop,response,"_implicitHeader")};if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_hasBody"))&&tsTruthy(chunk){if tsTruthy(tsNodeHTTPServerGet(loop,response,"rejectNonStandardBodyWrites")){panic(tsThrown{tsFSException("TypeError","ERR_HTTP_BODY_NOT_ALLOWED","Adding content for this request method or response status is not allowed")})};chunk=tsU};tsNodeHTTPServerQueuePipelinedOp(loop,response,queued,"end",chunk,encoding,callback);tsNodeHTTPServerSet(loop,queued,"ended",tsBooleanValue(true));tsNodeHTTPServerAPISet(loop,response,"finished",tsBooleanValue(true));return response}
+	queued:=tsNodeHTTP1ServerSym(loop,response,"kQueueState");if !tsNullish(queued){if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_header")){tsNodeHTTPServerCall(loop,response,"_implicitHeader")};if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_hasBody"))&&tsTruthy(chunk){if tsTruthy(tsNodeHTTPServerGet(loop,response,"rejectNonStandardBodyWrites")){panic(tsThrown{tsFSException("TypeError","ERR_HTTP_BODY_NOT_ALLOWED","Adding content for this request method or response status is not allowed")})};chunk=tsU};tsNodeHTTPServerQueuePipelinedOp(loop,response,queued,"end",chunk,encoding,callback);tsNodeHTTPServerSet(loop,queued,"ended",tsBooleanValue(true));tsNodeHTTPServerAPISet(loop,response,"finished",tsBooleanValue(true));return response}
 	if tsNullish(tsNodeHTTPServerSym(loop,response,"kHandle")){return tsNodeHTTPOutgoingEnd(loop,response,[]tsValue{chunk,encoding,callback})}
 	if !tsTruthy(tsNodeHTTPServerGet(loop,response,"_header")){if !tsNullish(chunk){tsNodeHTTPServerAPISet(loop,response,"_contentLength",tsNumberValue(float64(tsNodeHTTPOutgoingByteLength(loop,chunk,encoding))))};tsNodeHTTPServerCall(loop,response,"_implicitHeader")}
 	if (tsNumber(tsNodeHTTPServerGet(loop,response,"statusCode"))==204||tsNumber(tsNodeHTTPServerGet(loop,response,"statusCode"))==304||tsNumber(tsNodeHTTPServerGet(loop,response,"statusCode"))>=100&&tsNumber(tsNodeHTTPServerGet(loop,response,"statusCode"))<200)&&tsTruthy(chunk){if tsTruthy(tsNodeHTTPServerGet(loop,response,"rejectNonStandardBodyWrites")){panic(tsThrown{tsFSException("TypeError","ERR_HTTP_BODY_NOT_ALLOWED","Adding content for this request method or response status is not allowed")})};chunk=tsU}
@@ -355,11 +358,64 @@ func tsNodeHTTPServerWriteHead(loop *tsLoop,response tsValue,args []tsValue) tsV
 	check:=tsNodeHTTPCommonGet(loop,tsNodeHTTPCommonModule(loop),"_checkInvalidHeaderChar");if tsTruthy(tsCall(loop,check,tsNodeHTTPServerAPIGet(loop,response,"statusMessage"))){panic(tsThrown{tsFSException("TypeError","ERR_INVALID_CHAR","Invalid character in statusMessage")})}
 	tsNodeHTTPServerAPISet(loop,response,"statusCode",tsNumberValue(float64(code)));if code==204||code==304||code>=100&&code<200{tsNodeHTTPServerAPISet(loop,response,"_hasBody",tsBooleanValue(false))}
 	if headers.kind==tsArrayKind{items:=(*tsArray)(headers.ref).values;for i:=0;i+1<len(items);i+=2{tsNodeHTTPOutgoingCall(loop,response,"setHeader",items[i],items[i+1])}}else if headers.kind==tsObjectKind||headers.kind==tsInstanceKind{for _,key:=range tsObjectKeys(headers).values{tsNodeHTTPOutgoingCall(loop,response,"setHeader",key,tsGet(loop,headers,key))}}
-	if !tsTruthy(tsNodeHTTPOutgoingCall(loop,response,"hasHeader",tsNodeHTTPServerAPIKey("connection"))){if tsTruthy(tsNodeHTTPServerAPIGet(loop,response,"shouldKeepAlive")){tsNodeHTTPOutgoingCall(loop,response,"setHeader",tsNodeHTTPServerAPIKey("Connection"),tsNodeHTTPServerAPIKey("keep-alive"));timeout:=tsNodeHTTPServerAPIGet(loop,response,"_keepAliveTimeout");if tsIsNumeric(timeout)&&tsNumber(timeout)>0{socket:=tsNodeHTTPIncomingGet(loop,tsNodeHTTPServerAPIGet(loop,response,"req"),"socket");httpServer:=tsNodeHTTPServerAPIGet(loop,socket,"server");buffer:=tsNodeHTTPServerAPIGet(loop,httpServer,"keepAliveTimeoutBuffer");total:=tsNumber(timeout)+tsNumber(buffer);tsNodeHTTPOutgoingCall(loop,response,"setHeader",tsNodeHTTPServerAPIKey("Keep-Alive"),tsNodeHTTPServerAPIKey("timeout="+strconv.Itoa(int(math.Floor(total/1000)))))}}else{tsNodeHTTPOutgoingCall(loop,response,"setHeader",tsNodeHTTPServerAPIKey("Connection"),tsNodeHTTPServerAPIKey("close"));pipeline:=tsInternalHTTP1FallbackPipeline(loop);closeKey:=tsInternalHTTP1FallbackGet(loop,pipeline,"kMustCloseConnection");tsSet(loop,response,closeKey,tsBooleanValue(true))}}
+	connectionHeaderExplicit := tsTruthy(tsNodeHTTPOutgoingCall(loop, response, "hasHeader", tsNodeHTTPServerAPIKey("connection")))
+	keepAliveHeaderExplicit := tsTruthy(tsNodeHTTPOutgoingCall(loop, response, "hasHeader", tsNodeHTTPServerAPIKey("keep-alive")))
+	if !connectionHeaderExplicit {
+		if tsTruthy(tsNodeHTTPServerAPIGet(loop, response, "shouldKeepAlive")) {
+			tsNodeHTTPOutgoingCall(loop, response, "setHeader", tsNodeHTTPServerAPIKey("Connection"), tsNodeHTTPServerAPIKey("keep-alive"))
+			timeout := tsNodeHTTPServerAPIGet(loop, response, "_keepAliveTimeout")
+			if tsIsNumeric(timeout) && tsNumber(timeout) > 0 {
+				socket := tsNodeHTTPIncomingGet(loop, tsNodeHTTPServerAPIGet(loop, response, "req"), "socket")
+				httpServer := tsNodeHTTPServerGet(loop, socket, "server")
+				buffer := tsNodeHTTPServerAPIGet(loop, httpServer, "keepAliveTimeoutBuffer")
+				total := tsNumber(timeout) + tsNumber(buffer)
+				keepAlive := "timeout=" + strconv.Itoa(int(math.Floor(total/1000)))
+				maxRequests := tsNodeHTTPServerGet(loop, response, "_maxRequestsPerSocket")
+				if !keepAliveHeaderExplicit && tsIsNumeric(maxRequests) && tsNumber(maxRequests) > 0 { keepAlive += ", max=" + strconv.Itoa(int(tsNumber(maxRequests))) }
+				if !keepAliveHeaderExplicit { tsNodeHTTPOutgoingCall(loop, response, "setHeader", tsNodeHTTPServerAPIKey("Keep-Alive"), tsNodeHTTPServerAPIKey(keepAlive)) }
+			}
+		} else {
+			tsNodeHTTPOutgoingCall(loop, response, "setHeader", tsNodeHTTPServerAPIKey("Connection"), tsNodeHTTPServerAPIKey("close"))
+			pipeline := tsNodeHTTP1ServerPipeline(loop)
+			closeKey := tsNodeHTTP1ServerGet(loop, pipeline, "kMustCloseConnection")
+			tsSet(loop, response, closeKey, tsBooleanValue(true))
+		}
+	}
+	transferEncoding := tsNodeHTTPOutgoingHeaderGet(loop, response, tsNodeHTTPServerAPIKey("transfer-encoding"))
+	chunkedTransferEncoding, _, _ := tsNodeHTTPCommonTransferChunked(tsNodeHTTPOutgoingText(loop, transferEncoding))
+	forceClose := tsTruthy(tsNodeHTTPServerGet(loop, response, "maxRequestsOnConnectionReached")) && !connectionHeaderExplicit || (code == 204 || code == 304) && chunkedTransferEncoding
+	if forceClose {
+		if !connectionHeaderExplicit {
+			tsNodeHTTPOutgoingCall(loop, response, "removeHeader", tsNodeHTTPServerAPIKey("connection"))
+			if !keepAliveHeaderExplicit { tsNodeHTTPOutgoingCall(loop, response, "removeHeader", tsNodeHTTPServerAPIKey("keep-alive")) }
+			tsNodeHTTPOutgoingCall(loop, response, "setHeader", tsNodeHTTPServerAPIKey("Connection"), tsNodeHTTPServerAPIKey("close"))
+		}
+		pipeline := tsNodeHTTP1ServerPipeline(loop)
+		closeKey := tsNodeHTTP1ServerGet(loop, pipeline, "kMustCloseConnection")
+		tsSet(loop, response, closeKey, tsBooleanValue(true))
+	}
 	statusLine:="HTTP/1.1 "+strconv.Itoa(code)+" "+tsText(tsNodeHTTPServerAPIGet(loop,response,"statusMessage"))+"\r\n";tsNodeHTTPOutgoingSet(loop,response,"_header",tsNodeHTTPServerAPIKey(statusLine));tsNodeHTTPOutgoingCall(loop,response,"_storeHeader",tsNodeHTTPServerAPIKey(statusLine),tsNodeHTTPOutgoingSymbol(loop,response,tsNodeHTTPOutgoingSingleton.kOutHeaders))
-	connectionHeader:=tsNodeHTTPOutgoingHeaderGet(loop,response,tsNodeHTTPServerAPIKey("connection"));closeConnection:=!tsTruthy(tsNodeHTTPServerAPIGet(loop,response,"shouldKeepAlive"))||(connectionHeader.kind==tsStringKind&&strings.Contains(strings.ToLower(tsText(connectionHeader)),"close"))
-	if closeConnection{pipeline:=tsInternalHTTP1FallbackPipeline(loop);closeKey:=tsInternalHTTP1FallbackGet(loop,pipeline,"kMustCloseConnection");tsSet(loop,response,closeKey,tsBooleanValue(true))}
-	handle:=tsNodeHTTPServerSym(loop,response,"kHandle");if !tsNullish(handle){autoBits:=0;if tsTruthy(tsNodeHTTPServerAPIGet(loop,response,"sendDate")){autoBits|=1};if closeConnection{autoBits|=4}else{autoBits|=2};socket:=tsNodeHTTPIncomingGet(loop,tsNodeHTTPServerAPIGet(loop,response,"req"),"socket");server:=tsNodeHTTPServerGet(loop,socket,"server");timeout:=tsNodeHTTPServerAPIGet(loop,server,"keepAliveTimeout");keepSecs:=tsNumberValue(0);if !closeConnection&&tsIsNumeric(timeout)&&tsNumber(timeout)>0{autoBits|=8;buffer:=tsNodeHTTPServerAPIGet(loop,server,"keepAliveTimeoutBuffer");total:=tsNumber(timeout)+tsNumber(buffer);keepSecs=tsNumberValue(math.Floor(total/1000))};tsNodeHTTPServerCall(loop,handle,"writeHead",tsNumberValue(float64(code)),tsNodeHTTPServerAPIGet(loop,response,"statusMessage"),tsNodeHTTPOutgoingHeaders(loop,response),tsNumberValue(float64(autoBits)),keepSecs)}
+	connectionHeader := tsNodeHTTPOutgoingHeaderGet(loop, response, tsNodeHTTPServerAPIKey("connection"))
+	closeConnection := forceClose || !tsTruthy(tsNodeHTTPServerAPIGet(loop, response, "shouldKeepAlive")) || (connectionHeader.kind == tsStringKind && tsNodeHTTPCommonHasBoundaryToken(tsText(connectionHeader), "close"))
+	if closeConnection{pipeline:=tsNodeHTTP1ServerPipeline(loop);closeKey:=tsNodeHTTP1ServerGet(loop,pipeline,"kMustCloseConnection");tsSet(loop,response,closeKey,tsBooleanValue(true))}
+	handle := tsNodeHTTPServerSym(loop, response, "kHandle")
+	if !tsNullish(handle) {
+		autoBits := 0
+		if tsTruthy(tsNodeHTTPServerAPIGet(loop, response, "sendDate")) { autoBits |= 1 }
+		if !tsTruthy(tsNodeHTTPServerAPIGet(loop, response, "_hasBody")) { autoBits |= 32 }
+		if closeConnection { autoBits |= 4 } else { autoBits |= 2 }
+		socket := tsNodeHTTPIncomingGet(loop, tsNodeHTTPServerAPIGet(loop, response, "req"), "socket")
+		server := tsNodeHTTPServerGet(loop, socket, "server")
+		timeout := tsNodeHTTPServerAPIGet(loop, server, "keepAliveTimeout")
+		keepSecs := tsNumberValue(0)
+		if !closeConnection && tsIsNumeric(timeout) && tsNumber(timeout) > 0 {
+			autoBits |= 8
+			buffer := tsNodeHTTPServerAPIGet(loop, server, "keepAliveTimeoutBuffer")
+			total := tsNumber(timeout) + tsNumber(buffer)
+			keepSecs = tsNumberValue(math.Floor(total/1000))
+		}
+		tsNodeHTTPServerCall(loop, handle, "writeHead", tsNumberValue(float64(code)), tsNodeHTTPServerAPIGet(loop, response, "statusMessage"), tsNodeHTTPOutgoingHeaders(loop, response), tsNumberValue(float64(autoBits)), keepSecs)
+	}
 	tsNodeHTTPServerSetHeaderState(loop,response,"assigned")
 	return response
 }
@@ -370,7 +426,7 @@ func tsNodeHTTPServerMethod(loop *tsLoop,name string,receiver tsValue,args []tsV
 	case "serverAddress":server:=tsNodeHTTPServerSym(loop,receiver,"serverSymbol");if tsNullish(server){return tsNull};return tsNodeHTTPServerCall(loop,server,"address")
 	case "serverGetConnections":tracked:=tsNodeHTTPServerSym(loop,receiver,"kTrackedConnections");count:=0;if tracked.kind==tsCollectionKind{count=len((*tsCollection)(tracked.ref).index)};cb:=arg(0);if cb.kind==tsFunctionKind{tsInternalHTTPNextTick(loop,cb,tsNull,tsNumberValue(float64(count)))};return receiver
 	case "serverCloseAll","serverCloseIdle":
-		if name=="serverCloseIdle"{tsInternalHTTP1FallbackCloseIdle(loop,receiver)}else{tsInternalHTTP1FallbackCloseAll(loop,receiver)}
+		if name=="serverCloseIdle"{tsNodeHTTP1ServerCloseIdle(loop,receiver)}else{tsNodeHTTP1ServerCloseAll(loop,receiver)}
 		tracked:=tsNodeHTTPServerSym(loop,receiver,"kTrackedConnections");if tracked.kind==tsCollectionKind{for _,entry:=range (*tsCollection)(tracked.ref).entries{if !entry.live||tsTruthy(tsNodeHTTPServerSym(loop,entry.key,"kHandedOff")){continue};if name=="serverCloseIdle"&&tsTruthy(tsNodeHTTPServerGet(loop,entry.key,"_httpMessage")){continue};tsNodeHTTPServerCall(loop,entry.key,"destroy")}};return tsU
 	case "serverClose":
 		timers:=tsNodeTimersModule();interval:=tsNodeHTTPServerSym(loop,receiver,"kConnectionsCheckingInterval");if !tsNullish(interval){tsNodeHTTPServerAPIGet(loop,timers,"clearInterval");tsCall(loop,tsNodeHTTPServerAPIGet(loop,timers,"clearInterval"),interval)}
@@ -389,7 +445,7 @@ func tsNodeHTTPServerMethod(loop *tsLoop,name string,receiver tsValue,args []tsV
 	case "serverSetTimeout":ms:=arg(0);if tsIsUndefined(ms){ms=tsNumberValue(0)};tsNodeHTTPServerAPISet(loop,receiver,"timeout",ms);if arg(1).kind==tsFunctionKind{tsNodeHTTPServerCall(loop,receiver,"on",tsNodeHTTPServerAPIKey("timeout"),arg(1))};return receiver
 	case "serverListen":return tsNodeHTTPServerListen(loop,receiver,args)
 	case "connectionListener":
-		socket:=arg(0);if timeout:=tsNodeHTTPServerAPIGet(loop,receiver,"timeout");tsTruthy(timeout){tsNodeHTTPServerCall(loop,socket,"setTimeout",timeout)};tsNodeHTTPServerAPISet(loop,socket,"allowHalfOpen",tsNodeHTTPServerSym(loop,receiver,"kHttpAllowHalfOpen"));tsNodeHTTPServerCall(loop,socket,"on",tsNodeHTTPServerAPIKey("timeout"),tsNodeHTTPServerFn(loop,"onNodeHTTPServerSocketTimeout"));if tsTruthy(tsNodeHTTPServerAPIGet(loop,socket,"_nodeHTTPServerSocket"))&&!tsTruthy(tsNodeHTTPServerSym(loop,socket,"kHandedOff")){return tsU};tracked:=tsNodeHTTPServerSym(loop,receiver,"kTrackedConnections");if tracked.kind==tsCollectionKind{add:=tsGet(loop,tracked,tsNodeHTTPServerAPIKey("add"));if add.kind==tsFunctionKind{tsCallReceiver(loop,add,tracked,socket)}};maxConnections:=tsNodeHTTPServerAPIGet(loop,receiver,"maxConnections");count:=0;if tracked.kind==tsCollectionKind{count=len((*tsCollection)(tracked.ref).index)};if tsIsNumeric(maxConnections)&&tsNumber(maxConnections)>0&&float64(count)>tsNumber(maxConnections){if tracked.kind==tsCollectionKind{del:=tsGet(loop,tracked,tsNodeHTTPServerAPIKey("delete"));if del.kind==tsFunctionKind{tsCallReceiver(loop,del,tracked,socket)}};data:=tsNewObject();for _,name:=range []string{"localAddress","localPort","localFamily","remoteAddress","remotePort","remoteFamily"}{tsSet(loop,data,tsNodeHTTPServerAPIKey(name),tsNodeHTTPServerAPIGet(loop,socket,name))};tsNodeHTTPServerCall(loop,socket,"destroy");tsNodeHTTPServerEmit(loop,receiver,"drop",tsObjectValue(data));return tsU};blockList:=tsNodeHTTPServerAPIGet(loop,receiver,"blockList");remote:=tsNodeHTTPServerAPIGet(loop,socket,"remoteAddress");ipType:=tsNumber(tsCall(loop,tsNodeHTTPServerAPIGet(loop,tsInternalNetIPModule(),"isIP"),remote));if !tsNullish(blockList)&&ipType!=0{check:=tsNodeHTTPServerAPIGet(loop,blockList,"check");family:="ipv4";if ipType==6{family="ipv6"};if check.kind==tsFunctionKind&&tsTruthy(tsCall(loop,check,remote,tsNodeHTTPServerAPIKey(family))){if tracked.kind==tsCollectionKind{del:=tsGet(loop,tracked,tsNodeHTTPServerAPIKey("delete"));if del.kind==tsFunctionKind{tsCallReceiver(loop,del,tracked,socket)}};tsNodeHTTPServerCall(loop,socket,"destroy");return tsU}};closed:=tsFunctionValue(tsFunc(func(loop *tsLoop,_ ...tsValue)tsValue{current:=tsNodeHTTPServerSym(loop,receiver,"kTrackedConnections");del:=tsGet(loop,current,tsNodeHTTPServerAPIKey("delete"));if del.kind==tsFunctionKind{tsCallReceiver(loop,del,current,socket)};return tsU}));tsNodeHTTPServerCall(loop,socket,"once",tsNodeHTTPServerAPIKey("close"),closed);tsNodeHTTPServerAPISet(loop,socket,"server",receiver);tsNodeHTTPServerAPISet(loop,socket,"parser",tsNodeHTTPServerDispatch(loop,"createServerParserShim",socket,nil));options:=tsNewObject();http1Options:=tsNewObject();incoming:=tsNodeHTTPServerSym(loop,receiver,"kIncomingMessage");response:=tsNodeHTTPServerSym(loop,receiver,"kServerResponse");if tsNullish(incoming){incoming=tsNodeHTTPIncomingModule(loop);incoming=tsNodeHTTPIncomingGet(loop,incoming,"IncomingMessage")};if tsNullish(response){response=tsNodeHTTPServerAPIGet(loop,tsNodeHTTPServerAPIModule(loop),"ServerResponse")};http1Options.set("IncomingMessage",incoming);http1Options.set("ServerResponse",response);options.set("http1Options",tsObjectValue(http1Options));fallback:=tsInternalHTTP1FallbackModule(loop);fn:=tsInternalHTTP1FallbackGet(loop,fallback,"connectionListenerHTTP1");if fn.kind==tsFunctionKind{tsCall(loop,fn,receiver,socket,tsObjectValue(options))};return tsU
+		socket:=arg(0);if timeout:=tsNodeHTTPServerAPIGet(loop,receiver,"timeout");tsTruthy(timeout){tsNodeHTTPServerCall(loop,socket,"setTimeout",timeout)};tsNodeHTTPServerAPISet(loop,socket,"allowHalfOpen",tsNodeHTTPServerSym(loop,receiver,"kHttpAllowHalfOpen"));tsNodeHTTPServerCall(loop,socket,"on",tsNodeHTTPServerAPIKey("timeout"),tsNodeHTTPServerFn(loop,"onNodeHTTPServerSocketTimeout"));if tsTruthy(tsNodeHTTPServerAPIGet(loop,socket,"_nodeHTTPServerSocket"))&&!tsTruthy(tsNodeHTTPServerSym(loop,socket,"kHandedOff")){return tsU};tracked:=tsNodeHTTPServerSym(loop,receiver,"kTrackedConnections");if tracked.kind==tsCollectionKind{add:=tsGet(loop,tracked,tsNodeHTTPServerAPIKey("add"));if add.kind==tsFunctionKind{tsCallReceiver(loop,add,tracked,socket)}};maxConnections:=tsNodeHTTPServerAPIGet(loop,receiver,"maxConnections");count:=0;if tracked.kind==tsCollectionKind{count=len((*tsCollection)(tracked.ref).index)};if tsIsNumeric(maxConnections)&&tsNumber(maxConnections)>0&&float64(count)>tsNumber(maxConnections){if tracked.kind==tsCollectionKind{del:=tsGet(loop,tracked,tsNodeHTTPServerAPIKey("delete"));if del.kind==tsFunctionKind{tsCallReceiver(loop,del,tracked,socket)}};data:=tsNewObject();for _,name:=range []string{"localAddress","localPort","localFamily","remoteAddress","remotePort","remoteFamily"}{tsSet(loop,data,tsNodeHTTPServerAPIKey(name),tsNodeHTTPServerAPIGet(loop,socket,name))};tsNodeHTTPServerCall(loop,socket,"destroy");tsNodeHTTPServerEmit(loop,receiver,"drop",tsObjectValue(data));return tsU};blockList:=tsNodeHTTPServerAPIGet(loop,receiver,"blockList");remote:=tsNodeHTTPServerAPIGet(loop,socket,"remoteAddress");ipType:=tsNumber(tsCall(loop,tsNodeHTTPServerAPIGet(loop,tsInternalNetIPModule(),"isIP"),remote));if !tsNullish(blockList)&&ipType!=0{check:=tsNodeHTTPServerAPIGet(loop,blockList,"check");family:="ipv4";if ipType==6{family="ipv6"};if check.kind==tsFunctionKind&&tsTruthy(tsCall(loop,check,remote,tsNodeHTTPServerAPIKey(family))){if tracked.kind==tsCollectionKind{del:=tsGet(loop,tracked,tsNodeHTTPServerAPIKey("delete"));if del.kind==tsFunctionKind{tsCallReceiver(loop,del,tracked,socket)}};tsNodeHTTPServerCall(loop,socket,"destroy");return tsU}};closed:=tsFunctionValue(tsFunc(func(loop *tsLoop,_ ...tsValue)tsValue{current:=tsNodeHTTPServerSym(loop,receiver,"kTrackedConnections");del:=tsGet(loop,current,tsNodeHTTPServerAPIKey("delete"));if del.kind==tsFunctionKind{tsCallReceiver(loop,del,current,socket)};return tsU}));tsNodeHTTPServerCall(loop,socket,"once",tsNodeHTTPServerAPIKey("close"),closed);tsNodeHTTPServerAPISet(loop,socket,"server",receiver);tsNodeHTTPServerAPISet(loop,socket,"parser",tsNodeHTTPServerDispatch(loop,"createServerParserShim",socket,nil));options:=tsNewObject();http1Options:=tsNewObject();incoming:=tsNodeHTTPServerSym(loop,receiver,"kIncomingMessage");response:=tsNodeHTTPServerSym(loop,receiver,"kServerResponse");if tsNullish(incoming){incoming=tsNodeHTTPIncomingModule(loop);incoming=tsNodeHTTPIncomingGet(loop,incoming,"IncomingMessage")};if tsNullish(response){response=tsNodeHTTPServerAPIGet(loop,tsNodeHTTPServerAPIModule(loop),"ServerResponse")};http1Options.set("IncomingMessage",incoming);http1Options.set("ServerResponse",response);options.set("http1Options",tsObjectValue(http1Options));http1:=tsNodeHTTP1ServerModule(loop);fn:=tsNodeHTTP1ServerGet(loop,http1,"connectionListenerHTTP1");if fn.kind==tsFunctionKind{tsCall(loop,fn,receiver,socket,tsObjectValue(options))};return tsU
 	case "responseAssignSocket":
 		socket:=arg(0);tsNodeHTTPServerAssignSocket(loop,receiver,socket);tsNodeHTTPOutgoingPut(loop,receiver,tsNodeHTTPOutgoingSingleton.kSocket,socket);tsNodeHTTPServerCall(loop,socket,"once",tsNodeHTTPServerAPIKey("close"),tsNodeHTTPServerFn(loop,"onServerResponseClose"));tsNodeHTTPOutgoingCall(loop,receiver,"_flush");return receiver
 	case "responseDetachSocket":
@@ -403,16 +459,16 @@ func tsNodeHTTPServerMethod(loop *tsLoop,name string,receiver tsValue,args []tsV
 		switch name{case "responseSetHeader":return tsNodeHTTPOutgoingMethod(loop,receiver,"setHeader",args);case "responseAppendHeader":return tsNodeHTTPOutgoingMethod(loop,receiver,"appendHeader",args);case "responseSetHeaders":return tsNodeHTTPOutgoingMethod(loop,receiver,"setHeaders",args);default:return tsNodeHTTPOutgoingMethod(loop,receiver,"removeHeader",args)}
 	case "responseWriteRaw":
 		chunk,encoding,callback:=arg(0),arg(1),arg(2);handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle")
-		if tsNullish(handle)||!tsNullish(tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState")){return tsNodeHTTPOutgoingWriteRaw(loop,receiver,chunk,encoding,callback)}
+		if tsNullish(handle)||!tsNullish(tsNodeHTTP1ServerSym(loop,receiver,"kQueueState")){return tsNodeHTTPOutgoingWriteRaw(loop,receiver,chunk,encoding,callback)}
 		tsNodeHTTPServerCall(loop,handle,"writeInformational",chunk,encoding);if callback.kind==tsFunctionKind{tsInternalHTTPNextTick(loop,callback)};return tsBooleanValue(true)
 	case "responseSend":
 		data,encoding,callback:=arg(0),arg(1),arg(2);handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle")
-		if tsNullish(handle)||!tsNullish(tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState")){return tsNodeHTTPOutgoingMethod(loop,receiver,"_send",args)}
+		if tsNullish(handle)||!tsNullish(tsNodeHTTP1ServerSym(loop,receiver,"kQueueState")){return tsNodeHTTPOutgoingMethod(loop,receiver,"_send",args)}
 		if !tsTruthy(tsNodeHTTPServerGet(loop,receiver,"_header")){tsNodeHTTPServerCall(loop,receiver,"_implicitHeader")};if !tsStrictEqual(tsNodeHTTPServerHeaderState(loop,receiver),tsGet(loop,tsInternalHTTPGet(loop,tsInternalHTTPModule(loop),"NodeHTTPHeaderState"),tsNodeHTTPServerAPIKey("sent"))){tsNodeHTTPServerSetHeaderState(loop,receiver,"sent")}
 		strict:=tsNodeHTTPServerDispatch(loop,"strictContentLength",receiver,[]tsValue{tsNodeHTTPServerHeaderState(loop,receiver),tsBooleanValue(false)});return tsNodeHTTPServerCall(loop,handle,"write",data,encoding,callback,strict)
 	case "responseWriteContinue":
 		if tsNodeHTTPServerHeaderStateAssignedOrSent(loop,receiver){panic(tsThrown{tsFSException("Error","ERR_HTTP_HEADERS_SENT","Cannot write headers after they are sent to the client")})}
-		handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");if tsNullish(handle)||!tsNullish(tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState")){tsNodeHTTPServerMethod(loop,"responseWriteInformation",receiver,[]tsValue{tsNumberValue(100),tsNull,arg(0)})}else{tsNodeHTTPServerCall(loop,handle,"writeContinue");if arg(0).kind==tsFunctionKind{tsInternalHTTPNextTick(loop,arg(0))}}
+		handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");if tsNullish(handle)||!tsNullish(tsNodeHTTP1ServerSym(loop,receiver,"kQueueState")){tsNodeHTTPServerMethod(loop,"responseWriteInformation",receiver,[]tsValue{tsNumberValue(100),tsNull,arg(0)})}else{tsNodeHTTPServerCall(loop,handle,"writeContinue");if arg(0).kind==tsFunctionKind{tsInternalHTTPNextTick(loop,arg(0))}}
 		tsNodeHTTPServerAPISet(loop,receiver,"_sent100",tsBooleanValue(true));return tsU
 	case "responseWriteProcessing":return tsNodeHTTPServerMethod(loop,"responseWriteInformation",receiver,[]tsValue{tsNumberValue(102),tsNull,arg(0)})
 	case "responseWriteInformation":
@@ -424,7 +480,7 @@ func tsNodeHTTPServerMethod(loop *tsLoop,name string,receiver tsValue,args []tsV
 		headers:=arg(1);if headers.kind==tsArrayKind{items:=(*tsArray)(headers.ref).values;if len(items)>0&&items[0].kind==tsArrayKind{for _,entry:=range items{appendHeader(tsArg((*tsArray)(entry.ref).values,0),tsArg((*tsArray)(entry.ref).values,1))}}else{if len(items)%2!=0{panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_VALUE","The \"headers\" argument must be an even-length array")})};for i:=0;i+1<len(items);i+=2{appendHeader(items[i],items[i+1])}}}else if !tsNullish(headers){if headers.kind!=tsObjectKind&&headers.kind!=tsInstanceKind{panic(tsThrown{tsFSException("TypeError","ERR_INVALID_ARG_TYPE","The \"headers\" argument must be of type object")})};for _,key:=range tsObjectKeys(headers).values{appendHeader(key,tsGet(loop,headers,key))}}
 		output+="\r\n";return tsNodeHTTPServerMethod(loop,"responseWriteRaw",receiver,[]tsValue{tsNodeHTTPServerAPIKey(output),tsNodeHTTPServerAPIKey("ascii"),arg(2)})
 	case "responseDestroy":
-		if tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"destroyed")){return receiver};handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");if !tsNullish(handle)&&tsNullish(tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState")){tsNodeHTTPServerCall(loop,handle,"abort")};callbacks:=tsNodeHTTPServerSym(loop,receiver,"kPendingCallbacks");if callbacks.kind==tsArrayKind{callbackArray:=(*tsArray)(callbacks.ref);pending:=make([]tsValue,len(callbackArray.values));copy(pending,callbackArray.values);callbackArray.resize(0);err:=arg(0);if tsNullish(err){err=tsFSException("Error","ERR_STREAM_DESTROYED","Cannot call write after a stream was destroyed")};for _,callback:=range pending{if callback.kind==tsFunctionKind{tsInternalHTTPNextTick(loop,callback,err)}}};return tsNodeHTTPOutgoingMethod(loop,receiver,"destroy",args)
+		if tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"destroyed")){return receiver};handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");if !tsNullish(handle)&&tsNullish(tsNodeHTTP1ServerSym(loop,receiver,"kQueueState")){tsNodeHTTPServerCall(loop,handle,"abort")};callbacks:=tsNodeHTTPServerSym(loop,receiver,"kPendingCallbacks");if callbacks.kind==tsArrayKind{callbackArray:=(*tsArray)(callbacks.ref);pending:=make([]tsValue,len(callbackArray.values));copy(pending,callbackArray.values);callbackArray.resize(0);err:=arg(0);if tsNullish(err){err=tsFSException("Error","ERR_STREAM_DESTROYED","Cannot call write after a stream was destroyed")};for _,callback:=range pending{if callback.kind==tsFunctionKind{tsInternalHTTPNextTick(loop,callback,err)}}};return tsNodeHTTPOutgoingMethod(loop,receiver,"destroy",args)
 	case "responseFlushHeaders":
 		state:=tsNodeHTTPServerHeaderState(loop,receiver);states:=tsInternalHTTPGet(loop,tsInternalHTTPModule(loop),"NodeHTTPHeaderState");if tsStrictEqual(state,tsGet(loop,states,tsNodeHTTPServerAPIKey("sent"))){return tsU};if !tsStrictEqual(state,tsGet(loop,states,tsNodeHTTPServerAPIKey("assigned"))){tsNodeHTTPServerCall(loop,receiver,"_implicitHeader")};handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");if !tsNullish(handle){tsNodeHTTPServerCall(loop,handle,"flushHeaders")}else{tsNodeHTTPOutgoingCall(loop,receiver,"_send",tsNodeHTTPServerAPIKey(""))};tsNodeHTTPServerSetHeaderState(loop,receiver,"sent");return tsU
 	case "responseSetTimeout":
@@ -439,21 +495,21 @@ func tsNodeHTTPServerMethod(loop *tsLoop,name string,receiver tsValue,args []tsV
 	case "responseFinish":tsNodeHTTPServerCall(loop,receiver,"emit",tsNodeHTTPServerAPIKey("prefinish"));return tsU
 	case "responseCork","responseUncork":socket:=tsNodeHTTPServerMethod(loop,"responseSocket",receiver,nil);if !tsNullish(socket){method:="uncork";if name=="responseCork"{method="cork"};tsNodeHTTPServerCall(loop,socket,method)};return tsU
 	case "responseSocket":
-		queued:=tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState");if !tsNullish(queued){return tsNull};socket:=tsNodeHTTPOutgoingSymbol(loop,receiver,tsNodeHTTPOutgoingSingleton.kSocket);if !tsNullish(socket){return socket};fake:=tsNodeHTTPServerSym(loop,receiver,"fakeSocketSymbol");if !tsNullish(fake){return fake};fake=tsInternalHTTPFakeSocketCreate(loop,receiver);tsNodeHTTPServerPut(loop,receiver,"fakeSocketSymbol",fake);return fake
+		queued:=tsNodeHTTP1ServerSym(loop,receiver,"kQueueState");if !tsNullish(queued){return tsNull};socket:=tsNodeHTTPOutgoingSymbol(loop,receiver,tsNodeHTTPOutgoingSingleton.kSocket);if !tsNullish(socket){return socket};fake:=tsNodeHTTPServerSym(loop,receiver,"fakeSocketSymbol");if !tsNullish(fake){return fake};fake=tsInternalHTTPFakeSocketCreate(loop,receiver);tsNodeHTTPServerPut(loop,receiver,"fakeSocketSymbol",fake);return fake
 	case "responseSetSocket":socket:=arg(0);tsNodeHTTPServerPut(loop,receiver,"fakeSocketSymbol",socket);tsNodeHTTPOutgoingPut(loop,receiver,tsNodeHTTPOutgoingSingleton.kSocket,socket);return tsU
 	case "responseHeadersProperty":return tsNodeHTTPOutgoingHeaders(loop,receiver)
 	case "responseSetHeadersProperty":
 		value:=arg(0);if tsNodeHTTPServerHeaderStateAssignedOrSent(loop,receiver){panic(tsThrown{tsFSException("Error","ERR_HTTP_HEADERS_SENT","Cannot set headers after they are sent to the client")})};tsNodeHTTPOutgoingPut(loop,receiver,tsNodeHTTPOutgoingSingleton.kOutHeaders,tsNull);if tsNullish(value){return tsU};if value.kind==tsArrayKind{for _,entry:=range (*tsArray)(value.ref).values{pair:=tsNodeHTTPIncomingArray(entry).values;if len(pair)>=2{tsNodeHTTPOutgoingMethod(loop,receiver,"appendHeader",[]tsValue{pair[0],pair[1]})}}}else if value.kind==tsObjectKind||value.kind==tsInstanceKind{for _,key:=range tsObjectKeys(value).values{tsNodeHTTPOutgoingMethod(loop,receiver,"setHeader",[]tsValue{key,tsGet(loop,value,key)})}};return tsU
 	case "responseWritable":return tsBooleanValue(true)
-	case "responseWritableNeedDrain":handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");queued:=tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState");return tsBooleanValue(!tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"destroyed"))&&!tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"finished"))&&(tsNumber(tsNodeHTTPServerGet(loop,handle,"bufferedAmount"))!=0||tsTruthy(tsNodeHTTPServerGet(loop,handle,"onwritable"))||tsTruthy(tsNodeHTTPServerSym(loop,receiver,"kNeedDrain"))||tsNumber(tsNodeHTTPServerSym(loop,receiver,"kBytesBuffered"))>=tsNumber(tsNodeHTTPServerGet(loop,receiver,"writableHighWaterMark"))||tsTruthy(tsNodeHTTPServerGet(loop,queued,"needDrain"))))
+	case "responseWritableNeedDrain":handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");queued:=tsNodeHTTP1ServerSym(loop,receiver,"kQueueState");return tsBooleanValue(!tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"destroyed"))&&!tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"finished"))&&(tsNumber(tsNodeHTTPServerGet(loop,handle,"bufferedAmount"))!=0||tsTruthy(tsNodeHTTPServerGet(loop,handle,"onwritable"))||tsTruthy(tsNodeHTTPServerSym(loop,receiver,"kNeedDrain"))||tsNumber(tsNodeHTTPServerSym(loop,receiver,"kBytesBuffered"))>=tsNumber(tsNodeHTTPServerGet(loop,receiver,"writableHighWaterMark"))||tsTruthy(tsNodeHTTPServerGet(loop,queued,"needDrain"))))
 	case "responseWritableFinished":handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");return tsBooleanValue(tsTruthy(tsNodeHTTPServerAPIGet(loop,receiver,"finished"))&&(tsNullish(handle)||tsTruthy(tsNodeHTTPServerGet(loop,handle,"finished"))||(int(tsNumber(tsNodeHTTPServerGet(loop,handle,"flags")))&3)!=0))
-	case "responseWritableLength":if tsTruthy(tsNodeHTTPServerMethod(loop,"responseWritableFinished",receiver,nil)){return tsNumberValue(0)};length:=tsNumber(tsNodeHTTPServerSym(loop,receiver,"kBytesBuffered"));handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");length+=tsNumber(tsNodeHTTPServerGet(loop,handle,"bufferedAmount"));queued:=tsInternalHTTP1FallbackSym(loop,receiver,"kQueueState");length+=tsNumber(tsNodeHTTPServerGet(loop,queued,"bytes"));return tsNumberValue(length)
+	case "responseWritableLength":if tsTruthy(tsNodeHTTPServerMethod(loop,"responseWritableFinished",receiver,nil)){return tsNumberValue(0)};length:=tsNumber(tsNodeHTTPServerSym(loop,receiver,"kBytesBuffered"));handle:=tsNodeHTTPServerSym(loop,receiver,"kHandle");length+=tsNumber(tsNodeHTTPServerGet(loop,handle,"bufferedAmount"));queued:=tsNodeHTTP1ServerSym(loop,receiver,"kQueueState");length+=tsNumber(tsNodeHTTPServerGet(loop,queued,"bytes"));return tsNumberValue(length)
 	case "responseHighWaterMark":socket:=tsNodeHTTPServerMethod(loop,"responseSocket",receiver,nil);mark:=tsNodeHTTPServerGet(loop,socket,"writableHighWaterMark");if tsIsNumeric(mark){return mark};mark=tsNodeHTTPServerSym(loop,receiver,"kHighWaterMark");if tsIsNumeric(mark){return mark};return tsNumberValue(65536)
 	case "responseHeadersSent":return tsBooleanValue(tsNodeHTTPServerHeaderStateAssignedOrSent(loop,receiver))
 	case "responseHeaderSet":return tsNodeHTTPServerMethod(loop,"responseSetSocket",receiver,args)
 	case "responseHeaderGet":return tsNodeHTTPOutgoingHeaderGet(loop,receiver,arg(0))
-	case "responseShouldKeepAliveGet":value:=tsNodeHTTPServerGet(loop,receiver,"shouldKeepAlive");if tsIsUndefined(value){return tsBooleanValue(true)};return value
-	case "responseShouldKeepAliveSet":tsNodeHTTPServerAPISet(loop,receiver,"shouldKeepAlive",arg(0));return tsU
+	case "responseShouldKeepAliveGet":value:=tsNodeHTTPServerSym(loop,receiver,"kShouldKeepAlive");if tsIsUndefined(value){return tsBooleanValue(true)};return value
+	case "responseShouldKeepAliveSet":tsNodeHTTPServerPut(loop,receiver,"kShouldKeepAlive",arg(0));return tsU
 	case "responseClosed":return tsNodeHTTPServerAPIGet(loop,receiver,"_closed")
 	case "responseWritableCorked":socket:=tsNodeHTTPServerMethod(loop,"responseSocket",receiver,nil);value:=tsNodeHTTPServerGet(loop,socket,"writableCorked");if tsIsNumeric(value){return value};return tsNumberValue(0)
 	case "responseChunkedEncoding":return tsNodeHTTPServerSym(loop,receiver,"kChunkedEncoding")
@@ -474,16 +530,16 @@ func tsNodeHTTPServerMethodValue(loop *tsLoop,name string,length int) tsValue {m
 func tsNodeHTTPServerListen(loop *tsLoop,server tsValue,args []tsValue) tsValue {
 	if !tsNullish(tsNodeHTTPServerSym(loop,server,"serverSymbol")){panic(tsThrown{tsFSException("Error","ERR_SERVER_ALREADY_LISTEN","Listen method has been called more than once without closing.")})}
 	options,callback:=tsArg(args,0),tsArg(args,len(args)-1);if options.kind==tsFunctionKind{callback=options;options=tsObjectValue(tsNewObject())};if options.kind==tsStringKind {text:=tsText(options);if port,err:=strconv.Atoi(text);err==nil{optionObject:=tsNewObject();optionObject.set("port",tsNumberValue(float64(port)));options=tsObjectValue(optionObject)}else{path:=tsNewObject();path.set("path",tsNodeHTTPServerAPIKey(text));options=tsObjectValue(path)}}else if options.kind!=tsObjectKind&&options.kind!=tsInstanceKind {normalized:=tsNodeNetNormalizeArgs(args);options=tsArg((*tsArray)(normalized.ref).values,0)}
-	innerArgs:=[]tsValue{options};if callback.kind==tsFunctionKind{innerArgs=append(innerArgs,callback)}
+	if callback.kind==tsFunctionKind{tsNodeHTTPServerCall(loop,server,"once",tsNodeHTTPServerAPIKey("listening"),callback)}
 	tls:=tsNodeHTTPServerSym(loop,server,"tlsSymbol");var inner tsValue
-	if !tsNullish(tls){tlsOptions:=tsNewObject();tsObjectSpread(tlsOptions,tls);tsObjectSpread(tlsOptions,options);tlsOptionsValue:=tsObjectValue(tlsOptions);inner=tsNodeTLSCreateServer(loop,[]tsValue{tlsOptionsValue})}else{inner=tsNodeNetServerCreate(loop,options,callback)}
+	if !tsNullish(tls){tlsOptions:=tsNewObject();tsObjectSpread(tlsOptions,tls);tsObjectSpread(tlsOptions,options);tlsOptionsValue:=tsObjectValue(tlsOptions);inner=tsNodeTLSCreateServer(loop,[]tsValue{tlsOptionsValue})}else{inner=tsNodeNetServerCreate(loop,options)}
 	tsNodeHTTPServerPut(loop,server,"serverSymbol",inner)
 	connection:=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{tsNodeHTTPServerEmit(loop,server,"connection",tsArg(values,0));return tsU}));tsNodeHTTPServerCall(loop,inner,"on",tsNodeHTTPServerAPIKey("connection"),connection)
 	listening:=tsFunctionValue(tsFunc(func(loop *tsLoop,_ ...tsValue)tsValue{tsNodeHTTPServerDispatch(loop,"emitListeningNextTick",server,[]tsValue{server,tsNodeHTTPServerAPIGet(loop,inner,"hostname"),tsNodeHTTPServerAPIGet(loop,inner,"port")});return tsU}));tsNodeHTTPServerCall(loop,inner,"once",tsNodeHTTPServerAPIKey("listening"),listening)
 	secure:=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{tsNodeHTTPServerEmit(loop,server,"secureConnection",tsArg(values,0));return tsU}));if !tsNullish(tls){tsNodeHTTPServerCall(loop,inner,"on",tsNodeHTTPServerAPIKey("secureConnection"),secure)}
-	errorListener:=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{tsNodeHTTPServerDispatch(loop,"emitListenErrorNextTick",server,[]tsValue{server,tsArg(values,0)});return tsU}));tsNodeHTTPServerCall(loop,inner,"once",tsNodeHTTPServerAPIKey("error"),errorListener)
+	errorListener:=tsFunctionValue(tsFunc(func(loop *tsLoop,values ...tsValue)tsValue{if !tsNodeNetServerListening(loop,inner)&&tsStrictEqual(tsNodeHTTPServerSym(loop,server,"serverSymbol"),inner){tsNodeHTTPServerPut(loop,server,"serverSymbol",tsNull)};tsNodeHTTPServerDispatch(loop,"emitListenErrorNextTick",server,[]tsValue{server,tsArg(values,0)});return tsU}));tsNodeHTTPServerCall(loop,inner,"once",tsNodeHTTPServerAPIKey("error"),errorListener)
 	closeListener:=tsFunctionValue(tsFunc(func(loop *tsLoop,_ ...tsValue)tsValue{if tsNullish(tsNodeHTTPServerSym(loop,server,"serverSymbol")){tsNodeHTTPServerPut(loop,server,"kPendingDrainClose",tsBooleanValue(false));tsNodeHTTPServerEmit(loop,server,"close")};return tsU}));tsNodeHTTPServerCall(loop,inner,"once",tsNodeHTTPServerAPIKey("close"),closeListener)
-	if !tsNullish(tls){tsNodeTLSServerListen(loop,inner,[]tsValue{options,callback})}else{tsNodeNetListen(loop,inner,options,callback)}
+	if !tsNullish(tls){tsNodeTLSServerListen(loop,inner,[]tsValue{options})}else{tsNodeNetListen(loop,inner,options)}
 	return server
 }
 func tsNodeHTTPServerAPIModule(loop *tsLoop) tsValue {

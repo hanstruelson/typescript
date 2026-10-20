@@ -24,6 +24,9 @@ func tsNodeTimerSetInterval(loop *tsLoop, callback, milliseconds tsValue, args .
 	handle.cancel = func() {
 		if active != nil { loop.clearTimeout(tsTaskValue(active)) }
 	}
+	handle.refHook = func(referenced bool) {
+		if active != nil { active.unref = !referenced }
+	}
 	schedule()
 	return handle
 }

@@ -496,6 +496,56 @@ func TsGet(loop *TsLoop, value, key TsValue) TsValue {
 		}
 	}
 	switch value.Kind {
+	case TsTaskKind:
+		task := (*TsTask)(value.Ref)
+		name := TsPropertyKey(loop, key)
+		if task.Properties != nil {
+			if property, ok := task.Properties[name]; ok {
+				return property
+			}
+		}
+		switch name {
+		case "ref":
+			return TsNamedNativeMethod("ref", 0, func(_ *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
+				if receiver.Kind != TsTaskKind {
+					TsPropertyFailure("Timeout method called on an incompatible receiver")
+				}
+				task := (*TsTask)(receiver.Ref)
+				task.Unref = false
+				if task.RefHook != nil {
+					task.RefHook(true)
+				}
+				return receiver
+			})
+		case "unref":
+			return TsNamedNativeMethod("unref", 0, func(_ *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
+				if receiver.Kind != TsTaskKind {
+					TsPropertyFailure("Timeout method called on an incompatible receiver")
+				}
+				task := (*TsTask)(receiver.Ref)
+				task.Unref = true
+				if task.RefHook != nil {
+					task.RefHook(false)
+				}
+				return receiver
+			})
+		case "hasRef":
+			return TsNamedNativeMethod("hasRef", 0, func(_ *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
+				if receiver.Kind != TsTaskKind {
+					TsPropertyFailure("Timeout method called on an incompatible receiver")
+				}
+				return TsBooleanValue(!(*TsTask)(receiver.Ref).Unref)
+			})
+		case "close":
+			return TsNamedNativeMethod("close", 0, func(loop *TsLoop, receiver TsValue, _ ...TsValue) TsValue {
+				if receiver.Kind != TsTaskKind {
+					TsPropertyFailure("Timeout method called on an incompatible receiver")
+				}
+				loop.ClearTimeout(receiver)
+				return receiver
+			})
+		}
+		return TsU
 	case TsBigIntKind:
 		return TsBigIntProperty(value, TsPropertyKey(loop, key))
 	case TsFunctionKind:
@@ -622,6 +672,17 @@ func TsGet(loop *TsLoop, value, key TsValue) TsValue {
 }
 func TsSet(loop *TsLoop, value, key, item TsValue) TsValue {
 	switch value.Kind {
+	case TsTaskKind:
+		task := (*TsTask)(value.Ref)
+		name := TsPropertyKey(loop, key)
+		if name == "ref" || name == "unref" || name == "hasRef" || name == "close" {
+			TsPropertyFailure("Cannot assign to read only timer method")
+		}
+		if task.Properties == nil {
+			task.Properties = map[string]TsValue{}
+		}
+		task.Properties[name] = item
+		return item
 	case TsErrorKind:
 		return TsObjectWrite(loop, TsObjectValue(TsErrorObject(loop, (*TsRuntimeError)(value.Ref))), TsPropertyKey(loop, key), item)
 	case TsFunctionKind:
@@ -1049,6 +1110,8 @@ type TsTask struct {
 	Context                 *TsAsyncContextFrame
 	Canceled                bool
 	Cancel                  func()
+	RefHook                 func(bool)
+	Properties              map[string]TsValue
 	Timer, Completed, Unref bool
 	Deadline                time.Time
 }
@@ -1432,6 +1495,16 @@ func (l *TsLoop) RemoveTimer(task *TsTask) {
 func (l *TsLoop) Run() error {
 	loop := l
 	_ = loop
+	runtimeError := func() error {
+		if len(l.Errors) == 0 {
+			return nil
+		}
+		messages := make([]string, len(l.Errors))
+		for i, value := range l.Errors {
+			messages[i] = TsDiagnosticText(l, value)
+		}
+		return fmt.Errorf("Async runtime errors: %s", strings.Join(messages, "; "))
+	}
 	defer func() {
 		for _, closeResource := range l.ResourceClosers {
 			closeResource()
@@ -1445,6 +1518,9 @@ func (l *TsLoop) Run() error {
 			l.Ready[0] = nil
 			l.Ready = l.Ready[1:]
 			l.Invoke(callback)
+			if err := runtimeError(); err != nil {
+				return err
+			}
 			l.Drain()
 		}
 		// Process one timer at a time, with a reaction checkpoint between callbacks.
@@ -1454,6 +1530,9 @@ func (l *TsLoop) Run() error {
 			l.RemoveTimer(task)
 			delete(l.Pending, task)
 			l.InvokeContext(task.Context, func() { task.Finish(task.Result) })
+			if err := runtimeError(); err != nil {
+				return err
+			}
 			continue
 		}
 		l.Drain()
@@ -1478,7 +1557,7 @@ func (l *TsLoop) Run() error {
 		}
 		if _, ok := l.Pending[task]; !ok {
 			l.Errors = append(l.Errors, TsStringReference(TsStringUTF8("Unknown completed task")))
-			continue
+			return runtimeError()
 		}
 		task.Completed = true
 		if task.Timer {
@@ -1490,6 +1569,9 @@ func (l *TsLoop) Run() error {
 		}
 		delete(l.Pending, task)
 		l.InvokeContext(task.Context, func() { task.Finish(task.Result) })
+		if err := runtimeError(); err != nil {
+			return err
+		}
 	}
 	for _, module := range l.Modules {
 		if len(module.Requests) > 0 && !module.Failed {
@@ -1515,14 +1597,7 @@ func (l *TsLoop) Run() error {
 			l.Errors = append(l.Errors, TsStringReference(TsStringUTF8("Unhandled rejection: "+TsDiagnosticText(loop, value))))
 		}
 	}
-	if len(l.Errors) > 0 {
-		messages := make([]string, len(l.Errors))
-		for i, value := range l.Errors {
-			messages[i] = TsDiagnosticText(loop, value)
-		}
-		return fmt.Errorf("Async runtime errors: %s", strings.Join(messages, "; "))
-	}
-	return nil
+	return runtimeError()
 }
 
 // Protected regions and pending abrupt completions mirror ES5's trys/ops stacks.
@@ -1837,6 +1912,14 @@ func TsHas(loop *TsLoop, value, key TsValue) bool {
 	}
 	name := TsPropertyKey(loop, key)
 	switch value.Kind {
+	case TsTaskKind:
+		task := (*TsTask)(value.Ref)
+		if task.Properties != nil {
+			if _, ok := task.Properties[name]; ok {
+				return true
+			}
+		}
+		return name == "ref" || name == "unref" || name == "hasRef" || name == "close"
 	case TsArrayBufferKind:
 		return !TsIsUndefined(TsValue(TsArrayBufferGet(value, name)))
 	case TsDataViewKind:
@@ -2882,6 +2965,16 @@ func TsBoundary(loop *TsLoop, value TsValue, kind string, nulls uint8, coerce bo
 		return value
 	}
 	return TsConvertValue(loop, value, kind, coerce)
+}
+
+// JavaScript function returns preserve nullish values even when annotations
+// describe only the non-nullish result type. JSDoc and unchecked JavaScript
+// commonly omit this case, but callers still observe the original value.
+func TsFunctionReturnBoundary(loop *TsLoop, value TsValue, kind string, nulls uint8, coerce bool) TsValue {
+	if value.Kind == TsNullKind || value.Kind == TsUndefinedKind {
+		return value
+	}
+	return TsBoundary(loop, value, kind, nulls, coerce)
 }
 func TsIsSigned(value TsValue) bool {
 	switch value.Kind {
@@ -15021,7 +15114,7 @@ func TsInternalHTTPModule(loop *TsLoop) TsValue {
 		}
 		m.Set(name, TsObjectValue(obj))
 	}
-	m.Set("http1ServerPipeline", TsObjectValue(TsNewObject()))
+
 	// Callback exports are installed first; the core state transitions below specialize them.
 	for _, name := range []string{"emitErrorNextTickIfErrorListenerNT", "callCloseCallback", "emitCloseNT", "emitEOFIncomingMessage", "hasServerResponseFinished", "onDataIncomingMessage", "drainMicrotasks"} {
 		n := name
@@ -16676,16 +16769,20 @@ func TsNodeHTTPIncomingModule(loop *TsLoop) TsValue {
 }
 
 type TsNodeHTTPParserState struct {
-	Buffer                                                                                                                []byte
-	Current                                                                                                               []byte
-	Started                                                                                                               time.Time
-	LastMessageStart                                                                                                      time.Time
-	MaxHeaderSize                                                                                                         uint64
-	Connections                                                                                                           TsValue
-	ParserType                                                                                                            int
-	LenientFlags                                                                                                          uint32
-	Paused, Closed, Initialized, HeaderDone, MessageBegun, Consumed, SkipBody, CloseDelimited, ClosedByMessage, InExecute bool
-	BodyStart, BodyDelivered                                                                                              int
+	Buffer                                                                                                                         []byte
+	Current                                                                                                                        []byte
+	Started                                                                                                                        time.Time
+	LastMessageStart                                                                                                               time.Time
+	MaxHeaderSize                                                                                                                  uint64
+	Connections                                                                                                                    TsValue
+	ParserType                                                                                                                     int
+	LenientFlags                                                                                                                   uint32
+	ChunkState                                                                                                                     uint8
+	ChunkRemaining                                                                                                                 uint64
+	ChunkTrailers                                                                                                                  []TsValue
+	Paused, Closed, Initialized, HeaderDone, MessageBegun, Consumed, SkipBody, Upgrade, CloseDelimited, ClosedByMessage, InExecute bool
+	BodyStart, BodyDelivered                                                                                                       int
+	BodyReceived                                                                                                                   int64
 }
 
 func TsNodeHTTPCommonWordByte(value byte) bool {
@@ -16851,18 +16948,38 @@ func TsNodeHTTPCommonHeaderHasToken(value, token string) bool {
 	}
 	return false
 }
-func TsNodeHTTPCommonTransferChunked(value string) (bool, bool) {
+func TsNodeHTTPCommonTransferChunked(value string) (bool, bool, bool) {
 	if strings.TrimSpace(value) == "" {
-		return false, false
+		return false, false, false
 	}
 	items := strings.Split(strings.ToLower(value), ",")
 	hasChunked := false
+	duplicateChunked := false
 	for _, item := range items {
 		if strings.TrimSpace(item) == "chunked" {
+			if hasChunked {
+				duplicateChunked = true
+			}
 			hasChunked = true
 		}
 	}
-	return hasChunked, strings.TrimSpace(items[len(items)-1]) == "chunked"
+	return hasChunked, strings.TrimSpace(items[len(items)-1]) == "chunked", duplicateChunked
+}
+func TsNodeHTTPCommonParseContentLength(value string) (int64, bool) {
+	value = strings.Trim(value, " \t")
+	if value == "" {
+		return 0, false
+	}
+	for _, digit := range []byte(value) {
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+	}
+	length, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return length, true
 }
 func TsNodeHTTPCommonProtocolVersion(value string) (string, int, int, bool) {
 	protocol := ""
@@ -17109,8 +17226,8 @@ func TsNodeHTTPCommonParserOnBody(loop *TsLoop, parser, body TsValue) TsValue {
 func TsNodeHTTPCommonParserOnMessageComplete(loop *TsLoop, parser TsValue) TsValue {
 	state := TsNodeHTTPCommonStateFor(parser)
 	if state != nil {
-		// Bun moves completed parsers out of both connection sets, clears their
-		// deadline, then keeps them in the all-connections set as idle keep-alives.
+		// Node moves completed parsers out of active tracking, clears their
+		// deadline, and keeps them in the all-connections set while idle.
 		TsNodeHTTPCommonConnectionListPop(loop, state.Connections, parser, false)
 		TsNodeHTTPCommonConnectionListPop(loop, state.Connections, parser, true)
 		state.LastMessageStart = time.Time{}
@@ -17142,7 +17259,7 @@ func TsNodeHTTPCommonParserMessageBegin(loop *TsLoop, parser TsValue, state *TsN
 		return
 	}
 	// llhttp starts a fresh deadline for each message on a persistent socket.
-	// Remove and reinsert because Bun's connection sets are ordered by that time.
+	// Reinsert to retain ordering by the parser's current request-start time.
 	TsNodeHTTPCommonConnectionListPop(loop, state.Connections, parser, false)
 	TsNodeHTTPCommonConnectionListPop(loop, state.Connections, parser, true)
 	state.LastMessageStart = time.Now()
@@ -17173,10 +17290,15 @@ func TsNodeHTTPCommonCleanParser(loop *TsLoop, parser TsValue) {
 		state.MessageBegun = false
 		state.Consumed = false
 		state.SkipBody = false
+		state.Upgrade = false
 		state.CloseDelimited = false
 		state.ClosedByMessage = false
 		state.BodyStart = 0
 		state.BodyDelivered = 0
+		state.BodyReceived = 0
+		state.ChunkState = 0
+		state.ChunkRemaining = 0
+		state.ChunkTrailers = nil
 		state.Started = time.Time{}
 		state.LastMessageStart = time.Time{}
 		state.Connections = TsU
@@ -17277,113 +17399,140 @@ func TsNodeHTTPCommonChunkExtensionsValid(extension []byte) bool {
 	return true
 }
 
-func TsNodeHTTPCommonChunked(data []byte, lenientFlags uint32) ([]byte, int, []TsValue, bool, string) {
+func TsNodeHTTPCommonChunkedStep(data []byte, state *TsNodeHTTPParserState, maxTrailerPairs int) ([]byte, int, []TsValue, bool, string) {
 	var body []byte
-	trailers := []TsValue{}
-	for offset := 0; ; {
-		lineEnd, lineNext, complete, invalidLineEnding := TsNodeHTTPCommonChunkLine(data, offset, lenientFlags)
-		if !complete {
-			if invalidLineEnding {
-				return body, 0, nil, false, "Invalid chunk line ending"
+	offset := 0
+	for {
+		switch state.ChunkState {
+		case 0:
+			lineEnd, lineNext, complete, invalidLineEnding := TsNodeHTTPCommonChunkLine(data, offset, state.LenientFlags)
+			if !complete {
+				if invalidLineEnding {
+					return body, offset, nil, false, "Invalid chunk line ending"
+				}
+				if len(data)-offset > 16_384 {
+					return body, offset, nil, false, "HPE_CHUNK_EXTENSIONS_OVERFLOW"
+				}
+				return body, offset, nil, false, ""
 			}
-			return body, 0, nil, false, ""
-		}
-		rawSizeLine := data[offset:lineEnd]
-		sizeEnd := len(rawSizeLine)
-		extensionStart := -1
-		if semi := bytes.IndexByte(rawSizeLine, ';'); semi >= 0 {
-			sizeEnd = semi
-			extensionStart = semi + 1
-		}
-		sizeBytes := rawSizeLine[:sizeEnd]
-		digitsEnd := 0
-		for digitsEnd < len(sizeBytes) && (sizeBytes[digitsEnd] >= '0' && sizeBytes[digitsEnd] <= '9' || sizeBytes[digitsEnd] >= 'a' && sizeBytes[digitsEnd] <= 'f' || sizeBytes[digitsEnd] >= 'A' && sizeBytes[digitsEnd] <= 'F') {
-			digitsEnd++
-		}
-		if digitsEnd == 0 {
-			return body, 0, nil, false, "Invalid chunk size"
-		}
-		for _, ch := range sizeBytes[digitsEnd:] {
-			if lenientFlags&512 == 0 || ch != ' ' && ch != '\t' {
-				return body, 0, nil, false, "Invalid chunk size"
+			rawSizeLine := data[offset:lineEnd]
+			sizeEnd := len(rawSizeLine)
+			extensionStart := -1
+			if semi := bytes.IndexByte(rawSizeLine, ';'); semi >= 0 {
+				sizeEnd = semi
+				extensionStart = semi + 1
 			}
-		}
-		if extensionStart >= 0 {
-			extension := rawSizeLine[extensionStart:]
-			if len(extension) > 16_384 {
-				return body, 0, nil, false, "HPE_CHUNK_EXTENSIONS_OVERFLOW"
+			sizeBytes := rawSizeLine[:sizeEnd]
+			digitsEnd := 0
+			for digitsEnd < len(sizeBytes) && (sizeBytes[digitsEnd] >= '0' && sizeBytes[digitsEnd] <= '9' || sizeBytes[digitsEnd] >= 'a' && sizeBytes[digitsEnd] <= 'f' || sizeBytes[digitsEnd] >= 'A' && sizeBytes[digitsEnd] <= 'F') {
+				digitsEnd++
 			}
-			if !TsNodeHTTPCommonChunkExtensionsValid(extension) {
-				return body, 0, nil, false, "Invalid chunk extension"
+			if digitsEnd == 0 {
+				return body, offset, nil, false, "Invalid chunk size"
 			}
-		}
-		size, err := strconv.ParseUint(string(sizeBytes[:digitsEnd]), 16, 64)
-		if err != nil {
-			return body, 0, nil, false, "Invalid chunk size"
-		}
-		offset = lineNext
-		if size == 0 {
-			for {
-				end, next, lineComplete, invalid := TsNodeHTTPCommonChunkLine(data, offset, lenientFlags)
-				if !lineComplete {
-					if invalid {
-						return body, 0, nil, false, "Invalid chunk trailer"
+			for _, ch := range sizeBytes[digitsEnd:] {
+				if state.LenientFlags&512 == 0 || ch != ' ' && ch != '\t' {
+					return body, offset, nil, false, "Invalid chunk size"
+				}
+			}
+			if extensionStart >= 0 {
+				extension := rawSizeLine[extensionStart:]
+				if len(extension) > 16_384 {
+					return body, offset, nil, false, "HPE_CHUNK_EXTENSIONS_OVERFLOW"
+				}
+				if !TsNodeHTTPCommonChunkExtensionsValid(extension) {
+					return body, offset, nil, false, "Invalid chunk extension"
+				}
+			}
+			size, err := strconv.ParseUint(string(sizeBytes[:digitsEnd]), 16, 64)
+			if err != nil {
+				return body, offset, nil, false, "Invalid chunk size"
+			}
+			offset = lineNext
+			if size == 0 {
+				state.ChunkState = 3
+				continue
+			}
+			state.ChunkRemaining = size
+			state.ChunkState = 1
+		case 1:
+			available := len(data) - offset
+			if available == 0 {
+				return body, offset, nil, false, ""
+			}
+			count := uint64(available)
+			if count > state.ChunkRemaining {
+				count = state.ChunkRemaining
+			}
+			end := offset + int(count)
+			body = append(body, data[offset:end]...)
+			offset = end
+			state.ChunkRemaining -= count
+			if state.ChunkRemaining > 0 {
+				return body, offset, nil, false, ""
+			}
+			state.ChunkState = 2
+		case 2:
+			if offset == len(data) {
+				return body, offset, nil, false, ""
+			}
+			switch data[offset] {
+			case '\r':
+				if offset+1 == len(data) {
+					if state.LenientFlags&128 == 0 {
+						return body, offset, nil, false, ""
 					}
-					return body, 0, nil, false, ""
-				}
-				if end == offset {
-					return body, next, trailers, true, ""
-				}
-				name, value, ok := strings.Cut(string(data[offset:end]), ":")
-				if !ok || !TsNodeHTTPCommonHTTPToken(name) {
-					return body, 0, nil, false, "Invalid chunk trailer"
-				}
-				value = strings.TrimRight(strings.TrimLeft(value, " \t"), " \t")
-				if TsNodeHTTPCommonHeaderValueInvalid(value, lenientFlags&1024 != 0) {
-					return body, 0, nil, false, "Invalid chunk trailer"
-				}
-				trailers = append(trailers, TsNodeHTTPCommonKey(name), TsNodeHTTPCommonKey(value))
-				offset = next
-			}
-		}
-		if size > uint64(len(data)-offset) {
-			body = append(body, data[offset:]...)
-			return body, 0, nil, false, ""
-		}
-		chunkSize := int(size)
-		body = append(body, data[offset:offset+chunkSize]...)
-		offset += chunkSize
-		if offset == len(data) {
-			return body, 0, nil, false, ""
-		}
-		switch data[offset] {
-		case '\r':
-			if offset+1 == len(data) {
-				if lenientFlags&128 != 0 {
+					offset++
+				} else if data[offset+1] == '\n' {
+					offset += 2
+				} else if state.LenientFlags&128 != 0 {
 					offset++
 				} else {
-					return body, 0, nil, false, ""
+					return body, offset, nil, false, "Invalid chunk terminator"
 				}
-			} else if data[offset+1] == '\n' {
-				offset += 2
-			} else if lenientFlags&128 != 0 {
+			case '\n':
+				if state.LenientFlags&256 == 0 {
+					return body, offset, nil, false, "Invalid chunk terminator"
+				}
 				offset++
-			} else {
-				return body, 0, nil, false, "Invalid chunk terminator"
+			default:
+				if state.LenientFlags&128 == 0 {
+					return body, offset, nil, false, "Invalid chunk terminator"
+				}
 			}
-		case '\n':
-			if lenientFlags&256 != 0 {
-				offset++
-			} else {
-				return body, 0, nil, false, "Invalid chunk terminator"
+			state.ChunkState = 0
+		case 3:
+			lineEnd, lineNext, complete, invalidLineEnding := TsNodeHTTPCommonChunkLine(data, offset, state.LenientFlags)
+			if !complete {
+				if invalidLineEnding {
+					return body, offset, nil, false, "Invalid chunk line ending"
+				}
+				if len(data)-offset > 16_384 {
+					return body, offset, nil, false, "Invalid chunk trailer"
+				}
+				return body, offset, nil, false, ""
 			}
+			if lineEnd == offset {
+				offset = lineNext
+				trailers := append([]TsValue(nil), state.ChunkTrailers...)
+				state.ChunkTrailers = nil
+				state.ChunkState = 0
+				return body, offset, trailers, true, ""
+			}
+			pairs, badLine := TsNodeHTTPCommonHeaderPairs([]string{string(data[offset:lineEnd])}, 0, state.LenientFlags)
+			if badLine != "" || len(pairs) != 2 {
+				return body, offset, nil, false, "Invalid chunk trailer"
+			}
+			if maxTrailerPairs <= 0 || len(state.ChunkTrailers)/2 < maxTrailerPairs {
+				state.ChunkTrailers = append(state.ChunkTrailers, pairs...)
+			}
+			offset = lineNext
 		default:
-			if lenientFlags&128 == 0 {
-				return body, 0, nil, false, "Invalid chunk terminator"
-			}
+			return body, offset, nil, false, "Invalid chunk size"
 		}
 	}
 }
+
 func TsNodeHTTPCommonParserExecute(loop *TsLoop, parser TsValue, data TsValue) TsValue {
 	state := TsNodeHTTPCommonStateFor(parser)
 	if state == nil {
@@ -17404,8 +17553,19 @@ func TsNodeHTTPCommonParserExecute(loop *TsLoop, parser TsValue, data TsValue) T
 	state.InExecute = true
 	defer func() { state.InExecute = false }()
 	chunk := TsFSBytes(data)
+	bufferedBefore := len(state.Buffer)
 	state.Current = append(state.Current[:0], chunk...)
 	state.Buffer = append(state.Buffer, chunk...)
+	parsedFromCurrent := func(total int) int {
+		parsed := total - bufferedBefore
+		if parsed < 0 {
+			return 0
+		}
+		if parsed > len(chunk) {
+			return len(chunk)
+		}
+		return parsed
+	}
 	if state.Paused {
 		return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_PAUSED", "Paused")
 	}
@@ -17424,7 +17584,7 @@ parseNextMessage:
 			return TsNumberValue(float64(len(chunk)))
 		}
 		state.Buffer = nil
-		return TsNumberValue(float64(totalParsed))
+		return TsNumberValue(float64(parsedFromCurrent(totalParsed)))
 	}
 	if len(state.Buffer) > 0 {
 		TsNodeHTTPCommonParserMessageBegin(loop, parser, state)
@@ -17433,6 +17593,17 @@ parseNextMessage:
 		}
 	}
 	boundary := bytes.Index(state.Buffer, []byte("\r\n\r\n"))
+	http09Request := false
+	if boundary < 0 && state.ParserType == 1 {
+		// HTTP/0.9 has no header section: its request line is followed directly
+		// by the end of the request. Recognize that form only after the CRLF is
+		// complete, so a fragmented request line remains buffered as usual.
+		requestLineEnd := bytes.Index(state.Buffer, []byte("\r\n"))
+		if requestLineEnd >= 0 && len(strings.Fields(string(state.Buffer[:requestLineEnd]))) == 2 {
+			boundary = requestLineEnd
+			http09Request = true
+		}
+	}
 	if boundary < 0 {
 		if state.MaxHeaderSize > 0 && uint64(len(state.Buffer)) > state.MaxHeaderSize {
 			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_HEADER_OVERFLOW", "Header overflow")
@@ -17440,6 +17611,9 @@ parseNextMessage:
 		return TsNumberValue(float64(len(chunk)))
 	}
 	headerEnd := boundary + 4
+	if http09Request {
+		headerEnd = boundary + 2
+	}
 	if state.MaxHeaderSize > 0 && uint64(headerEnd) > state.MaxHeaderSize {
 		return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_HEADER_OVERFLOW", "Header overflow")
 	}
@@ -17473,7 +17647,18 @@ parseNextMessage:
 			state.HeaderDone = false
 			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_VERSION", "Invalid HTTP version")
 		}
-		statusToken := parts[1]
+		line := lines[0]
+		versionEnd := strings.IndexByte(line, ' ')
+		if versionEnd < 0 || versionEnd+1 >= len(line) || line[versionEnd+1] == ' ' {
+			state.HeaderDone = false
+			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_STATUS", "Invalid status code")
+		}
+		rest := line[versionEnd+1:]
+		statusEnd := strings.IndexByte(rest, ' ')
+		statusToken := rest
+		if statusEnd >= 0 {
+			statusToken = rest[:statusEnd]
+		}
 		if len(statusToken) != 3 {
 			state.HeaderDone = false
 			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_STATUS", "Invalid status code")
@@ -17487,14 +17672,14 @@ parseNextMessage:
 		code, _ := strconv.Atoi(statusToken)
 		status = TsNumberValue(float64(code))
 		statusMessage = TsNodeHTTPCommonKey("")
-		line := lines[0]
-		versionEnd := strings.IndexByte(line, ' ')
-		rest := strings.TrimLeft(line[versionEnd+1:], " ")
-		statusEnd := strings.IndexByte(rest, ' ')
 		if statusEnd >= 0 {
-			statusMessage = TsNodeHTTPCommonKey(strings.TrimLeft(rest[statusEnd+1:], " "))
+			statusMessage = TsNodeHTTPCommonKey(rest[statusEnd+1:])
 		}
 	} else {
+		if strings.ContainsAny(lines[0], "\t\v\f") || strings.HasPrefix(lines[0], " ") || strings.HasSuffix(lines[0], " ") || strings.Contains(lines[0], "  ") {
+			state.HeaderDone = false
+			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_CONSTANT", "Invalid start line")
+		}
 		if len(parts) > 3 {
 			state.HeaderDone = false
 			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_CONSTANT", "Invalid start line")
@@ -17529,6 +17714,10 @@ parseNextMessage:
 			}
 		}
 		methodName := TsNodeHTTPCommonSingleton.AllMethods[int(TsNumber(methodValue))]
+		if major == 0 && minor == 9 && methodName != "GET" {
+			state.HeaderDone = false
+			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_METHOD", "HTTP/0.9 only supports GET")
+		}
 		if protocol == "ICE" && methodName != "SOURCE" {
 			state.HeaderDone = false
 			return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_CONSTANT", "Expected SOURCE method for ICE/x.x request")
@@ -17554,6 +17743,10 @@ parseNextMessage:
 		state.HeaderDone = false
 		return TsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_HEADER_TOKEN", "Invalid header")
 	}
+	if state.ParserType == 1 && major == 0 && minor == 9 && len(pairs) != 0 {
+		state.HeaderDone = false
+		return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_HEADER_TOKEN", "HTTP/0.9 requests cannot include headers")
+	}
 	if state.ParserType == 1 {
 		maxPairs := TsNumber(TsNodeHTTPCommonGet(loop, parser, "maxHeaderPairs"))
 		if maxPairs > 0 && float64(len(pairs)) > maxPairs {
@@ -17563,7 +17756,7 @@ parseNextMessage:
 	}
 	flat := TsArrayValue(&TsArray{Values: pairs})
 	connection, transfer, lengthValue, upgradeValue := "", "", "", ""
-	contentLengthSeen := false
+	contentLengthSeen, transferEncodingSeen := false, false
 	for index := 0; index+1 < len(pairs); index += 2 {
 		key := strings.ToLower(TsText(pairs[index]))
 		value := TsText(pairs[index+1])
@@ -17574,6 +17767,7 @@ parseNextMessage:
 			}
 			connection += strings.ToLower(value)
 		case "transfer-encoding":
+			transferEncodingSeen = true
 			if transfer != "" {
 				transfer += ","
 			}
@@ -17589,12 +17783,20 @@ parseNextMessage:
 			upgradeValue = value
 		}
 	}
-	hasChunked, chunkedLast := TsNodeHTTPCommonTransferChunked(transfer)
-	if state.ParserType == 1 && transfer != "" && !chunkedLast && state.LenientFlags&8 == 0 {
+	hasChunked, chunkedLast, duplicateChunked := TsNodeHTTPCommonTransferChunked(transfer)
+	if transferEncodingSeen && strings.TrimSpace(transfer) == "" {
+		state.HeaderDone = false
+		return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Invalid \x60Transfer-Encoding\x60 header")
+	}
+	if duplicateChunked && state.LenientFlags&8 == 0 {
+		state.HeaderDone = false
+		return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Chunked encoding must not be applied more than once")
+	}
+	if state.ParserType == 1 && transferEncodingSeen && !chunkedLast && state.LenientFlags&8 == 0 {
 		state.HeaderDone = false
 		return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Request has invalid \x60Transfer-Encoding\x60")
 	}
-	if transfer != "" && lengthValue != "" && state.LenientFlags&2 == 0 {
+	if transferEncodingSeen && contentLengthSeen && state.LenientFlags&2 == 0 {
 		state.HeaderDone = false
 		return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_UNEXPECTED_CONTENT_LENGTH", "Content-Length can't be present with Transfer-Encoding")
 	}
@@ -17605,7 +17807,7 @@ parseNextMessage:
 		keepAlive = true
 	}
 	noBodyStatus := status.Kind == TsNumberKind && (int(TsNumber(status)) < 200 || int(TsNumber(status)) == 204 || int(TsNumber(status)) == 304)
-	needsEOF := state.ParserType == 2 && !noBodyStatus && (transfer != "" && !chunkedLast || transfer == "" && lengthValue == "")
+	needsEOF := state.ParserType == 2 && !noBodyStatus && (transferEncodingSeen && !chunkedLast || !transferEncodingSeen && !contentLengthSeen)
 	if needsEOF {
 		keepAlive = false
 	}
@@ -17618,8 +17820,8 @@ parseNextMessage:
 		TsNodeHTTPCommonParserMessageBegin(loop, parser, state)
 		headersValue, callbackURL := flat, urlValue
 		if headerCount := len(pairs) / 2; headerCount > 31 {
-			// Bun's native parser flushes its 32-slot field buffer as it fills.
-			// Preserve the wrapper's slow-path accumulation across those flushes.
+			// The native binding may flush its fixed-size header buffer more than
+			// once. Keep the callback sequence and original field order intact.
 			for start := 0; start < len(pairs); {
 				end := start + 31*2
 				if end > len(pairs) {
@@ -17637,6 +17839,7 @@ parseNextMessage:
 		completeArgs := []TsValue{TsNumberValue(float64(major)), TsNumberValue(float64(minor)), headersValue, methodValue, callbackURL, status, statusMessage, TsBooleanValue(upgrade), shouldKeepAlive}
 		callbackResult := TsNodeHTTPCommonCallback(loop, parser, 2, completeArgs...)
 		state.SkipBody = TsTruthy(callbackResult)
+		state.Upgrade = TsNumber(callbackResult) == 2
 		if state.Paused {
 			return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_PAUSED", "Paused")
 		}
@@ -17645,34 +17848,48 @@ parseNextMessage:
 	if !alreadyParsedHeaders {
 		state.BodyStart = bodyStart
 		state.BodyDelivered = 0
+		state.BodyReceived = 0
+		state.ChunkState = 0
+		state.ChunkRemaining = 0
+		state.ChunkTrailers = nil
 		noBodyStatus := status.Kind == TsNumberKind && (int(TsNumber(status)) < 200 || int(TsNumber(status)) == 204 || int(TsNumber(status)) == 304)
-		state.CloseDelimited = state.ParserType == 2 && lengthValue == "" && !chunkedLast && !noBodyStatus
+		state.CloseDelimited = state.ParserType == 2 && !contentLengthSeen && !chunkedLast && !noBodyStatus
 	}
 	consumedBody := 0
 	var body []byte
 	var trailers []TsValue
 	var chunkError string
 	bodyComplete := false
-	if chunkedLast {
-		body, consumedBody, trailers, bodyComplete, chunkError = TsNodeHTTPCommonChunked(state.Buffer[bodyStart:], state.LenientFlags)
-	} else if lengthValue != "" {
-		length, err := strconv.Atoi(strings.TrimSpace(lengthValue))
-		if err != nil || length < 0 {
+	if state.Upgrade {
+		// Node hands accepted upgrades and CONNECT tunnels to the application at
+		// the end of the headers. Bytes after that boundary belong to the new
+		// protocol even when the HTTP request advertised a body length.
+		bodyComplete = true
+	} else if chunkedLast {
+		maxTrailerPairs := int(TsNumber(TsNodeHTTPCommonGet(loop, parser, "maxHeaderPairs")))
+		body, consumedBody, trailers, bodyComplete, chunkError = TsNodeHTTPCommonChunkedStep(state.Buffer[bodyStart:], state, maxTrailerPairs)
+	} else if contentLengthSeen {
+		length, validLength := TsNodeHTTPCommonParseContentLength(lengthValue)
+		if !validLength {
 			state.HeaderDone = false
 			return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_CONTENT_LENGTH", "Invalid content length")
 		}
 		available := len(state.Buffer) - bodyStart
+		remaining := length - state.BodyReceived
+		if remaining < 0 {
+			state.HeaderDone = false
+			return TsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_CONTENT_LENGTH", "Invalid content length")
+		}
 		bodyLength := available
-		if bodyLength > length {
-			bodyLength = length
+		if int64(bodyLength) > remaining {
+			bodyLength = int(remaining)
 		}
 		if bodyLength > 0 {
 			body = append([]byte(nil), state.Buffer[bodyStart:bodyStart+bodyLength]...)
 		}
-		if available >= length {
-			consumedBody = length
-			bodyComplete = true
-		}
+		consumedBody = bodyLength
+		state.BodyReceived += int64(bodyLength)
+		bodyComplete = int64(available) >= remaining
 	} else if state.CloseDelimited {
 		if bodyStart < len(state.Buffer) {
 			body = append([]byte(nil), state.Buffer[bodyStart:]...)
@@ -17702,6 +17919,18 @@ parseNextMessage:
 		return TsNodeHTTPCommonParseError(loop, parser, boundary, code, reason)
 	}
 	if !bodyComplete {
+		if chunkedLast || contentLengthSeen && !state.CloseDelimited {
+			// Once body bytes have been delivered, keep the request headers and
+			// unread bytes only. Chunk framing state and parsed trailers live in
+			// the parser state, so consumed wire bytes can be discarded here too.
+			remaining := bodyStart + consumedBody
+			if remaining > len(state.Buffer) {
+				remaining = len(state.Buffer)
+			}
+			buffer := append([]byte(nil), state.Buffer[:bodyStart]...)
+			state.Buffer = append(buffer, state.Buffer[remaining:]...)
+			state.BodyDelivered = 0
+		}
 		return TsNumberValue(float64(len(chunk)))
 	}
 	if len(trailers) > 0 {
@@ -17721,24 +17950,30 @@ parseNextMessage:
 	if parsed > len(state.Buffer) {
 		parsed = len(state.Buffer)
 	}
+	upgraded := state.Upgrade
 	state.Buffer = append([]byte(nil), state.Buffer[parsed:]...)
 	state.HeaderDone = false
 	state.SkipBody = false
+	state.Upgrade = false
 	state.CloseDelimited = false
 	state.BodyStart = 0
 	state.BodyDelivered = 0
+	state.BodyReceived = 0
+	state.ChunkState = 0
+	state.ChunkRemaining = 0
+	state.ChunkTrailers = nil
 	if execute := TsGet(loop, parser, TsNodeHTTPCommonIndex(5)); execute.Kind == TsFunctionKind {
-		TsCallReceiver(loop, execute, parser, TsNumberValue(float64(parsed)))
+		TsCallReceiver(loop, execute, parser, TsNumberValue(float64(parsedFromCurrent(parsed))))
 	}
 	totalParsed += parsed
-	if TsTruthy(TsBooleanValue(upgrade)) {
-		return TsNumberValue(float64(totalParsed))
+	if upgraded {
+		return TsNumberValue(float64(parsedFromCurrent(totalParsed)))
 	}
 	if !keepAlive {
 		state.ClosedByMessage = true
 	}
 	if len(state.Buffer) == 0 {
-		return TsNumberValue(float64(totalParsed))
+		return TsNumberValue(float64(parsedFromCurrent(totalParsed)))
 	}
 	goto parseNextMessage
 }
@@ -17890,7 +18125,7 @@ func TsNodeHTTPCommonParserMethod(loop *TsLoop, parser TsValue, name string, arg
 				state.MaxHeaderSize = uint64(TsNumber(maxValue))
 			}
 			if state.MaxHeaderSize == 0 {
-				if maxValue := TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "getMaxHTTPHeaderSize"); TsNumber(maxValue) > 0 {
+				if maxValue := TsCall(loop, TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "getMaxHTTPHeaderSize")); TsNumber(maxValue) > 0 {
 					state.MaxHeaderSize = uint64(TsNumber(maxValue))
 				}
 			}
@@ -17901,10 +18136,15 @@ func TsNodeHTTPCommonParserMethod(loop *TsLoop, parser TsValue, name string, arg
 			state.MessageBegun = false
 			state.Consumed = false
 			state.SkipBody = false
+			state.Upgrade = false
 			state.CloseDelimited = false
 			state.ClosedByMessage = false
 			state.BodyStart = 0
 			state.BodyDelivered = 0
+			state.BodyReceived = 0
+			state.ChunkState = 0
+			state.ChunkRemaining = 0
+			state.ChunkTrailers = nil
 			if !TsNullish(state.Connections) {
 				state.LastMessageStart = state.Started
 				TsNodeHTTPCommonConnectionListPush(loop, state.Connections, parser, false)
@@ -20639,6 +20879,10 @@ func TsNodeHTTPServerMarkListenerClosed(loop *TsLoop, server, generation TsValue
 }
 func TsNodeHTTPServerSetCloseCallback(loop *TsLoop, self, callback TsValue) {
 	current := TsNodeHTTPServerSym(loop, self, "kCloseCallback")
+	if TsIsUndefined(callback) {
+		TsNodeHTTPServerPut(loop, self, "kCloseCallback", TsU)
+		return
+	}
 	if TsStrictEqual(callback, current) {
 		return
 	}
@@ -20819,14 +21063,14 @@ func TsNodeHTTPServerValidate(loop *TsLoop, name string, value TsValue, extra ..
 }
 func TsNodeHTTPServerStoreOptions(loop *TsLoop, server, options TsValue) {
 	for _, entry := range []struct {
-		Name     string
-		Fallback float64
+		Name  string
+		Http1 float64
 	}{{"requestTimeout", 300000}, {"keepAliveTimeout", 5000}, {"keepAliveTimeoutBuffer", 1000}, {"connectionsCheckingInterval", 30000}} {
 		value := TsNodeHTTPServerAPIGet(loop, options, entry.Name)
 		if !TsIsUndefined(value) {
 			TsNodeHTTPServerValidate(loop, "validateInteger", value, TsNodeHTTPServerAPIKey(entry.Name), TsNumberValue(0))
 		} else {
-			value = TsNumberValue(entry.Fallback)
+			value = TsNumberValue(entry.Http1)
 		}
 		TsNodeHTTPServerAPISet(loop, server, entry.Name, value)
 	}
@@ -21045,7 +21289,7 @@ func TsNodeHTTPServerResponseKeepAlive(loop *TsLoop, request TsValue) bool {
 	return true
 }
 func TsNodeHTTPServerResponseCloseOnFinish(loop *TsLoop, response, socket TsValue) {
-	if TsTruthy(TsInternalHTTP1FallbackGet(loop, response, "kMustCloseConnection")) {
+	if TsTruthy(TsNodeHTTP1ServerGet(loop, response, "kMustCloseConnection")) {
 		return
 	}
 	if TsNullish(socket) || TsTruthy(TsNodeHTTPServerGet(loop, socket, "destroyed")) {
@@ -21055,7 +21299,7 @@ func TsNodeHTTPServerResponseCloseOnFinish(loop *TsLoop, response, socket TsValu
 	if !TsNullish(current) && !TsStrictEqual(current, response) {
 		return
 	}
-	queue := TsInternalHTTP1FallbackSym(loop, socket, "kQueue")
+	queue := TsNodeHTTP1ServerSym(loop, socket, "kQueue")
 	if queue.Kind == TsArrayKind && len((*TsArray)(queue.Ref).Values) > 0 {
 		return
 	}
@@ -21108,7 +21352,7 @@ func TsNodeHTTPServerQueuePipelinedOp(loop *TsLoop, response, queue TsValue, kin
 	needDrain := total >= mark
 	TsNodeHTTPServerSet(loop, queue, "needDrain", TsBooleanValue(needDrain))
 	if needDrain && !TsNullish(socket) {
-		TsInternalHTTP1FallbackCallPipeline(loop, TsInternalHTTP1FallbackPipeline(loop), "maybePauseFallbackReads", socket)
+		TsNodeHTTP1ServerCallPipeline(loop, TsNodeHTTP1ServerPipeline(loop), "maybePauseHTTP1Reads", socket)
 	}
 	return !needDrain
 }
@@ -21129,7 +21373,7 @@ func TsNodeHTTPServerResponseWrite(loop *TsLoop, response TsValue, args []TsValu
 	if finished.Kind == TsFunctionKind && TsTruthy(TsCall(loop, finished, response, chunk, callback, TsBooleanValue(false))) {
 		return TsBooleanValue(false)
 	}
-	queued := TsInternalHTTP1FallbackSym(loop, response, "kQueueState")
+	queued := TsNodeHTTP1ServerSym(loop, response, "kQueueState")
 	if !TsNullish(queued) {
 		if !TsTruthy(TsNodeHTTPServerGet(loop, response, "_header")) {
 			TsNodeHTTPServerCall(loop, response, "_implicitHeader")
@@ -21219,7 +21463,7 @@ func TsNodeHTTPServerResponseEnd(loop *TsLoop, response TsValue, args []TsValue)
 	if finished.Kind == TsFunctionKind && TsTruthy(TsCall(loop, finished, response, chunk, callback, TsBooleanValue(true))) {
 		return response
 	}
-	queued := TsInternalHTTP1FallbackSym(loop, response, "kQueueState")
+	queued := TsNodeHTTP1ServerSym(loop, response, "kQueueState")
 	if !TsNullish(queued) {
 		if !TsTruthy(TsNodeHTTPServerGet(loop, response, "_header")) {
 			TsNodeHTTPServerCall(loop, response, "_implicitHeader")
@@ -21324,32 +21568,56 @@ func TsNodeHTTPServerWriteHead(loop *TsLoop, response TsValue, args []TsValue) T
 			TsNodeHTTPOutgoingCall(loop, response, "setHeader", key, TsGet(loop, headers, key))
 		}
 	}
-	if !TsTruthy(TsNodeHTTPOutgoingCall(loop, response, "hasHeader", TsNodeHTTPServerAPIKey("connection"))) {
+	connectionHeaderExplicit := TsTruthy(TsNodeHTTPOutgoingCall(loop, response, "hasHeader", TsNodeHTTPServerAPIKey("connection")))
+	keepAliveHeaderExplicit := TsTruthy(TsNodeHTTPOutgoingCall(loop, response, "hasHeader", TsNodeHTTPServerAPIKey("keep-alive")))
+	if !connectionHeaderExplicit {
 		if TsTruthy(TsNodeHTTPServerAPIGet(loop, response, "shouldKeepAlive")) {
 			TsNodeHTTPOutgoingCall(loop, response, "setHeader", TsNodeHTTPServerAPIKey("Connection"), TsNodeHTTPServerAPIKey("keep-alive"))
 			timeout := TsNodeHTTPServerAPIGet(loop, response, "_keepAliveTimeout")
 			if TsIsNumeric(timeout) && TsNumber(timeout) > 0 {
 				socket := TsNodeHTTPIncomingGet(loop, TsNodeHTTPServerAPIGet(loop, response, "req"), "socket")
-				httpServer := TsNodeHTTPServerAPIGet(loop, socket, "server")
+				httpServer := TsNodeHTTPServerGet(loop, socket, "server")
 				buffer := TsNodeHTTPServerAPIGet(loop, httpServer, "keepAliveTimeoutBuffer")
 				total := TsNumber(timeout) + TsNumber(buffer)
-				TsNodeHTTPOutgoingCall(loop, response, "setHeader", TsNodeHTTPServerAPIKey("Keep-Alive"), TsNodeHTTPServerAPIKey("timeout="+strconv.Itoa(int(math.Floor(total/1000)))))
+				keepAlive := "timeout=" + strconv.Itoa(int(math.Floor(total/1000)))
+				maxRequests := TsNodeHTTPServerGet(loop, response, "_maxRequestsPerSocket")
+				if !keepAliveHeaderExplicit && TsIsNumeric(maxRequests) && TsNumber(maxRequests) > 0 {
+					keepAlive += ", max=" + strconv.Itoa(int(TsNumber(maxRequests)))
+				}
+				if !keepAliveHeaderExplicit {
+					TsNodeHTTPOutgoingCall(loop, response, "setHeader", TsNodeHTTPServerAPIKey("Keep-Alive"), TsNodeHTTPServerAPIKey(keepAlive))
+				}
 			}
 		} else {
 			TsNodeHTTPOutgoingCall(loop, response, "setHeader", TsNodeHTTPServerAPIKey("Connection"), TsNodeHTTPServerAPIKey("close"))
-			pipeline := TsInternalHTTP1FallbackPipeline(loop)
-			closeKey := TsInternalHTTP1FallbackGet(loop, pipeline, "kMustCloseConnection")
+			pipeline := TsNodeHTTP1ServerPipeline(loop)
+			closeKey := TsNodeHTTP1ServerGet(loop, pipeline, "kMustCloseConnection")
 			TsSet(loop, response, closeKey, TsBooleanValue(true))
 		}
+	}
+	transferEncoding := TsNodeHTTPOutgoingHeaderGet(loop, response, TsNodeHTTPServerAPIKey("transfer-encoding"))
+	chunkedTransferEncoding, _, _ := TsNodeHTTPCommonTransferChunked(TsNodeHTTPOutgoingText(loop, transferEncoding))
+	forceClose := TsTruthy(TsNodeHTTPServerGet(loop, response, "maxRequestsOnConnectionReached")) && !connectionHeaderExplicit || (code == 204 || code == 304) && chunkedTransferEncoding
+	if forceClose {
+		if !connectionHeaderExplicit {
+			TsNodeHTTPOutgoingCall(loop, response, "removeHeader", TsNodeHTTPServerAPIKey("connection"))
+			if !keepAliveHeaderExplicit {
+				TsNodeHTTPOutgoingCall(loop, response, "removeHeader", TsNodeHTTPServerAPIKey("keep-alive"))
+			}
+			TsNodeHTTPOutgoingCall(loop, response, "setHeader", TsNodeHTTPServerAPIKey("Connection"), TsNodeHTTPServerAPIKey("close"))
+		}
+		pipeline := TsNodeHTTP1ServerPipeline(loop)
+		closeKey := TsNodeHTTP1ServerGet(loop, pipeline, "kMustCloseConnection")
+		TsSet(loop, response, closeKey, TsBooleanValue(true))
 	}
 	statusLine := "HTTP/1.1 " + strconv.Itoa(code) + " " + TsText(TsNodeHTTPServerAPIGet(loop, response, "statusMessage")) + "\r\n"
 	TsNodeHTTPOutgoingSet(loop, response, "_header", TsNodeHTTPServerAPIKey(statusLine))
 	TsNodeHTTPOutgoingCall(loop, response, "_storeHeader", TsNodeHTTPServerAPIKey(statusLine), TsNodeHTTPOutgoingSymbol(loop, response, TsNodeHTTPOutgoingSingleton.KOutHeaders))
 	connectionHeader := TsNodeHTTPOutgoingHeaderGet(loop, response, TsNodeHTTPServerAPIKey("connection"))
-	closeConnection := !TsTruthy(TsNodeHTTPServerAPIGet(loop, response, "shouldKeepAlive")) || (connectionHeader.Kind == TsStringKind && strings.Contains(strings.ToLower(TsText(connectionHeader)), "close"))
+	closeConnection := forceClose || !TsTruthy(TsNodeHTTPServerAPIGet(loop, response, "shouldKeepAlive")) || (connectionHeader.Kind == TsStringKind && TsNodeHTTPCommonHasBoundaryToken(TsText(connectionHeader), "close"))
 	if closeConnection {
-		pipeline := TsInternalHTTP1FallbackPipeline(loop)
-		closeKey := TsInternalHTTP1FallbackGet(loop, pipeline, "kMustCloseConnection")
+		pipeline := TsNodeHTTP1ServerPipeline(loop)
+		closeKey := TsNodeHTTP1ServerGet(loop, pipeline, "kMustCloseConnection")
 		TsSet(loop, response, closeKey, TsBooleanValue(true))
 	}
 	handle := TsNodeHTTPServerSym(loop, response, "kHandle")
@@ -21357,6 +21625,9 @@ func TsNodeHTTPServerWriteHead(loop *TsLoop, response TsValue, args []TsValue) T
 		autoBits := 0
 		if TsTruthy(TsNodeHTTPServerAPIGet(loop, response, "sendDate")) {
 			autoBits |= 1
+		}
+		if !TsTruthy(TsNodeHTTPServerAPIGet(loop, response, "_hasBody")) {
+			autoBits |= 32
 		}
 		if closeConnection {
 			autoBits |= 4
@@ -21412,9 +21683,9 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 		return receiver
 	case "serverCloseAll", "serverCloseIdle":
 		if name == "serverCloseIdle" {
-			TsInternalHTTP1FallbackCloseIdle(loop, receiver)
+			TsNodeHTTP1ServerCloseIdle(loop, receiver)
 		} else {
-			TsInternalHTTP1FallbackCloseAll(loop, receiver)
+			TsNodeHTTP1ServerCloseAll(loop, receiver)
 		}
 		tracked := TsNodeHTTPServerSym(loop, receiver, "kTrackedConnections")
 		if tracked.Kind == TsCollectionKind {
@@ -21621,8 +21892,8 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 		http1Options.Set("IncomingMessage", incoming)
 		http1Options.Set("ServerResponse", response)
 		options.Set("http1Options", TsObjectValue(http1Options))
-		fallback := TsInternalHTTP1FallbackModule(loop)
-		fn := TsInternalHTTP1FallbackGet(loop, fallback, "connectionListenerHTTP1")
+		http1 := TsNodeHTTP1ServerModule(loop)
+		fn := TsNodeHTTP1ServerGet(loop, http1, "connectionListenerHTTP1")
 		if fn.Kind == TsFunctionKind {
 			TsCall(loop, fn, receiver, socket, TsObjectValue(options))
 		}
@@ -21685,7 +21956,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 	case "responseWriteRaw":
 		chunk, encoding, callback := arg(0), arg(1), arg(2)
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
-		if TsNullish(handle) || !TsNullish(TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")) {
+		if TsNullish(handle) || !TsNullish(TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")) {
 			return TsNodeHTTPOutgoingWriteRaw(loop, receiver, chunk, encoding, callback)
 		}
 		TsNodeHTTPServerCall(loop, handle, "writeInformational", chunk, encoding)
@@ -21696,7 +21967,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 	case "responseSend":
 		data, encoding, callback := arg(0), arg(1), arg(2)
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
-		if TsNullish(handle) || !TsNullish(TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")) {
+		if TsNullish(handle) || !TsNullish(TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")) {
 			return TsNodeHTTPOutgoingMethod(loop, receiver, "_send", args)
 		}
 		if !TsTruthy(TsNodeHTTPServerGet(loop, receiver, "_header")) {
@@ -21712,7 +21983,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 			panic(TsThrown{TsFSException("Error", "ERR_HTTP_HEADERS_SENT", "Cannot write headers after they are sent to the client")})
 		}
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
-		if TsNullish(handle) || !TsNullish(TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")) {
+		if TsNullish(handle) || !TsNullish(TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")) {
 			TsNodeHTTPServerMethod(loop, "responseWriteInformation", receiver, []TsValue{TsNumberValue(100), TsNull, arg(0)})
 		} else {
 			TsNodeHTTPServerCall(loop, handle, "writeContinue")
@@ -21778,7 +22049,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 			return receiver
 		}
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
-		if !TsNullish(handle) && TsNullish(TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")) {
+		if !TsNullish(handle) && TsNullish(TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")) {
 			TsNodeHTTPServerCall(loop, handle, "abort")
 		}
 		callbacks := TsNodeHTTPServerSym(loop, receiver, "kPendingCallbacks")
@@ -21891,7 +22162,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 		}
 		return TsU
 	case "responseSocket":
-		queued := TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")
+		queued := TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")
 		if !TsNullish(queued) {
 			return TsNull
 		}
@@ -21939,7 +22210,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 		return TsBooleanValue(true)
 	case "responseWritableNeedDrain":
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
-		queued := TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")
+		queued := TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")
 		return TsBooleanValue(!TsTruthy(TsNodeHTTPServerAPIGet(loop, receiver, "destroyed")) && !TsTruthy(TsNodeHTTPServerAPIGet(loop, receiver, "finished")) && (TsNumber(TsNodeHTTPServerGet(loop, handle, "bufferedAmount")) != 0 || TsTruthy(TsNodeHTTPServerGet(loop, handle, "onwritable")) || TsTruthy(TsNodeHTTPServerSym(loop, receiver, "kNeedDrain")) || TsNumber(TsNodeHTTPServerSym(loop, receiver, "kBytesBuffered")) >= TsNumber(TsNodeHTTPServerGet(loop, receiver, "writableHighWaterMark")) || TsTruthy(TsNodeHTTPServerGet(loop, queued, "needDrain"))))
 	case "responseWritableFinished":
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
@@ -21951,7 +22222,7 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 		length := TsNumber(TsNodeHTTPServerSym(loop, receiver, "kBytesBuffered"))
 		handle := TsNodeHTTPServerSym(loop, receiver, "kHandle")
 		length += TsNumber(TsNodeHTTPServerGet(loop, handle, "bufferedAmount"))
-		queued := TsInternalHTTP1FallbackSym(loop, receiver, "kQueueState")
+		queued := TsNodeHTTP1ServerSym(loop, receiver, "kQueueState")
 		length += TsNumber(TsNodeHTTPServerGet(loop, queued, "bytes"))
 		return TsNumberValue(length)
 	case "responseHighWaterMark":
@@ -21972,13 +22243,13 @@ func TsNodeHTTPServerMethod(loop *TsLoop, name string, receiver TsValue, args []
 	case "responseHeaderGet":
 		return TsNodeHTTPOutgoingHeaderGet(loop, receiver, arg(0))
 	case "responseShouldKeepAliveGet":
-		value := TsNodeHTTPServerGet(loop, receiver, "shouldKeepAlive")
+		value := TsNodeHTTPServerSym(loop, receiver, "kShouldKeepAlive")
 		if TsIsUndefined(value) {
 			return TsBooleanValue(true)
 		}
 		return value
 	case "responseShouldKeepAliveSet":
-		TsNodeHTTPServerAPISet(loop, receiver, "shouldKeepAlive", arg(0))
+		TsNodeHTTPServerPut(loop, receiver, "kShouldKeepAlive", arg(0))
 		return TsU
 	case "responseClosed":
 		return TsNodeHTTPServerAPIGet(loop, receiver, "_closed")
@@ -22082,9 +22353,8 @@ func TsNodeHTTPServerListen(loop *TsLoop, server TsValue, args []TsValue) TsValu
 		normalized := TsNodeNetNormalizeArgs(loop, args)
 		options = TsArg((*TsArray)(normalized.Ref).Values, 0)
 	}
-	innerArgs := []TsValue{options}
 	if callback.Kind == TsFunctionKind {
-		innerArgs = append(innerArgs, callback)
+		TsNodeHTTPServerCall(loop, server, "once", TsNodeHTTPServerAPIKey("listening"), callback)
 	}
 	tls := TsNodeHTTPServerSym(loop, server, "tlsSymbol")
 	var inner TsValue
@@ -22095,7 +22365,7 @@ func TsNodeHTTPServerListen(loop *TsLoop, server TsValue, args []TsValue) TsValu
 		tlsOptionsValue := TsObjectValue(tlsOptions)
 		inner = TsNodeTLSCreateServer(loop, []TsValue{tlsOptionsValue})
 	} else {
-		inner = TsNodeNetServerCreate(loop, options, callback)
+		inner = TsNodeNetServerCreate(loop, options)
 	}
 	TsNodeHTTPServerPut(loop, server, "serverSymbol", inner)
 	connection := TsFunctionValue(TsFunc(func(loop *TsLoop, values ...TsValue) TsValue {
@@ -22116,6 +22386,9 @@ func TsNodeHTTPServerListen(loop *TsLoop, server TsValue, args []TsValue) TsValu
 		TsNodeHTTPServerCall(loop, inner, "on", TsNodeHTTPServerAPIKey("secureConnection"), secure)
 	}
 	errorListener := TsFunctionValue(TsFunc(func(loop *TsLoop, values ...TsValue) TsValue {
+		if !TsNodeNetServerListening(loop, inner) && TsStrictEqual(TsNodeHTTPServerSym(loop, server, "serverSymbol"), inner) {
+			TsNodeHTTPServerPut(loop, server, "serverSymbol", TsNull)
+		}
 		TsNodeHTTPServerDispatch(loop, "emitListenErrorNextTick", server, []TsValue{server, TsArg(values, 0)})
 		return TsU
 	}))
@@ -22129,9 +22402,9 @@ func TsNodeHTTPServerListen(loop *TsLoop, server TsValue, args []TsValue) TsValu
 	}))
 	TsNodeHTTPServerCall(loop, inner, "once", TsNodeHTTPServerAPIKey("close"), closeListener)
 	if !TsNullish(tls) {
-		TsNodeTLSServerListen(loop, inner, []TsValue{options, callback})
+		TsNodeTLSServerListen(loop, inner, []TsValue{options})
 	} else {
-		TsNodeNetListen(loop, inner, options, callback)
+		TsNodeNetListen(loop, inner, options)
 	}
 	return server
 }
@@ -23040,7 +23313,7 @@ func TsNodeHTTPSModule(loop *TsLoop) TsValue {
 	return TsNodeHTTPSingleton.Module
 }
 
-type TsHTTP1FallbackResponseState struct {
+type TsNodeHTTP1ResponseState struct {
 	Socket           TsValue
 	Handle           TsValue
 	Head             TsValue
@@ -23059,103 +23332,101 @@ type TsHTTP1FallbackResponseState struct {
 	BytesWritten     uint64
 }
 
-var TsInternalHTTP1FallbackSingleton struct {
+var TsNodeHTTP1ServerSingleton struct {
 	sync.Once
 	KConnections, KActiveRequests, KMessageOpen, KPendingCallbacks TsValue
 	KQueue, KQueueState, KMustCloseConnection                      TsValue
-	Module                                                         TsValue
+	Module, Pipeline                                               TsValue
 }
 
-func TsInternalHTTP1FallbackKey(name string) TsValue { return TsStringReference(TsStringUTF8(name)) }
-func TsInternalHTTP1FallbackGet(loop *TsLoop, value TsValue, name string) TsValue {
-	return TsGet(loop, value, TsInternalHTTP1FallbackKey(name))
+func TsNodeHTTP1ServerKey(name string) TsValue { return TsStringReference(TsStringUTF8(name)) }
+func TsNodeHTTP1ServerGet(loop *TsLoop, value TsValue, name string) TsValue {
+	return TsGet(loop, value, TsNodeHTTP1ServerKey(name))
 }
-func TsInternalHTTP1FallbackSet(loop *TsLoop, value TsValue, name string, next TsValue) {
-	TsSet(loop, value, TsInternalHTTP1FallbackKey(name), next)
+func TsNodeHTTP1ServerSet(loop *TsLoop, value TsValue, name string, next TsValue) {
+	TsSet(loop, value, TsNodeHTTP1ServerKey(name), next)
 }
-func TsInternalHTTP1FallbackSym(loop *TsLoop, value TsValue, name string) TsValue {
-	TsInternalHTTP1FallbackInit(loop)
+func TsNodeHTTP1ServerSym(loop *TsLoop, value TsValue, name string) TsValue {
+	TsNodeHTTP1ServerInit(loop)
 	var key TsValue
 	switch name {
 	case "kHttp1Connections":
-		key = TsInternalHTTP1FallbackSingleton.KConnections
+		key = TsNodeHTTP1ServerSingleton.KConnections
 	case "kHttp1ActiveRequests":
-		key = TsInternalHTTP1FallbackSingleton.KActiveRequests
+		key = TsNodeHTTP1ServerSingleton.KActiveRequests
 	case "kHttp1MessageOpen":
-		key = TsInternalHTTP1FallbackSingleton.KMessageOpen
+		key = TsNodeHTTP1ServerSingleton.KMessageOpen
 	case "kPendingCallbacks":
-		key = TsInternalHTTP1FallbackSingleton.KPendingCallbacks
+		key = TsNodeHTTP1ServerSingleton.KPendingCallbacks
 	case "kQueue":
-		key = TsInternalHTTP1FallbackSingleton.KQueue
+		key = TsNodeHTTP1ServerSingleton.KQueue
 	case "kQueueState":
-		key = TsInternalHTTP1FallbackSingleton.KQueueState
+		key = TsNodeHTTP1ServerSingleton.KQueueState
 	case "kMustCloseConnection":
-		key = TsInternalHTTP1FallbackSingleton.KMustCloseConnection
+		key = TsNodeHTTP1ServerSingleton.KMustCloseConnection
 	}
 	return TsGet(loop, value, key)
 }
-func TsInternalHTTP1FallbackPut(loop *TsLoop, value TsValue, name string, next TsValue) {
-	TsInternalHTTP1FallbackInit(loop)
+func TsNodeHTTP1ServerPut(loop *TsLoop, value TsValue, name string, next TsValue) {
+	TsNodeHTTP1ServerInit(loop)
 	var key TsValue
 	switch name {
 	case "kHttp1Connections":
-		key = TsInternalHTTP1FallbackSingleton.KConnections
+		key = TsNodeHTTP1ServerSingleton.KConnections
 	case "kHttp1ActiveRequests":
-		key = TsInternalHTTP1FallbackSingleton.KActiveRequests
+		key = TsNodeHTTP1ServerSingleton.KActiveRequests
 	case "kHttp1MessageOpen":
-		key = TsInternalHTTP1FallbackSingleton.KMessageOpen
+		key = TsNodeHTTP1ServerSingleton.KMessageOpen
 	case "kPendingCallbacks":
-		key = TsInternalHTTP1FallbackSingleton.KPendingCallbacks
+		key = TsNodeHTTP1ServerSingleton.KPendingCallbacks
 	case "kQueue":
-		key = TsInternalHTTP1FallbackSingleton.KQueue
+		key = TsNodeHTTP1ServerSingleton.KQueue
 	case "kQueueState":
-		key = TsInternalHTTP1FallbackSingleton.KQueueState
+		key = TsNodeHTTP1ServerSingleton.KQueueState
 	case "kMustCloseConnection":
-		key = TsInternalHTTP1FallbackSingleton.KMustCloseConnection
+		key = TsNodeHTTP1ServerSingleton.KMustCloseConnection
 	}
 	TsSet(loop, value, key, next)
 }
-func TsInternalHTTP1FallbackInit(loop *TsLoop) {
-	TsInternalHTTP1FallbackSingleton.Do(func() {
-		symbolFor := TsGet(loop, TsSymbolFunction(), TsInternalHTTP1FallbackKey("for"))
-		TsInternalHTTP1FallbackSingleton.KConnections = TsCall(loop, symbolFor, TsInternalHTTP1FallbackKey("http1Connections"))
-		TsInternalHTTP1FallbackSingleton.KActiveRequests = TsCall(loop, symbolFor, TsInternalHTTP1FallbackKey("http1ActiveRequests"))
-		TsInternalHTTP1FallbackSingleton.KMessageOpen = TsCall(loop, symbolFor, TsInternalHTTP1FallbackKey("http1MessageOpen"))
-		TsInternalHTTP1FallbackSingleton.KPendingCallbacks = TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "kPendingCallbacks")
-		TsInternalHTTP1FallbackSingleton.KQueue = TsCall(loop, symbolFor, TsInternalHTTP1FallbackKey("http1ResponseQueue"))
-		TsInternalHTTP1FallbackSingleton.KQueueState = TsCall(loop, symbolFor, TsInternalHTTP1FallbackKey("http1QueuedResponse"))
-		TsInternalHTTP1FallbackSingleton.KMustCloseConnection = TsCall(loop, symbolFor, TsInternalHTTP1FallbackKey("kMustCloseConnection"))
+func TsNodeHTTP1ServerInit(loop *TsLoop) {
+	TsNodeHTTP1ServerSingleton.Do(func() {
+		symbolFor := TsGet(loop, TsSymbolFunction(), TsNodeHTTP1ServerKey("for"))
+		TsNodeHTTP1ServerSingleton.KConnections = TsCall(loop, symbolFor, TsNodeHTTP1ServerKey("http1Connections"))
+		TsNodeHTTP1ServerSingleton.KActiveRequests = TsCall(loop, symbolFor, TsNodeHTTP1ServerKey("http1ActiveRequests"))
+		TsNodeHTTP1ServerSingleton.KMessageOpen = TsCall(loop, symbolFor, TsNodeHTTP1ServerKey("http1MessageOpen"))
+		TsNodeHTTP1ServerSingleton.KPendingCallbacks = TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "kPendingCallbacks")
+		TsNodeHTTP1ServerSingleton.KQueue = TsCall(loop, symbolFor, TsNodeHTTP1ServerKey("http1ResponseQueue"))
+		TsNodeHTTP1ServerSingleton.KQueueState = TsCall(loop, symbolFor, TsNodeHTTP1ServerKey("http1QueuedResponse"))
+		TsNodeHTTP1ServerSingleton.KMustCloseConnection = TsCall(loop, symbolFor, TsNodeHTTP1ServerKey("kMustCloseConnection"))
 	})
 }
-func TsInternalHTTP1FallbackRethrow(loop *TsLoop, err TsValue) {
+func TsNodeHTTP1ServerRethrow(loop *TsLoop, err TsValue) {
 	callback := TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue { panic(TsThrown{TsArg(args, 0)}) }))
 	TsInternalHTTPNextTick(loop, callback, err)
 }
-func TsInternalHTTP1FallbackSafeCallback(loop *TsLoop, callback TsValue, args ...TsValue) {
+func TsNodeHTTP1ServerSafeCallback(loop *TsLoop, callback TsValue, args ...TsValue) {
 	if callback.Kind != TsFunctionKind {
 		return
 	}
 	var thrown any
 	func() { defer func() { thrown = recover() }(); TsCall(loop, callback, args...) }()
 	if thrown != nil {
-		TsInternalHTTP1FallbackRethrow(loop, TsUnwrap(thrown))
+		TsNodeHTTP1ServerRethrow(loop, TsUnwrap(thrown))
 	}
 }
-func TsInternalHTTP1FallbackFailPending(loop *TsLoop, response, err TsValue) {
-	TsInternalHTTP1FallbackInit(loop)
-	callbacks := TsGet(loop, response, TsInternalHTTP1FallbackSingleton.KPendingCallbacks)
-	TsSet(loop, response, TsInternalHTTP1FallbackSingleton.KPendingCallbacks, TsArrayValue(&TsArray{}))
+func TsNodeHTTP1ServerFailPending(loop *TsLoop, response, err TsValue) {
+	TsNodeHTTP1ServerInit(loop)
+	callbacks := TsGet(loop, response, TsNodeHTTP1ServerSingleton.KPendingCallbacks)
+	TsSet(loop, response, TsNodeHTTP1ServerSingleton.KPendingCallbacks, TsArrayValue(&TsArray{}))
 	if callbacks.Kind != TsArrayKind {
 		return
 	}
 	for _, callback := range (*TsArray)(callbacks.Ref).Values {
-		TsInternalHTTP1FallbackSafeCallback(loop, callback, err)
+		TsNodeHTTP1ServerSafeCallback(loop, callback, err)
 	}
 }
-func TsInternalHTTP1FallbackDate() string {
-	return time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT")
-}
-func TsInternalHTTP1FallbackToBuffer(loop *TsLoop, chunk, encoding TsValue) TsValue {
+func TsNodeHTTP1ServerDate() string { return time.Now().UTC().Format("Mon, 02 Jan 2006 15:04:05 GMT") }
+func TsNodeHTTP1ServerToBuffer(loop *TsLoop, chunk, encoding TsValue) TsValue {
 	if TsNullish(chunk) {
 		return TsNull
 	}
@@ -23164,11 +23435,11 @@ func TsInternalHTTP1FallbackToBuffer(loop *TsLoop, chunk, encoding TsValue) TsVa
 	}
 	return chunk
 }
-func TsInternalHTTP1FallbackString(loop *TsLoop, value TsValue) string {
+func TsNodeHTTP1ServerString(loop *TsLoop, value TsValue) string {
 	return TsNodeHTTPOutgoingText(loop, value)
 }
-func TsInternalHTTP1FallbackSocketWrite(loop *TsLoop, state *TsHTTP1FallbackResponseState, data, callback TsValue) TsValue {
-	if TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "writableEnded")) {
+func TsNodeHTTP1ServerSocketWrite(loop *TsLoop, state *TsNodeHTTP1ResponseState, data, callback TsValue) TsValue {
+	if TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "writableEnded")) {
 		return TsBooleanValue(false)
 	}
 	if callback.Kind == TsFunctionKind {
@@ -23176,59 +23447,59 @@ func TsInternalHTTP1FallbackSocketWrite(loop *TsLoop, state *TsHTTP1FallbackResp
 	}
 	return TsNodeHTTPServerCall(loop, state.Socket, "write", data)
 }
-func TsInternalHTTP1FallbackWriteBody(loop *TsLoop, state *TsHTTP1FallbackResponseState, buffer, callback TsValue) int {
+func TsNodeHTTP1ServerWriteBody(loop *TsLoop, state *TsNodeHTTP1ResponseState, buffer, callback TsValue) int {
+	if state.NoBody {
+		return 0
+	}
 	length := 0
 	if !TsNullish(buffer) {
 		length = len(TsNodeBufferVisibleBytes(buffer))
 	}
 	if length > 0 {
 		if state.Chunked {
-			TsInternalHTTP1FallbackSocketWrite(loop, state, TsInternalHTTP1FallbackKey(strconv.FormatInt(int64(length), 16)+"\r\n"), TsU)
-			TsInternalHTTP1FallbackSocketWrite(loop, state, buffer, TsU)
-			TsInternalHTTP1FallbackSocketWrite(loop, state, TsInternalHTTP1FallbackKey("\r\n"), callback)
+			TsNodeHTTP1ServerSocketWrite(loop, state, TsNodeHTTP1ServerKey(strconv.FormatInt(int64(length), 16)+"\r\n"), TsU)
+			TsNodeHTTP1ServerSocketWrite(loop, state, buffer, TsU)
+			TsNodeHTTP1ServerSocketWrite(loop, state, TsNodeHTTP1ServerKey("\r\n"), callback)
 		} else {
-			TsInternalHTTP1FallbackSocketWrite(loop, state, buffer, callback)
+			TsNodeHTTP1ServerSocketWrite(loop, state, buffer, callback)
 		}
 	}
 	return length
 }
-func TsInternalHTTP1FallbackRunFrame(loop *TsLoop, frame, callback TsValue) {
+func TsNodeHTTP1ServerRunFrame(loop *TsLoop, frame, callback TsValue) {
 	module := TsInternalAsyncContextFrameModule(loop)
-	run := TsGet(loop, module, TsInternalHTTP1FallbackKey("run"))
+	run := TsGet(loop, module, TsNodeHTTP1ServerKey("run"))
 	if run.Kind == TsFunctionKind {
 		TsCall(loop, run, frame, callback)
 	} else {
 		TsCall(loop, callback)
 	}
 }
-func TsInternalHTTP1FallbackSettleWritable(loop *TsLoop, state *TsHTTP1FallbackResponseState, callback TsValue) {
+func TsNodeHTTP1ServerSettleWritable(loop *TsLoop, state *TsNodeHTTP1ResponseState, callback TsValue) {
 	frame := state.OnWritableFrame
 	state.OnWritable = TsNull
 	state.OnWritableFrame = TsU
-	TsInternalHTTP1FallbackRunFrame(loop, frame, TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue {
-		TsInternalHTTP1FallbackSafeCallback(loop, callback)
-		return TsU
-	})))
+	TsNodeHTTP1ServerRunFrame(loop, frame, TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue { TsNodeHTTP1ServerSafeCallback(loop, callback); return TsU })))
 }
-func TsInternalHTTP1FallbackFlush(loop *TsLoop, state *TsHTTP1FallbackResponseState) {
+func TsNodeHTTP1ServerFlush(loop *TsLoop, state *TsNodeHTTP1ResponseState) {
 	if !state.Ended || state.Finished {
 		return
 	}
 	state.Finished = true
-	TsInternalHTTP1FallbackSafeCallback(loop, TsInternalHTTP1FallbackHandleGet(loop, state.Handle, "onflushed"))
+	TsNodeHTTP1ServerSafeCallback(loop, TsNodeHTTP1ServerHandleGet(loop, state.Handle, "onflushed"))
 }
-func TsInternalHTTP1FallbackHandleGet(loop *TsLoop, value TsValue, name string) TsValue {
+func TsNodeHTTP1ServerHandleGet(loop *TsLoop, value TsValue, name string) TsValue {
 	if value.Kind != TsObjectKind {
 		return TsU
 	}
 	return (*TsObject)(value.Ref).RuntimeFieldGet(loop, name)
 }
-func TsInternalHTTP1FallbackEndWritten(loop *TsLoop, state *TsHTTP1FallbackResponseState, err TsValue) {
-	if !TsTruthy(err) && !TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "destroyed")) {
-		TsInternalHTTP1FallbackFlush(loop, state)
+func TsNodeHTTP1ServerEndWritten(loop *TsLoop, state *TsNodeHTTP1ResponseState, err TsValue) {
+	if !TsTruthy(err) && !TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "destroyed")) {
+		TsNodeHTTP1ServerFlush(loop, state)
 	}
 }
-func TsInternalHTTP1FallbackCountBodyBytes(loop *TsLoop, state *TsHTTP1FallbackResponseState, buffer, expected TsValue, fromEnd bool) int {
+func TsNodeHTTP1ServerCountBodyBytes(loop *TsLoop, state *TsNodeHTTP1ResponseState, buffer, expected TsValue, fromEnd bool) int {
 	length := 0
 	if !TsNullish(buffer) {
 		length = len(TsNodeBufferVisibleBytes(buffer))
@@ -23244,7 +23515,7 @@ func TsInternalHTTP1FallbackCountBodyBytes(loop *TsLoop, state *TsHTTP1FallbackR
 	state.BytesWritten = written
 	return length
 }
-func TsInternalHTTP1FallbackWriteHead(loop *TsLoop, state *TsHTTP1FallbackResponseState, contentLength TsValue) {
+func TsNodeHTTP1ServerWriteHead(loop *TsLoop, state *TsNodeHTTP1ResponseState, contentLength TsValue) {
 	if state.HeadWritten {
 		return
 	}
@@ -23252,56 +23523,88 @@ func TsInternalHTTP1FallbackWriteHead(loop *TsLoop, state *TsHTTP1FallbackRespon
 	statusCode := 200
 	statusMessage := TsU
 	if !TsNullish(state.Head) {
-		statusCode = int(TsNumber(TsInternalHTTP1FallbackGet(loop, state.Head, "statusCode")))
-		statusMessage = TsInternalHTTP1FallbackGet(loop, state.Head, "statusMessage")
+		statusCode = int(TsNumber(TsNodeHTTP1ServerGet(loop, state.Head, "statusCode")))
+		statusMessage = TsNodeHTTP1ServerGet(loop, state.Head, "statusMessage")
 	}
 	if statusMessage.Kind != TsStringKind || TsText(statusMessage) == "" {
 		codes := TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "STATUS_CODES")
-		statusMessage = TsGet(loop, codes, TsInternalHTTP1FallbackKey(strconv.Itoa(statusCode)))
+		statusMessage = TsGet(loop, codes, TsNodeHTTP1ServerKey(strconv.Itoa(statusCode)))
 		if !TsTruthy(statusMessage) {
-			statusMessage = TsInternalHTTP1FallbackKey("unknown")
+			statusMessage = TsNodeHTTP1ServerKey("unknown")
 		}
 	}
 	output := "HTTP/1.1 " + strconv.Itoa(statusCode) + " " + TsText(statusMessage) + "\r\n"
 	hasContentLength, hasTransferEncoding, hasDate, hasConnection, hasKeepAlive := false, false, false, false, false
 	headers := TsU
 	if !TsNullish(state.Head) {
-		headers = TsInternalHTTP1FallbackGet(loop, state.Head, "headers")
+		headers = TsNodeHTTP1ServerGet(loop, state.Head, "headers")
+	}
+	var writeHeader func(TsValue, TsValue)
+	writeHeader = func(nameValue, value TsValue) {
+		name := TsText(nameValue)
+		if name == "\x00" {
+			if TsText(value) == "2" {
+				state.NoBody = true
+			} else {
+				state.CloseDelimited = true
+			}
+			return
+		}
+		lower := strings.ToLower(name)
+		if value.Kind == TsArrayKind {
+			items := (*TsArray)(value.Ref).Values
+			if lower == "cookie" {
+				parts := make([]string, 0, len(items))
+				for _, item := range items {
+					parts = append(parts, TsNodeHTTP1ServerString(loop, item))
+				}
+				value = TsNodeHTTP1ServerKey(strings.Join(parts, "; "))
+			} else {
+				for _, item := range items {
+					writeHeader(nameValue, item)
+				}
+				return
+			}
+		}
+		switch lower {
+		case "content-length":
+			hasContentLength = true
+		case "transfer-encoding":
+			hasTransferEncoding = true
+			chunked, _, _ := TsNodeHTTPCommonTransferChunked(TsNodeHTTP1ServerString(loop, value))
+			if chunked {
+				state.Chunked = true
+			}
+		case "date":
+			hasDate = true
+		case "connection":
+			hasConnection = true
+		case "keep-alive":
+			hasKeepAlive = true
+		}
+		output += name + ": " + TsNodeHTTP1ServerString(loop, value) + "\r\n"
 	}
 	if headers.Kind == TsArrayKind {
 		values := (*TsArray)(headers.Ref).Values
-		for i := 0; i+1 < len(values); i += 2 {
-			name, value := TsText(values[i]), values[i+1]
-			if name == "\x00" {
-				if TsText(value) == "2" {
-					state.NoBody = true
-				} else {
-					state.CloseDelimited = true
-				}
-				continue
+		if len(values) > 0 && values[0].Kind == TsArrayKind {
+			for _, entry := range values {
+				writeHeader(TsGet(loop, entry, TsNodeHTTP1ServerKey("0")), TsGet(loop, entry, TsNodeHTTP1ServerKey("1")))
 			}
-			switch strings.ToLower(name) {
-			case "content-length":
-				hasContentLength = true
-			case "transfer-encoding":
-				hasTransferEncoding = true
-				if strings.Contains(strings.ToLower(TsInternalHTTP1FallbackString(loop, value)), "chunked") {
-					state.Chunked = true
-				}
-			case "date":
-				hasDate = true
-			case "connection":
-				hasConnection = true
-			case "keep-alive":
-				hasKeepAlive = true
+		} else {
+			for i := 0; i+1 < len(values); i += 2 {
+				writeHeader(values[i], values[i+1])
 			}
-			output += name + ": " + TsInternalHTTP1FallbackString(loop, value) + "\r\n"
+		}
+	} else if headers.Kind == TsObjectKind || headers.Kind == TsInstanceKind {
+		for _, name := range TsObjectKeys(loop, headers).Values {
+			writeHeader(name, TsGet(loop, headers, name))
 		}
 	}
 	autoBits := 0
 	if !TsNullish(state.Head) {
-		autoBits = int(TsNumber(TsInternalHTTP1FallbackGet(loop, state.Head, "autoHeaderBits")))
+		autoBits = int(TsNumber(TsNodeHTTP1ServerGet(loop, state.Head, "autoHeaderBits")))
 	}
+	state.NoBody = statusCode < 200 || statusCode == 204 || statusCode == 304 || autoBits&32 != 0
 	chunkedFromAutoBits := autoBits&16 != 0
 	autoContentLength := TsNull
 	autoChunked := false
@@ -23315,7 +23618,7 @@ func TsInternalHTTP1FallbackWriteHead(loop *TsLoop, state *TsHTTP1FallbackRespon
 	}
 	if TsNullish(state.Head) {
 		if !hasDate {
-			output += "Date: " + TsInternalHTTP1FallbackDate() + "\r\n"
+			output += "Date: " + TsNodeHTTP1ServerDate() + "\r\n"
 		}
 		if !hasConnection && !state.CloseDelimited {
 			if state.ShouldKeepAlive {
@@ -23325,7 +23628,12 @@ func TsInternalHTTP1FallbackWriteHead(loop *TsLoop, state *TsHTTP1FallbackRespon
 					if timeout == 0 {
 						timeout = 5000
 					}
-					output += "Keep-Alive: timeout=" + strconv.Itoa(int(math.Floor(timeout/1000))) + "\r\n"
+					keepAlive := "Keep-Alive: timeout=" + strconv.Itoa(int(math.Floor(timeout/1000)))
+					maxRequests := TsNodeHTTP1ServerGet(loop, state.Head, "maxRequestsPerSocket")
+					if TsIsNumeric(maxRequests) && TsNumber(maxRequests) > 0 {
+						keepAlive += ", max=" + strconv.Itoa(int(TsNumber(maxRequests)))
+					}
+					output += keepAlive + "\r\n"
 				}
 			} else {
 				output += "Connection: close\r\n"
@@ -23333,13 +23641,18 @@ func TsInternalHTTP1FallbackWriteHead(loop *TsLoop, state *TsHTTP1FallbackRespon
 		}
 	} else {
 		if !hasDate && autoBits&1 != 0 {
-			output += "Date: " + TsInternalHTTP1FallbackDate() + "\r\n"
+			output += "Date: " + TsNodeHTTP1ServerDate() + "\r\n"
 		}
 		if !hasConnection {
 			if autoBits&2 != 0 {
 				output += "Connection: keep-alive\r\n"
 				if !hasKeepAlive && autoBits&8 != 0 {
-					output += "Keep-Alive: timeout=" + strconv.Itoa(int(TsNumber(TsInternalHTTP1FallbackGet(loop, state.Head, "keepAliveTimeoutSecs")))) + "\r\n"
+					keepAlive := "Keep-Alive: timeout=" + strconv.Itoa(int(TsNumber(TsNodeHTTP1ServerGet(loop, state.Head, "keepAliveTimeoutSecs"))))
+					maxRequests := TsNodeHTTP1ServerGet(loop, state.Head, "maxRequestsPerSocket")
+					if TsIsNumeric(maxRequests) && TsNumber(maxRequests) > 0 {
+						keepAlive += ", max=" + strconv.Itoa(int(TsNumber(maxRequests)))
+					}
+					output += keepAlive + "\r\n"
 				}
 			} else if autoBits&4 != 0 {
 				output += "Connection: close\r\n"
@@ -23347,15 +23660,15 @@ func TsInternalHTTP1FallbackWriteHead(loop *TsLoop, state *TsHTTP1FallbackRespon
 		}
 	}
 	if !TsIsNull(autoContentLength) {
-		output += "Content-Length: " + TsInternalHTTP1FallbackString(loop, autoContentLength) + "\r\n"
+		output += "Content-Length: " + TsNodeHTTP1ServerString(loop, autoContentLength) + "\r\n"
 	} else if autoChunked || chunkedFromAutoBits && state.Chunked {
 		output += "Transfer-Encoding: chunked\r\n"
 	}
 	output += "\r\n"
-	TsInternalHTTP1FallbackSocketWrite(loop, state, TsInternalHTTP1FallbackKey(output), TsU)
+	TsNodeHTTP1ServerSocketWrite(loop, state, TsNodeHTTP1ServerKey(output), TsU)
 }
-func TsInternalHTTP1FallbackCreateResponseHandle(loop *TsLoop, socket, shouldKeepAlive, keepAliveTimeout TsValue) TsValue {
-	state := &TsHTTP1FallbackResponseState{Socket: socket, Head: TsNull, ShouldKeepAlive: TsTruthy(shouldKeepAlive), KeepAliveTimeout: TsNumber(keepAliveTimeout), OnWritable: TsNull, OnWritableFrame: TsU, OnFinished: TsNull}
+func TsNodeHTTP1ServerCreateResponseHandle(loop *TsLoop, socket, shouldKeepAlive, keepAliveTimeout TsValue) TsValue {
+	state := &TsNodeHTTP1ResponseState{Socket: socket, Head: TsNull, ShouldKeepAlive: TsTruthy(shouldKeepAlive), KeepAliveTimeout: TsNumber(keepAliveTimeout), OnWritable: TsNull, OnWritableFrame: TsU, OnFinished: TsNull}
 	object := TsNewObject()
 	object.Prototype = TsNull
 	object.Descriptors = map[string]*TsDescriptor{}
@@ -23364,7 +23677,7 @@ func TsInternalHTTP1FallbackCreateResponseHandle(loop *TsLoop, socket, shouldKee
 	state.Handle = result
 	method := func(name string, length int) {
 		object.Set(name, TsNamedNativeMethod(name, length, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
-			return TsInternalHTTP1FallbackHandleMethod(loop, state, name, args)
+			return TsNodeHTTP1ServerHandleMethod(loop, state, name, args)
 		}))
 	}
 	for _, name := range []string{"socketDrained", "socketEnded", "writeContinue", "flushHeaders", "flushed", "abort"} {
@@ -23377,7 +23690,7 @@ func TsInternalHTTP1FallbackCreateResponseHandle(loop *TsLoop, socket, shouldKee
 		object.Descriptors[name] = &TsDescriptor{Accessor: true, Configurable: true, Enumerable: true, Getter: TsNamedNativeMethod("get "+name, 0, func(loop *TsLoop, _ TsValue, _ ...TsValue) TsValue { return getter(loop) }), Setter: TsNamedNativeMethod("set "+name, 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue { setter(loop, TsArg(args, 0)); return TsU })}
 	}
 	define("flags", func(loop *TsLoop) TsValue {
-		if state.Aborted || TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "destroyed")) {
+		if state.Aborted || TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "destroyed")) {
 			return TsNumberValue(1)
 		}
 		return TsNumberValue(0)
@@ -23395,46 +23708,46 @@ func TsInternalHTTP1FallbackCreateResponseHandle(loop *TsLoop, socket, shouldKee
 	}, func(loop *TsLoop, v TsValue) {
 		state.OnWritable = v
 		if TsTruthy(v) {
-			state.OnWritableFrame = TsCall(loop, TsGet(loop, TsInternalAsyncContextFrameModule(loop), TsInternalHTTP1FallbackKey("current")))
+			state.OnWritableFrame = TsCall(loop, TsGet(loop, TsInternalAsyncContextFrameModule(loop), TsNodeHTTP1ServerKey("current")))
 		} else {
 			state.OnWritableFrame = TsU
 		}
 	})
 	define("bufferedAmount", func(loop *TsLoop) TsValue {
 		if TsTruthy(state.OnWritable) || state.Ended && !state.Finished {
-			return TsInternalHTTP1FallbackGet(loop, state.Socket, "writableLength")
+			return TsNodeHTTP1ServerGet(loop, state.Socket, "writableLength")
 		}
 		return TsNumberValue(0)
 	}, func(*TsLoop, TsValue) {})
 	return result
 }
-func TsInternalHTTP1FallbackHandleMethod(loop *TsLoop, state *TsHTTP1FallbackResponseState, name string, args []TsValue) TsValue {
+func TsNodeHTTP1ServerHandleMethod(loop *TsLoop, state *TsNodeHTTP1ResponseState, name string, args []TsValue) TsValue {
 	arg := func(index int) TsValue { return TsArg(args, index) }
 	switch name {
 	case "socketDrained":
 		if TsTruthy(state.OnWritable) {
-			TsInternalHTTP1FallbackSettleWritable(loop, state, state.OnWritable)
+			TsNodeHTTP1ServerSettleWritable(loop, state, state.OnWritable)
 		}
 		return TsU
 	case "socketEnded":
 		if TsTruthy(state.OnWritable) {
-			TsInternalHTTP1FallbackSettleWritable(loop, state, arg(0))
+			TsNodeHTTP1ServerSettleWritable(loop, state, arg(0))
 		}
 		return TsU
 	case "cork":
 		return TsCall(loop, arg(0))
 	case "writeContinue":
-		TsInternalHTTP1FallbackSocketWrite(loop, state, TsInternalHTTP1FallbackKey("HTTP/1.1 100 Continue\r\n\r\n"), TsU)
+		TsNodeHTTP1ServerSocketWrite(loop, state, TsNodeHTTP1ServerKey("HTTP/1.1 100 Continue\r\n\r\n"), TsU)
 		return TsU
 	case "writeInformational":
-		if !TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "writableEnded")) {
+		if !TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "writableEnded")) {
 			TsNodeHTTPServerCall(loop, state.Socket, "write", arg(0), arg(1))
 		}
 		return TsU
 	case "writeHead":
 		status := int(TsNumber(arg(0)))
 		if status < 100 || status > 999 {
-			panic(TsThrown{TsFSException("RangeError", "ERR_HTTP_INVALID_STATUS_CODE", "Invalid status code: "+TsInternalHTTP1FallbackString(loop, arg(0)))})
+			panic(TsThrown{TsFSException("RangeError", "ERR_HTTP_INVALID_STATUS_CODE", "Invalid status code: "+TsNodeHTTP1ServerString(loop, arg(0)))})
 		}
 		message := arg(1)
 		common := TsNodeHTTPCommonModule(loop)
@@ -23448,26 +23761,27 @@ func TsInternalHTTP1FallbackHandleMethod(loop *TsLoop, state *TsHTTP1FallbackRes
 		head.Set("headers", arg(2))
 		head.Set("autoHeaderBits", arg(3))
 		head.Set("keepAliveTimeoutSecs", arg(4))
+		head.Set("maxRequestsPerSocket", arg(5))
 		state.Head = TsObjectValue(head)
 		return TsU
 	case "flushHeaders":
-		TsInternalHTTP1FallbackWriteHead(loop, state, TsNull)
+		TsNodeHTTP1ServerWriteHead(loop, state, TsNull)
 		return TsU
 	case "writeHeadAndEnd":
-		TsInternalHTTP1FallbackHandleMethod(loop, state, "writeHead", []TsValue{arg(0), arg(1), arg(2), arg(6), arg(7)})
-		return TsInternalHTTP1FallbackHandleMethod(loop, state, "end", []TsValue{arg(3), arg(4), TsU, arg(5)})
+		TsNodeHTTP1ServerHandleMethod(loop, state, "writeHead", []TsValue{arg(0), arg(1), arg(2), arg(6), arg(7), arg(8)})
+		return TsNodeHTTP1ServerHandleMethod(loop, state, "end", []TsValue{arg(3), arg(4), TsU, arg(5)})
 	case "write":
-		buffer := TsInternalHTTP1FallbackToBuffer(loop, arg(0), arg(1))
-		length := TsInternalHTTP1FallbackCountBodyBytes(loop, state, buffer, arg(3), false)
-		TsInternalHTTP1FallbackWriteHead(loop, state, TsNull)
-		TsInternalHTTP1FallbackWriteBody(loop, state, buffer, TsU)
-		if TsIsNull(buffer) || !TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "writableNeedDrain")) {
+		buffer := TsNodeHTTP1ServerToBuffer(loop, arg(0), arg(1))
+		length := TsNodeHTTP1ServerCountBodyBytes(loop, state, buffer, arg(3), false)
+		TsNodeHTTP1ServerWriteHead(loop, state, TsNull)
+		TsNodeHTTP1ServerWriteBody(loop, state, buffer, TsU)
+		if TsIsNull(buffer) || !TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "writableNeedDrain")) {
 			return TsNumberValue(float64(length))
 		}
 		callback := arg(2)
 		if TsTruthy(callback) {
 			state.OnWritable = callback
-			state.OnWritableFrame = TsCall(loop, TsGet(loop, TsInternalAsyncContextFrameModule(loop), TsInternalHTTP1FallbackKey("current")))
+			state.OnWritableFrame = TsCall(loop, TsGet(loop, TsInternalAsyncContextFrameModule(loop), TsNodeHTTP1ServerKey("current")))
 		}
 		if length > 0 {
 			return TsNumberValue(float64(-length))
@@ -23479,30 +23793,30 @@ func TsInternalHTTP1FallbackHandleMethod(loop *TsLoop, state *TsHTTP1FallbackRes
 		}
 		state.OnWritable = TsNull
 		state.OnWritableFrame = TsU
-		buffer := TsInternalHTTP1FallbackToBuffer(loop, arg(0), arg(1))
-		length := TsInternalHTTP1FallbackCountBodyBytes(loop, state, buffer, arg(3), true)
-		TsInternalHTTP1FallbackWriteHead(loop, state, TsNumberValue(float64(length)))
+		buffer := TsNodeHTTP1ServerToBuffer(loop, arg(0), arg(1))
+		length := TsNodeHTTP1ServerCountBodyBytes(loop, state, buffer, arg(3), true)
+		TsNodeHTTP1ServerWriteHead(loop, state, TsNumberValue(float64(length)))
 		terminated := state.Chunked && !state.NoBody
 		endCallback := TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue {
-			TsInternalHTTP1FallbackEndWritten(loop, state, TsArg(args, 0))
+			TsNodeHTTP1ServerEndWritten(loop, state, TsArg(args, 0))
 			return TsU
 		}))
-		TsInternalHTTP1FallbackWriteBody(loop, state, buffer, func() TsValue {
+		TsNodeHTTP1ServerWriteBody(loop, state, buffer, func() TsValue {
 			if terminated {
 				return TsU
 			}
 			return endCallback
 		}())
 		if terminated {
-			TsInternalHTTP1FallbackSocketWrite(loop, state, TsInternalHTTP1FallbackKey("0\r\n\r\n"), endCallback)
+			TsNodeHTTP1ServerSocketWrite(loop, state, TsNodeHTTP1ServerKey("0\r\n\r\n"), endCallback)
 		}
 		state.Ended = true
-		writableLength := TsNumber(TsInternalHTTP1FallbackGet(loop, state.Socket, "writableLength"))
-		if writableLength > 0 && !TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "destroyed")) {
-			if TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "writableEnded")) {
-				TsNodeHTTPServerCall(loop, state.Socket, "once", TsInternalHTTP1FallbackKey("finish"), endCallback)
+		writableLength := TsNumber(TsNodeHTTP1ServerGet(loop, state.Socket, "writableLength"))
+		if writableLength > 0 && !TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "destroyed")) {
+			if TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "writableEnded")) {
+				TsNodeHTTPServerCall(loop, state.Socket, "once", TsNodeHTTP1ServerKey("finish"), endCallback)
 			} else if length == 0 && !terminated {
-				TsNodeHTTPServerCall(loop, state.Socket, "write", TsInternalHTTP1FallbackKey(""), TsInternalHTTP1FallbackKey("latin1"), endCallback)
+				TsNodeHTTPServerCall(loop, state.Socket, "write", TsNodeHTTP1ServerKey(""), TsNodeHTTP1ServerKey("latin1"), endCallback)
 			}
 		} else {
 			state.Finished = true
@@ -23510,9 +23824,9 @@ func TsInternalHTTP1FallbackHandleMethod(loop *TsLoop, state *TsHTTP1FallbackRes
 		finishedCallback := state.OnFinished
 		state.OnFinished = TsNull
 		if TsTruthy(finishedCallback) {
-			TsInternalHTTP1FallbackSafeCallback(loop, finishedCallback)
+			TsNodeHTTP1ServerSafeCallback(loop, finishedCallback)
 		}
-		if state.CloseDelimited && !TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "destroyed")) {
+		if state.CloseDelimited && !TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "destroyed")) {
 			TsNodeHTTPServerCall(loop, state.Socket, "end")
 		}
 		if state.Finished {
@@ -23520,11 +23834,11 @@ func TsInternalHTTP1FallbackHandleMethod(loop *TsLoop, state *TsHTTP1FallbackRes
 		}
 		return TsNumberValue(float64(-(length + 1)))
 	case "flushed":
-		TsInternalHTTP1FallbackFlush(loop, state)
+		TsNodeHTTP1ServerFlush(loop, state)
 		return TsU
 	case "abort":
 		state.Aborted = true
-		if !TsTruthy(TsInternalHTTP1FallbackGet(loop, state.Socket, "destroyed")) {
+		if !TsTruthy(TsNodeHTTP1ServerGet(loop, state.Socket, "destroyed")) {
 			TsNodeHTTPServerCall(loop, state.Socket, "destroy")
 		}
 		return TsU
@@ -23532,39 +23846,35 @@ func TsInternalHTTP1FallbackHandleMethod(loop *TsLoop, state *TsHTTP1FallbackRes
 	return TsU
 }
 
-type TsHTTP1FallbackConnection struct {
+type TsNodeHTTP1Connection struct {
 	Loop                                                    *TsLoop
 	Server, Socket, Options, Parser, Common, Http, Pipeline TsValue
 	Req, PendingUpgrade                                     TsValue
 	FlushedHeaders                                          []TsValue
 	FlushedURL                                              string
 	RequestsCount                                           int
+	CloseAfterParse                                         bool
 	MaxRequestsPerSocket                                    TsValue
 	KeepAliveTimeout                                        TsValue
 	Connections                                             TsValue
 }
 
-func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
-	internal := TsInternalHTTPModule(loop)
-	pipeline := TsInternalHTTPGet(loop, internal, "http1ServerPipeline")
-	if pipeline.Kind != TsObjectKind {
-		pipeline = TsObjectValue(TsNewObject())
-		TsInternalHTTPSet(loop, internal, "http1ServerPipeline", pipeline)
+func TsNodeHTTP1ServerPipeline(loop *TsLoop) TsValue {
+	TsNodeHTTP1ServerInit(loop)
+	if !TsIsUndefined(TsNodeHTTP1ServerSingleton.Pipeline) {
+		return TsNodeHTTP1ServerSingleton.Pipeline
 	}
-	TsInternalHTTP1FallbackInit(loop)
-	install := func(name string, fn TsValue) {
-		if TsIsUndefined(TsGet(loop, pipeline, TsInternalHTTP1FallbackKey(name))) {
-			TsSet(loop, pipeline, TsInternalHTTP1FallbackKey(name), fn)
-		}
-	}
-	install("kMustCloseConnection", TsInternalHTTP1FallbackSingleton.KMustCloseConnection)
+	pipeline := TsObjectValue(TsNewObject())
+	TsNodeHTTP1ServerSingleton.Pipeline = pipeline
+	install := func(name string, fn TsValue) { TsSet(loop, pipeline, TsNodeHTTP1ServerKey(name), fn) }
+	install("kMustCloseConnection", TsNodeHTTP1ServerSingleton.KMustCloseConnection)
 	install("queuePipelinedResponse", TsNamedNativeMethod("queuePipelinedResponse", 3, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		socket := TsArg(args, 0)
 		var response TsValue = TsArg(args, 1)
-		queue := TsGet(loop, socket, TsInternalHTTP1FallbackSingleton.KQueue)
+		queue := TsGet(loop, socket, TsNodeHTTP1ServerSingleton.KQueue)
 		if queue.Kind != TsArrayKind {
 			queue = TsArrayValue(&TsArray{})
-			TsSet(loop, socket, TsInternalHTTP1FallbackSingleton.KQueue, queue)
+			TsSet(loop, socket, TsNodeHTTP1ServerSingleton.KQueue, queue)
 		}
 		state := TsNewObject()
 		state.Set("socket", socket)
@@ -23573,13 +23883,13 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 		state.Set("bytes", TsNumberValue(0))
 		state.Set("ended", TsBooleanValue(false))
 		state.Set("needDrain", TsBooleanValue(false))
-		TsSet(loop, response, TsInternalHTTP1FallbackSingleton.KQueueState, TsObjectValue(state))
+		TsSet(loop, response, TsNodeHTTP1ServerSingleton.KQueueState, TsObjectValue(state))
 		a := (*TsArray)(queue.Ref)
 		a.Values = append(a.Values, response)
 		return TsU
 	}))
 	install("lastPipelinedResponse", TsNamedNativeMethod("lastPipelinedResponse", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
-		queue := TsGet(loop, TsArg(args, 0), TsInternalHTTP1FallbackSingleton.KQueue)
+		queue := TsGet(loop, TsArg(args, 0), TsNodeHTTP1ServerSingleton.KQueue)
 		if queue.Kind != TsArrayKind || len((*TsArray)(queue.Ref).Values) == 0 {
 			return TsU
 		}
@@ -23588,10 +23898,10 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 	}))
 	install("advanceResponsePipeline", TsNamedNativeMethod("advanceResponsePipeline", 2, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		server, socket := TsArg(args, 0), TsArg(args, 1)
-		if TsNullish(socket) || TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "destroyed")) || TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "writableEnded")) || !TsNullish(TsInternalHTTP1FallbackGet(loop, socket, "_httpMessage")) {
+		if TsNullish(socket) || TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "destroyed")) || TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "writableEnded")) || !TsNullish(TsNodeHTTP1ServerGet(loop, socket, "_httpMessage")) {
 			return TsU
 		}
-		queue := TsGet(loop, socket, TsInternalHTTP1FallbackSingleton.KQueue)
+		queue := TsGet(loop, socket, TsNodeHTTP1ServerSingleton.KQueue)
 		if queue.Kind != TsArrayKind {
 			return TsU
 		}
@@ -23601,34 +23911,34 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 		}
 		var response TsValue = a.Values[0]
 		a.Values = a.Values[1:]
-		TsSet(loop, socket, TsInternalHTTP1FallbackSingleton.KQueue, TsArrayValue(a))
-		queueState := TsGet(loop, response, TsInternalHTTP1FallbackSingleton.KQueueState)
-		ops := TsInternalHTTP1FallbackGet(loop, queueState, "ops")
-		ended := TsTruthy(TsInternalHTTP1FallbackGet(loop, queueState, "ended"))
-		queuedBytes := TsNumber(TsInternalHTTP1FallbackGet(loop, queueState, "bytes"))
-		remainingBytes := TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "_httpQueuedBytes")) - queuedBytes
+		TsSet(loop, socket, TsNodeHTTP1ServerSingleton.KQueue, TsArrayValue(a))
+		queueState := TsGet(loop, response, TsNodeHTTP1ServerSingleton.KQueueState)
+		ops := TsNodeHTTP1ServerGet(loop, queueState, "ops")
+		ended := TsTruthy(TsNodeHTTP1ServerGet(loop, queueState, "ended"))
+		queuedBytes := TsNumber(TsNodeHTTP1ServerGet(loop, queueState, "bytes"))
+		remainingBytes := TsNumber(TsNodeHTTP1ServerGet(loop, socket, "_httpQueuedBytes")) - queuedBytes
 		if remainingBytes < 0 {
 			remainingBytes = 0
 		}
-		TsInternalHTTP1FallbackSet(loop, socket, "_httpQueuedBytes", TsNumberValue(remainingBytes))
-		TsInternalHTTP1FallbackSet(loop, response, "outputSize", TsNumberValue(0))
-		TsSet(loop, response, TsInternalHTTP1FallbackSingleton.KQueueState, TsU)
-		assign := TsInternalHTTP1FallbackGet(loop, response, "assignSocket")
+		TsNodeHTTP1ServerSet(loop, socket, "_httpQueuedBytes", TsNumberValue(remainingBytes))
+		TsNodeHTTP1ServerSet(loop, response, "outputSize", TsNumberValue(0))
+		TsSet(loop, response, TsNodeHTTP1ServerSingleton.KQueueState, TsU)
+		assign := TsNodeHTTP1ServerGet(loop, response, "assignSocket")
 		if assign.Kind == TsFunctionKind {
 			TsCallReceiver(loop, assign, response, socket)
 		}
 		if ended {
-			TsInternalHTTP1FallbackSet(loop, response, "finished", TsBooleanValue(false))
+			TsNodeHTTP1ServerSet(loop, response, "finished", TsBooleanValue(false))
 		}
 		if ops.Kind == TsArrayKind {
 			opArray := (*TsArray)(ops.Ref)
 			opList := make([]TsValue, len(opArray.Values))
 			copy(opList, opArray.Values)
 			for _, op := range opList {
-				kind := TsInternalHTTP1FallbackGet(loop, op, "0")
-				chunk := TsInternalHTTP1FallbackGet(loop, op, "1")
-				encoding := TsInternalHTTP1FallbackGet(loop, op, "2")
-				callback := TsInternalHTTP1FallbackGet(loop, op, "3")
+				kind := TsNodeHTTP1ServerGet(loop, op, "0")
+				chunk := TsNodeHTTP1ServerGet(loop, op, "1")
+				encoding := TsNodeHTTP1ServerGet(loop, op, "2")
+				callback := TsNodeHTTP1ServerGet(loop, op, "3")
 				if TsText(kind) == "end" {
 					TsNodeHTTPServerCall(loop, response, "end", chunk, encoding, callback)
 				} else {
@@ -23636,7 +23946,7 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 				}
 			}
 		}
-		flush := TsInternalHTTP1FallbackGet(loop, response, "_flush")
+		flush := TsNodeHTTP1ServerGet(loop, response, "_flush")
 		if flush.Kind == TsFunctionKind {
 			TsCallReceiver(loop, flush, response)
 		}
@@ -23645,7 +23955,7 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 	}))
 	install("abortQueuedPipelinedResponses", TsNamedNativeMethod("abortQueuedPipelinedResponses", 2, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		socket := TsArg(args, 0)
-		queue := TsGet(loop, socket, TsInternalHTTP1FallbackSingleton.KQueue)
+		queue := TsGet(loop, socket, TsNodeHTTP1ServerSingleton.KQueue)
 		if queue.Kind != TsArrayKind {
 			return TsU
 		}
@@ -23654,58 +23964,58 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 		copy(items, queueArray.Values)
 		queueArray.Resize(0)
 		err := TsArg(args, 1)
-		TsInternalHTTP1FallbackSet(loop, socket, "_httpQueuedBytes", TsNumberValue(0))
+		TsNodeHTTP1ServerSet(loop, socket, "_httpQueuedBytes", TsNumberValue(0))
 		for _, response := range items {
-			request := TsInternalHTTP1FallbackGet(loop, response, "req")
-			state := TsGet(loop, response, TsInternalHTTP1FallbackSingleton.KQueueState)
-			ops := TsInternalHTTP1FallbackGet(loop, state, "ops")
+			request := TsNodeHTTP1ServerGet(loop, response, "req")
+			state := TsGet(loop, response, TsNodeHTTP1ServerSingleton.KQueueState)
+			ops := TsNodeHTTP1ServerGet(loop, state, "ops")
 			if ops.Kind == TsArrayKind {
 				for _, op := range (*TsArray)(ops.Ref).Values {
-					callback := TsInternalHTTP1FallbackGet(loop, op, "3")
+					callback := TsNodeHTTP1ServerGet(loop, op, "3")
 					if callback.Kind == TsFunctionKind {
-						TsInternalHTTP1FallbackSafeCallback(loop, callback, err)
+						TsNodeHTTP1ServerSafeCallback(loop, callback, err)
 					}
 				}
 			}
-			if !TsTruthy(TsInternalHTTP1FallbackGet(loop, request, "destroyed")) {
+			if !TsTruthy(TsNodeHTTP1ServerGet(loop, request, "destroyed")) {
 				if TsTruthy(err) {
 					TsNodeHTTPIncomingCall(loop, request, "destroy", err)
 				} else {
 					TsNodeHTTPIncomingCall(loop, request, "destroy")
 				}
 			}
-			if !TsTruthy(TsInternalHTTP1FallbackGet(loop, response, "destroyed")) {
+			if !TsTruthy(TsNodeHTTP1ServerGet(loop, response, "destroyed")) {
 				TsNodeHTTPIncomingCall(loop, response, "destroy")
 			}
 		}
 		return TsU
 	}))
-	install("maybePauseFallbackReads", TsNamedNativeMethod("maybePauseFallbackReads", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
+	install("maybePauseHTTP1Reads", TsNamedNativeMethod("maybePauseHTTP1Reads", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		socket := TsArg(args, 0)
-		if TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "_paused")) {
+		if TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "_paused")) {
 			return TsU
 		}
-		state := TsInternalHTTP1FallbackGet(loop, socket, "_writableState")
-		pending := TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "writableLength")) + TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "_httpQueuedBytes"))
-		if TsTruthy(TsInternalHTTP1FallbackGet(loop, state, "needDrain")) || pending >= TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "writableHighWaterMark")) {
-			TsInternalHTTP1FallbackSet(loop, socket, "_paused", TsBooleanValue(true))
+		state := TsNodeHTTP1ServerGet(loop, socket, "_writableState")
+		pending := TsNumber(TsNodeHTTP1ServerGet(loop, socket, "writableLength")) + TsNumber(TsNodeHTTP1ServerGet(loop, socket, "_httpQueuedBytes"))
+		if TsTruthy(TsNodeHTTP1ServerGet(loop, state, "needDrain")) || pending >= TsNumber(TsNodeHTTP1ServerGet(loop, socket, "writableHighWaterMark")) {
+			TsNodeHTTP1ServerSet(loop, socket, "_paused", TsBooleanValue(true))
 			TsNodeHTTPServerCall(loop, socket, "pause")
 		}
 		return TsU
 	}))
-	install("resumeFallbackReadsOnDrain", TsNamedNativeMethod("resumeFallbackReadsOnDrain", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
+	install("resumeHTTP1ReadsOnDrain", TsNamedNativeMethod("resumeHTTP1ReadsOnDrain", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		socket := TsArg(args, 0)
-		pending := TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "writableLength")) + TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "_httpQueuedBytes"))
-		if TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "_paused")) && pending <= TsNumber(TsInternalHTTP1FallbackGet(loop, socket, "writableHighWaterMark")) {
-			TsInternalHTTP1FallbackSet(loop, socket, "_paused", TsBooleanValue(false))
+		pending := TsNumber(TsNodeHTTP1ServerGet(loop, socket, "writableLength")) + TsNumber(TsNodeHTTP1ServerGet(loop, socket, "_httpQueuedBytes"))
+		if TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "_paused")) && pending <= TsNumber(TsNodeHTTP1ServerGet(loop, socket, "writableHighWaterMark")) {
+			TsNodeHTTP1ServerSet(loop, socket, "_paused", TsBooleanValue(false))
 			TsNodeHTTPServerCall(loop, socket, "resume")
 		}
 		return TsU
 	}))
 	install("finishDrainedResponse", TsNamedNativeMethod("finishDrainedResponse", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		var response TsValue = TsArg(args, 0)
-		TsInternalHTTP1FallbackSet(loop, response, "writableFinished", TsBooleanValue(true))
-		if !TsTruthy(TsInternalHTTP1FallbackGet(loop, response, "finished")) {
+		TsNodeHTTP1ServerSet(loop, response, "writableFinished", TsBooleanValue(true))
+		if !TsTruthy(TsNodeHTTP1ServerGet(loop, response, "finished")) {
 			TsNodeHTTPServerEmit(loop, response, "finish")
 		}
 		return TsU
@@ -23713,55 +24023,55 @@ func TsInternalHTTP1FallbackPipeline(loop *TsLoop) TsValue {
 	return pipeline
 }
 
-func TsInternalHTTP1FallbackParserSlot(loop *TsLoop, parserCtor TsValue, name string) TsValue {
-	return TsGet(loop, parserCtor, TsInternalHTTP1FallbackKey(name))
+func TsNodeHTTP1ServerParserSlot(loop *TsLoop, parserCtor TsValue, name string) TsValue {
+	return TsGet(loop, parserCtor, TsNodeHTTP1ServerKey(name))
 }
-func TsInternalHTTP1FallbackCallback(loop *TsLoop, state *TsHTTP1FallbackConnection, name string, length int) TsValue {
+func TsNodeHTTP1ServerCallback(loop *TsLoop, state *TsNodeHTTP1Connection, name string, length int) TsValue {
 	return TsNamedNativeMethod(name, length, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
-		return TsInternalHTTP1FallbackConnectionDispatch(loop, state, name, args)
+		return TsNodeHTTP1ServerConnectionDispatch(loop, state, name, args)
 	})
 }
-func TsInternalHTTP1FallbackConnectionListener(loop *TsLoop, server, socket, options TsValue) TsValue {
-	state := &TsHTTP1FallbackConnection{Loop: loop, Server: server, Socket: socket, Options: options, Req: TsNull, PendingUpgrade: TsNull, FlushedHeaders: []TsValue{}}
-	http1Options := TsInternalHTTP1FallbackGet(loop, options, "http1Options")
-	state.Http = TsInternalHTTP1FallbackGet(loop, options, "httpModule")
+func TsNodeHTTP1ServerConnectionListener(loop *TsLoop, server, socket, options TsValue) TsValue {
+	state := &TsNodeHTTP1Connection{Loop: loop, Server: server, Socket: socket, Options: options, Req: TsNull, PendingUpgrade: TsNull, FlushedHeaders: []TsValue{}}
+	http1Options := TsNodeHTTP1ServerGet(loop, options, "http1Options")
+	state.Http = TsNodeHTTP1ServerGet(loop, options, "httpModule")
 	if TsNullish(state.Http) {
 		state.Http = TsObjectValue(TsNewObject())
-		incoming := TsInternalHTTP1FallbackGet(loop, http1Options, "IncomingMessage")
+		incoming := TsNodeHTTP1ServerGet(loop, http1Options, "IncomingMessage")
 		if TsNullish(incoming) {
 			incoming = TsNodeHTTPIncomingGet(loop, TsNodeHTTPIncomingModule(loop), "IncomingMessage")
 		}
-		response := TsInternalHTTP1FallbackGet(loop, http1Options, "ServerResponse")
+		response := TsNodeHTTP1ServerGet(loop, http1Options, "ServerResponse")
 		if TsNullish(response) {
 			response = TsNodeHTTPServerAPIGet(loop, TsNodeHTTPServerAPIModule(loop), "ServerResponse")
 		}
-		TsSet(loop, state.Http, TsInternalHTTP1FallbackKey("IncomingMessage"), incoming)
-		TsSet(loop, state.Http, TsInternalHTTP1FallbackKey("ServerResponse"), response)
+		TsSet(loop, state.Http, TsNodeHTTP1ServerKey("IncomingMessage"), incoming)
+		TsSet(loop, state.Http, TsNodeHTTP1ServerKey("ServerResponse"), response)
 	}
 	state.Common = TsNodeHTTPCommonModule(loop)
-	state.Pipeline = TsInternalHTTP1FallbackPipeline(loop)
+	state.Pipeline = TsNodeHTTP1ServerPipeline(loop)
 	internal := TsInternalHTTPModule(loop)
-	state.KeepAliveTimeout = TsInternalHTTP1FallbackGet(loop, server, "keepAliveTimeout")
+	state.KeepAliveTimeout = TsNodeHTTP1ServerGet(loop, server, "keepAliveTimeout")
 	if !TsIsNumeric(state.KeepAliveTimeout) {
 		state.KeepAliveTimeout = TsNumberValue(5000)
 	}
-	state.Connections = TsInternalHTTP1FallbackSym(loop, server, "kHttp1Connections")
+	state.Connections = TsNodeHTTP1ServerSym(loop, server, "kHttp1Connections")
 	if state.Connections.Kind != TsCollectionKind {
 		state.Connections = TsNewCollection(loop, true, TsU)
-		TsInternalHTTP1FallbackPut(loop, server, "kHttp1Connections", state.Connections)
+		TsNodeHTTP1ServerPut(loop, server, "kHttp1Connections", state.Connections)
 	}
-	add := TsGet(loop, state.Connections, TsInternalHTTP1FallbackKey("add"))
+	add := TsGet(loop, state.Connections, TsNodeHTTP1ServerKey("add"))
 	if add.Kind == TsFunctionKind {
 		TsCallReceiver(loop, add, state.Connections, socket)
 	}
-	TsInternalHTTP1FallbackSet(loop, socket, "server", server)
-	TsInternalHTTP1FallbackPut(loop, socket, "kHttp1ActiveRequests", TsNumberValue(0))
-	TsInternalHTTP1FallbackPut(loop, socket, "kHttp1MessageOpen", TsBooleanValue(false))
+	TsNodeHTTP1ServerSet(loop, socket, "server", server)
+	TsNodeHTTP1ServerPut(loop, socket, "kHttp1ActiveRequests", TsNumberValue(0))
+	TsNodeHTTP1ServerPut(loop, socket, "kHttp1MessageOpen", TsBooleanValue(false))
 	parserCtor := TsNodeHTTPCommonGet(loop, state.Common, "HTTPParser")
 	parser := TsConstruct(loop, parserCtor)
 	state.Parser = parser
-	requestType := TsInternalHTTP1FallbackParserSlot(loop, parserCtor, "REQUEST")
-	maxSize := TsInternalHTTP1FallbackGet(loop, server, "maxHeaderSize")
+	requestType := TsNodeHTTP1ServerParserSlot(loop, parserCtor, "REQUEST")
+	maxSize := TsNodeHTTP1ServerGet(loop, server, "maxHeaderSize")
 	if !TsTruthy(maxSize) {
 		maxSize = TsNumberValue(0)
 	}
@@ -23769,7 +24079,7 @@ func TsInternalHTTP1FallbackConnectionListener(loop *TsLoop, server, socket, opt
 	flags := TsCall(loop, flagsFn, TsNodeHTTPServerGet(loop, server, "httpValidation"), TsNodeHTTPServerGet(loop, server, "insecureHTTPParser"))
 	TsNodeHTTPCommonCall(loop, parser, "initialize", requestType, TsObjectValue(TsNewObject()), maxSize, flags)
 	TsNodeHTTPCommonSet(loop, parser, "socket", socket)
-	TsInternalHTTP1FallbackSet(loop, socket, "parser", parser)
+	TsNodeHTTP1ServerSet(loop, socket, "parser", parser)
 	maxHeaders := TsNodeHTTPServerGet(loop, server, "maxHeadersCount")
 	if TsIsNumeric(maxHeaders) {
 		TsNodeHTTPServerSet(loop, parser, "maxHeaderPairs", TsNumberValue(TsNumber(maxHeaders)*2))
@@ -23780,7 +24090,7 @@ func TsInternalHTTP1FallbackConnectionListener(loop *TsLoop, server, socket, opt
 		Slot, Name string
 		Length     int
 	}{{"kOnMessageBegin", "onHttp1MessageBegin", 0}, {"kOnHeaders", "onHttp1Headers", 2}, {"kOnHeadersComplete", "onHttp1HeadersComplete", 9}, {"kOnBody", "onHttp1Body", 2}, {"kOnMessageComplete", "onHttp1MessageComplete", 0}} {
-		TsSet(loop, parser, TsInternalHTTP1FallbackParserSlot(loop, parserCtor, entry.Slot), TsInternalHTTP1FallbackCallback(loop, state, entry.Name, entry.Length))
+		TsSet(loop, parser, TsNodeHTTP1ServerParserSlot(loop, parserCtor, entry.Slot), TsNodeHTTP1ServerCallback(loop, state, entry.Name, entry.Length))
 	}
 	for _, entry := range []struct {
 		Event, Name string
@@ -23790,19 +24100,19 @@ func TsInternalHTTP1FallbackConnectionListener(loop *TsLoop, server, socket, opt
 		if entry.Once {
 			method = "once"
 		}
-		TsNodeHTTPServerCall(loop, socket, method, TsInternalHTTP1FallbackKey(entry.Event), TsInternalHTTP1FallbackCallback(loop, state, entry.Name, 1))
+		TsNodeHTTPServerCall(loop, socket, method, TsNodeHTTP1ServerKey(entry.Event), TsNodeHTTP1ServerCallback(loop, state, entry.Name, 1))
 	}
-	TsNodeHTTPServerCall(loop, socket, "prependOnceListener", TsInternalHTTP1FallbackKey("close"), TsInternalHTTP1FallbackCallback(loop, state, "onHttp1SocketCloseFlush", 0))
+	TsNodeHTTPServerCall(loop, socket, "prependOnceListener", TsNodeHTTP1ServerKey("close"), TsNodeHTTP1ServerCallback(loop, state, "onHttp1SocketCloseFlush", 0))
 	_ = internal
 	return TsU
 }
 
-func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1FallbackConnection, name string, args []TsValue) TsValue {
+func TsNodeHTTP1ServerConnectionDispatch(loop *TsLoop, state *TsNodeHTTP1Connection, name string, args []TsValue) TsValue {
 	arg := func(index int) TsValue { return TsArg(args, index) }
 	server, socket, parser := state.Server, state.Socket, state.Parser
 	switch name {
 	case "onHttp1MessageBegin":
-		TsInternalHTTP1FallbackPut(loop, socket, "kHttp1MessageOpen", TsBooleanValue(true))
+		TsNodeHTTP1ServerPut(loop, socket, "kHttp1MessageOpen", TsBooleanValue(true))
 		return TsU
 	case "onHttp1Headers":
 		headers := TsNodeHTTPIncomingArray(arg(0))
@@ -23816,40 +24126,20 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 			state.FlushedHeaders = nil
 		}
 		if TsIsUndefined(url) {
-			url = TsInternalHTTP1FallbackKey(state.FlushedURL)
+			url = TsNodeHTTP1ServerKey(state.FlushedURL)
 			state.FlushedURL = ""
 		}
-		if TsNumber(major) == 1 && TsNumber(minor) == 1 && !TsStrictEqual(TsNodeHTTPServerGet(loop, server, "requireHostHeader"), TsBooleanValue(false)) {
-			hasHost := false
-			if headers.Kind == TsArrayKind {
-				raw := (*TsArray)(headers.Ref).Values
-				for index := 0; index+1 < len(raw); index += 2 {
-					if strings.EqualFold(TsText(raw[index]), "host") {
-						hasHost = true
-						break
-					}
-				}
-			}
-			if !hasHost {
-				if TsTruthy(TsNodeHTTPServerGet(loop, socket, "writable")) {
-					line := "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nDate: " + TsInternalHTTP1FallbackDate() + "\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
-					TsNodeHTTPServerCall(loop, socket, "write", TsInternalHTTP1FallbackKey(line))
-					TsNodeHTTPServerCall(loop, socket, "destroySoon")
-				}
-				return TsNumberValue(0)
-			}
-		}
-		active := TsNumber(TsInternalHTTP1FallbackSym(loop, socket, "kHttp1ActiveRequests"))
-		TsInternalHTTP1FallbackPut(loop, socket, "kHttp1ActiveRequests", TsNumberValue(active+1))
+		active := TsNumber(TsNodeHTTP1ServerSym(loop, socket, "kHttp1ActiveRequests"))
+		TsNodeHTTP1ServerPut(loop, socket, "kHttp1ActiveRequests", TsNumberValue(active+1))
 		incomingCtor := TsNodeHTTPServerGet(loop, state.Http, "IncomingMessage")
-		http1Options := TsInternalHTTP1FallbackGet(loop, state.Options, "http1Options")
-		if custom := TsInternalHTTP1FallbackGet(loop, http1Options, "IncomingMessage"); !TsNullish(custom) {
+		http1Options := TsNodeHTTP1ServerGet(loop, state.Options, "http1Options")
+		if custom := TsNodeHTTP1ServerGet(loop, http1Options, "IncomingMessage"); !TsNullish(custom) {
 			incomingCtor = custom
 		}
 		request := TsConstruct(loop, incomingCtor, socket)
 		state.Req = request
 		TsNodeHTTPServerPut(loop, socket, "kRequest", request)
-		for key, value := range map[string]TsValue{"socket": socket, "httpVersionMajor": major, "httpVersionMinor": minor, "httpVersion": TsInternalHTTP1FallbackKey(TsText(major) + "." + TsText(minor)), "url": url, "upgrade": upgrade} {
+		for key, value := range map[string]TsValue{"socket": socket, "httpVersionMajor": major, "httpVersionMinor": minor, "httpVersion": TsNodeHTTP1ServerKey(TsText(major) + "." + TsText(minor)), "url": url, "upgrade": upgrade} {
 			TsNodeHTTPIncomingSet(loop, request, key, value)
 		}
 		requestKeys := TsNodeHTTPIncomingModule(loop)
@@ -23857,7 +24147,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 		if !TsIsUndefined(reqKeepAlive) {
 			TsSet(loop, request, reqKeepAlive, keepAlive)
 		}
-		methods := TsNodeHTTPCommonGet(loop, state.Common, "methods")
+		methods := TsNodeHTTPCommonGet(loop, state.Common, "allMethods")
 		if TsIsNumeric(method) {
 			index := int(TsNumber(method))
 			if methods.Kind == TsArrayKind && index >= 0 && index < len((*TsArray)(methods.Ref).Values) {
@@ -23874,9 +24164,9 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 			shouldUpgrade := TsText(TsNodeHTTPIncomingGet(loop, request, "method")) == "CONNECT"
 			callback := TsNodeHTTPServerGet(loop, server, "shouldUpgradeCallback")
 			if callback.Kind == TsFunctionKind {
-				shouldUpgrade = TsTruthy(TsCall(loop, callback, request))
+				shouldUpgrade = shouldUpgrade || TsTruthy(TsCall(loop, callback, request))
 			} else {
-				shouldUpgrade = shouldUpgrade || TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsInternalHTTP1FallbackKey("upgrade"))) > 0
+				shouldUpgrade = shouldUpgrade || TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsNodeHTTP1ServerKey("upgrade"))) > 0
 			}
 			TsNodeHTTPIncomingSet(loop, request, "upgrade", TsBooleanValue(shouldUpgrade))
 			if shouldUpgrade {
@@ -23886,41 +24176,41 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 		}
 		readFn := TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue {
 			TsNodeHTTPIncomingSet(loop, request, "_consuming", TsBooleanValue(true))
-			if !TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "_paused")) && TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "readable")) {
+			if !TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "_paused")) && TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "readable")) {
 				TsNodeHTTPServerCall(loop, socket, "resume")
 			}
 			return TsU
 		}))
 		TsNodeHTTPIncomingSet(loop, request, "_read", readFn)
 		responseCtor := TsNodeHTTPServerGet(loop, state.Http, "ServerResponse")
-		if custom := TsInternalHTTP1FallbackGet(loop, http1Options, "ServerResponse"); !TsNullish(custom) {
+		if custom := TsNodeHTTP1ServerGet(loop, http1Options, "ServerResponse"); !TsNullish(custom) {
 			responseCtor = custom
 		}
 		response := TsConstruct(loop, responseCtor, request)
 		TsNodeHTTPServerSet(loop, response, "_keepAliveTimeout", state.KeepAliveTimeout)
 		maxPerSocket := TsNodeHTTPServerGet(loop, server, "maxRequestsPerSocket")
 		TsNodeHTTPServerSet(loop, response, "_maxRequestsPerSocket", maxPerSocket)
-		handle := TsInternalHTTP1FallbackCreateResponseHandle(loop, socket, keepAlive, state.KeepAliveTimeout)
+		handle := TsNodeHTTP1ServerCreateResponseHandle(loop, socket, keepAlive, state.KeepAliveTimeout)
 		finishedFn := TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue {
-			n := TsNumber(TsInternalHTTP1FallbackSym(loop, socket, "kHttp1ActiveRequests")) - 1
+			n := TsNumber(TsNodeHTTP1ServerSym(loop, socket, "kHttp1ActiveRequests")) - 1
 			if n < 0 {
 				n = 0
 			}
-			TsInternalHTTP1FallbackPut(loop, socket, "kHttp1ActiveRequests", TsNumberValue(n))
-			if !TsTruthy(keepAlive) && !TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "destroyed")) {
+			TsNodeHTTP1ServerPut(loop, socket, "kHttp1ActiveRequests", TsNumberValue(n))
+			if !TsTruthy(keepAlive) && !TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "destroyed")) {
 				TsNodeHTTPServerCall(loop, socket, "end")
 			}
 			return TsU
 		}))
 		TsNodeHTTPServerSet(loop, handle, "onfinished", finishedFn)
 		flushedFn := TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue {
-			TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "finishDrainedResponse", response)
+			TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "finishDrainedResponse", response)
 			return TsU
 		}))
 		TsNodeHTTPServerSet(loop, handle, "onflushed", flushedFn)
 		TsSet(loop, response, TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "kHandle"), handle)
-		if !TsNullish(TsInternalHTTP1FallbackGet(loop, socket, "_httpMessage")) {
-			TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "queuePipelinedResponse", socket, response, TsBooleanValue(TsNumber(major) < 1 || TsNumber(minor) < 1))
+		if !TsNullish(TsNodeHTTP1ServerGet(loop, socket, "_httpMessage")) {
+			TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "queuePipelinedResponse", socket, response, TsBooleanValue(TsNumber(major) < 1 || TsNumber(minor) < 1))
 		} else {
 			TsNodeHTTPServerCall(loop, response, "assignSocket", socket)
 		}
@@ -23935,7 +24225,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 				TsNodeHTTPIncomingCall(loop, finishedRequest, "_dump")
 			}
 			TsNodeHTTPServerCall(loop, response, "detachSocket", socket)
-			closeKey := TsInternalHTTP1FallbackGet(loop, state.Pipeline, "kMustCloseConnection")
+			closeKey := TsNodeHTTP1ServerGet(loop, state.Pipeline, "kMustCloseConnection")
 			if TsTruthy(TsGet(loop, response, closeKey)) || TsTruthy(TsNodeHTTPServerGet(loop, response, "_last")) {
 				destroySoon := TsNodeHTTPServerGet(loop, socket, "destroySoon")
 				if destroySoon.Kind == TsFunctionKind {
@@ -23945,11 +24235,11 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 				}
 				return TsU
 			}
-			TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "advanceResponsePipeline", server, socket)
+			TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "advanceResponsePipeline", server, socket)
 			return TsU
 		}))
-		TsNodeHTTPServerCall(loop, response, "on", TsInternalHTTP1FallbackKey("finish"), finishListener)
-		TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "maybePauseFallbackReads", socket)
+		TsNodeHTTPServerCall(loop, response, "on", TsNodeHTTP1ServerKey("finish"), finishListener)
+		TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "maybePauseHTTP1Reads", socket)
 		if TsNumber(major) == 1 && TsNumber(minor) == 1 && TsIsNumeric(maxPerSocket) && TsNumber(maxPerSocket) > 0 {
 			state.RequestsCount++
 			TsNodeHTTPServerSet(loop, response, "maxRequestsOnConnectionReached", TsBooleanValue(TsNumber(maxPerSocket) <= float64(state.RequestsCount)))
@@ -23960,18 +24250,23 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 				return TsNumberValue(0)
 			}
 		}
+		if TsNumber(major) == 1 && TsNumber(minor) == 1 && !TsStrictEqual(TsNodeHTTPServerGet(loop, server, "requireHostHeader"), TsBooleanValue(false)) && TsIsUndefined(TsNodeHTTPIncomingGet(loop, TsNodeHTTPIncomingGet(loop, request, "headers"), "host")) {
+			TsNodeHTTPServerCall(loop, response, "writeHead", TsNumberValue(400), TsArrayValue(&TsArray{Values: []TsValue{TsNodeHTTP1ServerKey("Connection"), TsNodeHTTP1ServerKey("close")}}))
+			TsNodeHTTPServerCall(loop, response, "end")
+			return TsNumberValue(0)
+		}
 		expect := TsNodeHTTPIncomingGet(loop, request, "headers")
-		expect = TsGet(loop, expect, TsInternalHTTP1FallbackKey("expect"))
+		expect = TsGet(loop, expect, TsNodeHTTP1ServerKey("expect"))
 		if !TsIsUndefined(expect) && TsNumber(major) == 1 && TsNumber(minor) == 1 {
 			matches := TsNodeHTTPCommonHasBoundaryToken(TsText(expect), "100-continue")
 			if matches {
-				if TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsInternalHTTP1FallbackKey("checkContinue"))) > 0 {
+				if TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsNodeHTTP1ServerKey("checkContinue"))) > 0 {
 					TsNodeHTTPServerEmit(loop, server, "checkContinue", request, response)
 				} else {
 					TsNodeHTTPServerCall(loop, response, "writeContinue")
 					TsNodeHTTPServerEmit(loop, server, "request", request, response)
 				}
-			} else if TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsInternalHTTP1FallbackKey("checkExpectation"))) > 0 {
+			} else if TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsNodeHTTP1ServerKey("checkExpectation"))) > 0 {
 				TsNodeHTTPServerEmit(loop, server, "checkExpectation", request, response)
 			} else {
 				TsNodeHTTPServerCall(loop, response, "writeHead", TsNumberValue(417))
@@ -23980,6 +24275,10 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 			return TsNumberValue(0)
 		}
 		TsNodeHTTPServerEmit(loop, server, "request", request, response)
+		if TsText(TsNodeHTTPIncomingGet(loop, request, "method")) == "PRI" {
+			state.CloseAfterParse = true
+			return TsNumberValue(2)
+		}
 		return TsNumberValue(0)
 	case "onHttp1Body":
 		if !TsNullish(state.Req) && !TsTruthy(TsNodeHTTPIncomingGet(loop, state.Req, "_dumped")) {
@@ -23987,7 +24286,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 		}
 		return TsU
 	case "onHttp1MessageComplete":
-		TsInternalHTTP1FallbackPut(loop, socket, "kHttp1MessageOpen", TsBooleanValue(false))
+		TsNodeHTTP1ServerPut(loop, socket, "kHttp1MessageOpen", TsBooleanValue(false))
 		TsNodeHTTPServerPut(loop, socket, "kRequest", TsU)
 		trailers := state.FlushedHeaders
 		if len(trailers) > 0 {
@@ -24008,15 +24307,19 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 			TsCall(loop, prepare, err, parser, arg(1))
 		}
 		if !TsTruthy(TsNodeHTTPServerEmit(loop, server, "clientError", err, socket)) {
-			if TsTruthy(TsNodeHTTPServerGet(loop, socket, "writable")) && !TsTruthy(TsNodeHTTPServerGet(loop, socket, "destroyed")) {
+			inFlight := TsNodeHTTPServerGet(loop, socket, "_httpMessage")
+			mayWriteError := TsNullish(inFlight) || !TsTruthy(TsNodeHTTPServerGet(loop, inFlight, "_headerSent"))
+			if mayWriteError && TsTruthy(TsNodeHTTPServerGet(loop, socket, "writable")) && !TsTruthy(TsNodeHTTPServerGet(loop, socket, "destroyed")) {
 				code := TsText(TsNodeHTTPServerGet(loop, err, "code"))
 				message := "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"
 				if code == "HPE_HEADER_OVERFLOW" {
 					message = "HTTP/1.1 431 Request Header Fields Too Large\r\nConnection: close\r\n\r\n"
 				} else if code == "HPE_CHUNK_EXTENSIONS_OVERFLOW" {
 					message = "HTTP/1.1 413 Payload Too Large\r\nConnection: close\r\n\r\n"
+				} else if code == "ERR_HTTP_REQUEST_TIMEOUT" {
+					message = "HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n"
 				}
-				TsNodeHTTPServerCall(loop, socket, "write", TsInternalHTTP1FallbackKey(message), TsInternalHTTP1FallbackKey("latin1"))
+				TsNodeHTTPServerCall(loop, socket, "write", TsNodeHTTP1ServerKey(message), TsNodeHTTP1ServerKey("latin1"))
 			}
 			TsNodeHTTPServerCall(loop, socket, "destroy", err)
 		}
@@ -24025,27 +24328,31 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 		data := arg(0)
 		ret := TsNodeHTTPCommonCall(loop, parser, "execute", data)
 		if ret.Kind == TsErrorKind {
-			TsInternalHTTP1FallbackConnectionDispatch(loop, state, "onHttp1SocketError", []TsValue{ret, data})
+			TsNodeHTTP1ServerConnectionDispatch(loop, state, "onHttp1SocketError", []TsValue{ret, data})
+			return TsU
+		}
+		if state.CloseAfterParse {
+			state.CloseAfterParse = false
+			TsNodeHTTPServerCall(loop, socket, "destroy")
 			return TsU
 		}
 		if !TsNullish(state.PendingUpgrade) {
 			request := state.PendingUpgrade
 			state.PendingUpgrade = TsNull
 			for _, event := range []struct{ Name, Callback string }{{"data", "onHttp1SocketData"}, {"error", "onHttp1SocketErrorListener"}, {"end", "onHttp1SocketEnd"}, {"drain", "onHttp1SocketDrain"}} {
-				TsNodeHTTPServerCall(loop, socket, "removeListener", TsInternalHTTP1FallbackKey(event.Name), TsInternalHTTP1FallbackCallback(loop, state, event.Callback, 1))
+				TsNodeHTTPServerCall(loop, socket, "removeListener", TsNodeHTTP1ServerKey(event.Name), TsNodeHTTP1ServerCallback(loop, state, event.Callback, 1))
 			}
-			deleteFn := TsGet(loop, state.Connections, TsInternalHTTP1FallbackKey("delete"))
+			deleteFn := TsGet(loop, state.Connections, TsNodeHTTP1ServerKey("delete"))
 			if deleteFn.Kind == TsFunctionKind {
 				TsCallReceiver(loop, deleteFn, state.Connections, socket)
 			}
 			TsNodeHTTPServerPut(loop, socket, "kHandedOff", TsBooleanValue(true))
 			tracked := TsNodeHTTPServerSym(loop, state.Server, "kTrackedConnections")
-			removeTracked := TsGet(loop, tracked, TsInternalHTTP1FallbackKey("delete"))
+			removeTracked := TsGet(loop, tracked, TsNodeHTTP1ServerKey("delete"))
 			if removeTracked.Kind == TsFunctionKind {
 				TsCallReceiver(loop, removeTracked, tracked, socket)
 			}
-			TsNodeHTTPCommonCall(loop, parser, "close")
-			TsInternalHTTP1FallbackSet(loop, socket, "parser", TsNull)
+			TsNodeHTTPCommonFreeParser(loop, parser, request, socket)
 			eventName := "upgrade"
 			if TsText(TsNodeHTTPIncomingGet(loop, request, "method")) == "CONNECT" {
 				eventName = "connect"
@@ -24059,7 +24366,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 				parsed = len(raw)
 			}
 			body := TsNodeBuffer(append([]byte(nil), raw[parsed:]...))
-			if TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsInternalHTTP1FallbackKey(eventName))) > 0 {
+			if TsNumber(TsNodeHTTPServerCall(loop, server, "listenerCount", TsNodeHTTP1ServerKey(eventName))) > 0 {
 				TsNodeHTTPServerSet(loop, socket, "readableFlowing", TsNull)
 				TsNodeHTTPServerEmit(loop, server, eventName, request, socket, body)
 			} else {
@@ -24070,7 +24377,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 	case "onHttp1SocketEnd":
 		result := TsNodeHTTPCommonCall(loop, parser, "finish")
 		if result.Kind == TsErrorKind {
-			TsInternalHTTP1FallbackConnectionDispatch(loop, state, "onHttp1SocketError", []TsValue{result, TsU})
+			TsNodeHTTP1ServerConnectionDispatch(loop, state, "onHttp1SocketError", []TsValue{result, TsU})
 			return TsU
 		}
 		if !TsTruthy(TsNodeHTTPServerGet(loop, server, "httpAllowHalfOpen")) {
@@ -24082,7 +24389,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 			}
 			return TsU
 		}
-		last := TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "lastPipelinedResponse", socket)
+		last := TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "lastPipelinedResponse", socket)
 		message := last
 		if TsNullish(message) {
 			message = TsNodeHTTPServerGet(loop, socket, "_httpMessage")
@@ -24094,7 +24401,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 		}
 		return TsU
 	case "onHttp1SocketDrain":
-		TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "resumeFallbackReadsOnDrain", socket)
+		TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "resumeHTTP1ReadsOnDrain", socket)
 		message := TsNodeHTTPServerGet(loop, socket, "_httpMessage")
 		if !TsNullish(message) {
 			handle := TsGet(loop, message, TsInternalHTTPGet(loop, TsInternalHTTPModule(loop), "kHandle"))
@@ -24119,7 +24426,7 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 		}
 		return TsU
 	case "onHttp1SocketClose":
-		deleteFn := TsGet(loop, state.Connections, TsInternalHTTP1FallbackKey("delete"))
+		deleteFn := TsGet(loop, state.Connections, TsNodeHTTP1ServerKey("delete"))
 		if deleteFn.Kind == TsFunctionKind {
 			TsCallReceiver(loop, deleteFn, state.Connections, socket)
 		}
@@ -24133,37 +24440,34 @@ func TsInternalHTTP1FallbackConnectionDispatch(loop *TsLoop, state *TsHTTP1Fallb
 			if TsNullish(err) {
 				err = TsFSException("Error", "ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed")
 			}
-			callback := TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue {
-				TsInternalHTTP1FallbackFailPending(loop, message, err)
-				return TsU
-			}))
+			callback := TsFunctionValue(TsFunc(func(loop *TsLoop, _ ...TsValue) TsValue { TsNodeHTTP1ServerFailPending(loop, message, err); return TsU }))
 			TsNodeHTTPServerCall(loop, handle, "socketEnded", callback)
 			request := TsNodeHTTPServerGet(loop, message, "req")
 			if !TsNullish(request) && !TsTruthy(TsNodeHTTPIncomingGet(loop, request, "destroyed")) {
-				if TsNumber(TsNodeHTTPServerCall(loop, request, "listenerCount", TsInternalHTTP1FallbackKey("error"))) > 0 {
+				if TsNumber(TsNodeHTTPServerCall(loop, request, "listenerCount", TsNodeHTTP1ServerKey("error"))) > 0 {
 					TsNodeHTTPIncomingCall(loop, request, "destroy", TsFSException("Error", "ECONNRESET", "aborted"))
 				} else {
 					TsNodeHTTPIncomingCall(loop, request, "destroy")
 				}
 			}
 		}
-		TsInternalHTTP1FallbackCallPipeline(loop, state.Pipeline, "abortQueuedPipelinedResponses", socket)
-		TsNodeHTTPCommonCall(loop, parser, "close")
+		TsNodeHTTP1ServerCallPipeline(loop, state.Pipeline, "abortQueuedPipelinedResponses", socket)
+		TsNodeHTTPCommonFreeParser(loop, parser, state.Req, socket)
 		return TsU
 	}
 	return TsU
 }
 
-func TsInternalHTTP1FallbackCallPipeline(loop *TsLoop, pipeline TsValue, name string, args ...TsValue) TsValue {
-	method := TsGet(loop, pipeline, TsInternalHTTP1FallbackKey(name))
+func TsNodeHTTP1ServerCallPipeline(loop *TsLoop, pipeline TsValue, name string, args ...TsValue) TsValue {
+	method := TsGet(loop, pipeline, TsNodeHTTP1ServerKey(name))
 	if method.Kind == TsFunctionKind {
 		return TsCall(loop, method, args...)
 	}
 	return TsU
 }
-func TsInternalHTTP1FallbackCloseIdle(loop *TsLoop, server TsValue) TsValue {
-	TsInternalHTTP1FallbackInit(loop)
-	connections := TsInternalHTTP1FallbackSym(loop, server, "kHttp1Connections")
+func TsNodeHTTP1ServerCloseIdle(loop *TsLoop, server TsValue) TsValue {
+	TsNodeHTTP1ServerInit(loop)
+	connections := TsNodeHTTP1ServerSym(loop, server, "kHttp1Connections")
 	if connections.Kind != TsCollectionKind {
 		return TsU
 	}
@@ -24172,44 +24476,44 @@ func TsInternalHTTP1FallbackCloseIdle(loop *TsLoop, server TsValue) TsValue {
 			continue
 		}
 		socket := entry.Key
-		if !TsTruthy(TsInternalHTTP1FallbackSym(loop, socket, "kHttp1ActiveRequests")) && !TsTruthy(TsInternalHTTP1FallbackSym(loop, socket, "kHttp1MessageOpen")) && !TsTruthy(TsInternalHTTP1FallbackGet(loop, socket, "destroyed")) {
+		if !TsTruthy(TsNodeHTTP1ServerSym(loop, socket, "kHttp1ActiveRequests")) && !TsTruthy(TsNodeHTTP1ServerSym(loop, socket, "kHttp1MessageOpen")) && !TsTruthy(TsNodeHTTP1ServerGet(loop, socket, "destroyed")) {
 			TsNodeHTTPServerCall(loop, socket, "destroy")
 		}
 	}
 	return TsU
 }
-func TsInternalHTTP1FallbackCloseAll(loop *TsLoop, server TsValue) TsValue {
-	TsInternalHTTP1FallbackInit(loop)
-	connections := TsInternalHTTP1FallbackSym(loop, server, "kHttp1Connections")
+func TsNodeHTTP1ServerCloseAll(loop *TsLoop, server TsValue) TsValue {
+	TsNodeHTTP1ServerInit(loop)
+	connections := TsNodeHTTP1ServerSym(loop, server, "kHttp1Connections")
 	if connections.Kind != TsCollectionKind {
 		return TsU
 	}
 	for _, entry := range (*TsCollection)(connections.Ref).Entries {
-		if entry.Live && !TsTruthy(TsInternalHTTP1FallbackGet(loop, entry.Key, "destroyed")) {
+		if entry.Live && !TsTruthy(TsNodeHTTP1ServerGet(loop, entry.Key, "destroyed")) {
 			TsNodeHTTPServerCall(loop, entry.Key, "destroy")
 		}
 	}
 	return TsU
 }
-func TsInternalHTTP1FallbackModule(loop *TsLoop) TsValue {
-	if !TsIsUndefined(TsInternalHTTP1FallbackSingleton.Module) {
-		return TsInternalHTTP1FallbackSingleton.Module
+func TsNodeHTTP1ServerModule(loop *TsLoop) TsValue {
+	if !TsIsUndefined(TsNodeHTTP1ServerSingleton.Module) {
+		return TsNodeHTTP1ServerSingleton.Module
 	}
-	TsInternalHTTP1FallbackInit(loop)
+	TsNodeHTTP1ServerInit(loop)
 	module := TsNewObject()
 	module.Set("connectionListenerHTTP1", TsNamedNativeMethod("connectionListenerHTTP1", 3, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
-		return TsInternalHTTP1FallbackConnectionListener(loop, TsArg(args, 0), TsArg(args, 1), TsArg(args, 2))
+		return TsNodeHTTP1ServerConnectionListener(loop, TsArg(args, 0), TsArg(args, 1), TsArg(args, 2))
 	}))
 	module.Set("closeIdleHttp1Connections", TsNamedNativeMethod("closeIdleHttp1Connections", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
-		return TsInternalHTTP1FallbackCloseIdle(loop, TsArg(args, 0))
+		return TsNodeHTTP1ServerCloseIdle(loop, TsArg(args, 0))
 	}))
 	module.Set("closeAllHttp1Connections", TsNamedNativeMethod("closeAllHttp1Connections", 1, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
-		return TsInternalHTTP1FallbackCloseAll(loop, TsArg(args, 0))
+		return TsNodeHTTP1ServerCloseAll(loop, TsArg(args, 0))
 	}))
-	module.Set("kHttp1Connections", TsInternalHTTP1FallbackSingleton.KConnections)
+	module.Set("kHttp1Connections", TsNodeHTTP1ServerSingleton.KConnections)
 	module.Set("default", TsObjectValue(module))
-	TsInternalHTTP1FallbackSingleton.Module = TsObjectValue(module)
-	return TsInternalHTTP1FallbackSingleton.Module
+	TsNodeHTTP1ServerSingleton.Module = TsObjectValue(module)
+	return TsNodeHTTP1ServerSingleton.Module
 }
 
 type TsInternalTraceEventsState struct {
@@ -26690,6 +26994,11 @@ func TsNodeTimerSetInterval(loop *TsLoop, callback, milliseconds TsValue, args .
 	handle.Cancel = func() {
 		if active != nil {
 			loop.ClearTimeout(TsTaskValue(active))
+		}
+	}
+	handle.RefHook = func(referenced bool) {
+		if active != nil {
+			active.Unref = !referenced
 		}
 	}
 	schedule()
@@ -31632,8 +31941,6 @@ func TsNodeModuleRequireLoadFrom(loop *TsLoop, args []TsValue, parent TsValue) T
 		return TsInternalStreamModule(loop)
 	case "internal/http/FakeSocket":
 		return TsInternalHTTPFakeSocketModule(loop)
-	case "internal/http1_server_fallback":
-		return TsInternalHTTP1FallbackModule(loop)
 	case "internal/freelist":
 		return TsInternalFreeListConstructor(loop)
 	case "internal/http":
@@ -62746,6 +63053,8 @@ func TsNodeNetError(err error, operation string) TsValue {
 			code = "EADDRNOTAVAIL"
 		case syscall.EACCES:
 			code = "EACCES"
+		case syscall.EPERM:
+			code = "EPERM"
 		case syscall.EINVAL:
 			code = "EINVAL"
 		case syscall.ENOENT:
@@ -62852,24 +63161,10 @@ func TsNodeNetSyncSocket(loop *TsLoop, state *TsNodeNetSocketState) {
 		return
 	}
 	stream := state.Stream
-	TsNodeNetSet(state.Loop, stream, "connecting", TsBooleanValue(state.Connecting))
-	TsNodeNetSet(state.Loop, stream, "pending", TsBooleanValue(state.Connecting))
+	// These values are exposed through read-only Socket prototype accessors.
+	// Keep the backing state authoritative instead of assigning through those
+	// getters while synchronizing a newly accepted or connected socket.
 	TsNodeNetSet(state.Loop, stream, "destroyed", TsBooleanValue(state.Closed))
-	TsNodeNetSet(state.Loop, stream, "bytesRead", TsNumberValue(float64(state.BytesRead)))
-	TsNodeNetSet(state.Loop, stream, "bytesWritten", TsNumberValue(float64(state.BytesWritten)))
-	TsNodeNetSet(state.Loop, stream, "localAddress", TsStringReference(TsStringUTF8(state.LocalAddress)))
-	TsNodeNetSet(state.Loop, stream, "localPort", TsNumberValue(float64(state.LocalPort)))
-	TsNodeNetSet(state.Loop, stream, "localFamily", TsStringReference(TsStringUTF8(state.LocalFamily)))
-	TsNodeNetSet(state.Loop, stream, "remoteAddress", TsStringReference(TsStringUTF8(state.RemoteAddress)))
-	TsNodeNetSet(state.Loop, stream, "remotePort", TsNumberValue(float64(state.RemotePort)))
-	TsNodeNetSet(state.Loop, stream, "remoteFamily", TsStringReference(TsStringUTF8(state.RemoteFamily)))
-	ready := "opening"
-	if state.Closed {
-		ready = "closed"
-	} else if state.Connected {
-		ready = "open"
-	}
-	TsNodeNetSet(state.Loop, stream, "readyState", TsStringReference(TsStringUTF8(ready)))
 }
 func TsNodeNetResetTimeout(state *TsNodeNetSocketState) {
 	if state == nil || state.Closed {
@@ -64054,6 +64349,9 @@ func TsNodeNetConfigureOnRead(loop *TsLoop, state *TsNodeNetSocketState, options
 	}
 }
 func TsNodeNetSocketCreate(loop *TsLoop, options TsValue) TsValue {
+	// HTTP, HTTPS and agents reach this constructor through their own module
+	// paths. Initialize the singleton maps here as well as when node:net loads.
+	TsNodeNetModule(loop)
 	TsNodeDuplexInit(loop)
 	if TsNullish(options) {
 		options = TsObjectValue(TsNewObject())
@@ -64246,7 +64544,6 @@ func TsNodeNetSocketInstall(loop *TsLoop) {
 						TsFSInvalid("timeout", "a non-negative number")
 					}
 					state.Timeout = time.Duration(TsNumber(timeout)) * time.Millisecond
-					TsNodeNetSet(loop, receiver, "timeout", timeout)
 					TsNodeNetResetTimeout(state)
 				}
 				if listener := TsArg(args, 1); !TsIsUndefined(listener) {
@@ -64487,6 +64784,10 @@ func TsNodeNetServerAccept(loop *TsLoop, state *TsNodeNetServerState) {
 			TsNodeNetServerMaybeClose(loop, state)
 			return
 		}
+		// Keep one accept pending while this connection is initialized and its
+		// listeners run. A failure in per-connection setup must not stop the
+		// server from accepting later clients.
+		TsNodeNetServerAccept(loop, state)
 		options := TsNodeNetGet(state.Loop, state.Server, "_socketOptions")
 		socket := TsNodeNetSocketCreate(state.Loop, options)
 		child := TsNodeNetSocketFor(socket)
@@ -64511,7 +64812,6 @@ func TsNodeNetServerAccept(loop *TsLoop, state *TsNodeNetServerState) {
 			_ = conn.Close()
 			child.Closed = true
 			TsNodeNetEmit(state.Loop, state.Server, "drop", TsObjectValue(data))
-			TsNodeNetServerAccept(loop, state)
 			return
 		}
 		maxConnections := TsNodeNetGet(state.Loop, state.Server, "maxConnections")
@@ -64526,7 +64826,6 @@ func TsNodeNetServerAccept(loop *TsLoop, state *TsNodeNetServerState) {
 			_ = conn.Close()
 			child.Closed = true
 			TsNodeNetEmit(state.Loop, state.Server, "drop", TsObjectValue(data))
-			TsNodeNetServerAccept(loop, state)
 			return
 		}
 		state.Connections++
@@ -64547,7 +64846,6 @@ func TsNodeNetServerAccept(loop *TsLoop, state *TsNodeNetServerState) {
 		if !tlsPending && !TsTruthy(TsNodeNetGet(state.Loop, state.Server, "pauseOnConnect")) {
 			TsNodeNetStartRead(loop, child)
 		}
-		TsNodeNetServerAccept(loop, state)
 	})
 	task.Unref = state.Unref
 }
@@ -64569,6 +64867,8 @@ func TsNodeNetFormatListenError(loop *TsLoop, failure TsValue, address string, p
 		description = "address already in use"
 	case "EACCES":
 		description = "permission denied"
+	case "EPERM":
+		description = "operation not permitted"
 	case "EADDRNOTAVAIL":
 		description = "address not available"
 	case "EINVAL":
@@ -64645,7 +64945,7 @@ func TsNodeNetListenNative(loop *TsLoop, receiver TsValue, state *TsNodeNetServe
 			errorAddress = path
 		}
 		failure := TsNodeNetFormatListenError(loop, TsNodeNetError(err, "listen"), errorAddress, port)
-		loop.Ready = append(loop.Ready, func() { TsNodeNetEmit(loop, receiver, "error", failure) })
+		loop.Ready = append(loop.Ready, func() { TsNodeNetEmitSafe(loop, receiver, "error", failure) })
 		return
 	}
 	if secure := TsNodeTLSServerFor(receiver); secure != nil {
@@ -64674,7 +64974,7 @@ func TsNodeNetListenNative(loop *TsLoop, receiver TsValue, state *TsNodeNetServe
 			state.Closed = true
 			TsNodeNetSet(loop, receiver, "_handle", TsNull)
 			failure := TsNodeNetFormatListenError(loop, TsNodeNetError(statErr, "chmod"), path, 0)
-			loop.Ready = append(loop.Ready, func() { TsNodeNetEmit(loop, receiver, "error", failure) })
+			loop.Ready = append(loop.Ready, func() { TsNodeNetEmitSafe(loop, receiver, "error", failure) })
 			return
 		} else {
 			permissions := os.FileMode(0)
@@ -64690,7 +64990,7 @@ func TsNodeNetListenNative(loop *TsLoop, receiver TsValue, state *TsNodeNetServe
 				state.Closed = true
 				TsNodeNetSet(loop, receiver, "_handle", TsNull)
 				failure := TsNodeNetFormatListenError(loop, TsNodeNetError(chmodErr, "chmod"), path, 0)
-				loop.Ready = append(loop.Ready, func() { TsNodeNetEmit(loop, receiver, "error", failure) })
+				loop.Ready = append(loop.Ready, func() { TsNodeNetEmitSafe(loop, receiver, "error", failure) })
 				return
 			}
 		}
@@ -65052,6 +65352,9 @@ func TsNodeNetListen(loop *TsLoop, receiver TsValue, args ...TsValue) TsValue {
 		if callback := TsNodeNetGet(loop, arg, "callback"); callback.Kind == TsFunctionKind {
 			onListen = callback
 		}
+		if hostname.Kind == TsFunctionKind {
+			onListen = hostname
+		}
 		if signalValue := TsFSProperty(loop, arg, "signal"); !TsIsUndefined(signalValue) {
 			signal := TsFSAbortSignal(loop, arg)
 			_, aborted := TsAbortReason(signal)
@@ -65205,6 +65508,7 @@ func TsNodeNetServerClose(loop *TsLoop, receiver TsValue, args ...TsValue) TsVal
 	return receiver
 }
 func TsNodeNetServerCreate(loop *TsLoop, args ...TsValue) TsValue {
+	TsNodeNetModule(loop)
 	options, listener := TsArg(args, 0), TsArg(args, 1)
 	if options.Kind == TsFunctionKind {
 		listener = options
@@ -75973,7 +76277,7 @@ type TsNodeHTTP2SessionState struct {
 	Engine                                                                                                                                               *TsHTTP2Connection
 	Socket                                                                                                                                               TsValue
 	ServerObject                                                                                                                                         TsValue
-	TransportDataListener, TransportCloseListener, TransportStartListener, TransportDrainListener                                                        TsValue
+	TransportDataListener, TransportCloseListener, TransportStartListener, TransportDrainListener, TransportErrorListener                                TsValue
 	TransportStartEvent                                                                                                                                  string
 	Incoming                                                                                                                                             []byte
 	Outgoing                                                                                                                                             [][]byte
@@ -76004,6 +76308,7 @@ type TsNodeHTTP2SessionState struct {
 type TsNodeHTTP2StreamState struct {
 	Object, Session, Headers, RawHeaders, Trailers                                                                     TsValue
 	Id                                                                                                                 int
+	Exposed                                                                                                            bool
 	Closed, Destroyed, Ended, HeadersSent, HeadersReceived, WaitForTrailers, TrailerReady, SentTrailers, ReadingPaused bool
 	RstCode                                                                                                            int
 	Weight                                                                                                             uint16
@@ -76121,10 +76426,10 @@ func TsHTTP2Transition(state, event uint8) (uint8, int) {
 	}
 }
 func TsHTTP2CanReceiveData(state uint8) bool {
-	return state == TsHTTP2StreamIdle || state == TsHTTP2StreamOpen || state == TsHTTP2StreamHalfClosedLocal
+	return state == TsHTTP2StreamOpen || state == TsHTTP2StreamHalfClosedLocal
 }
 func TsHTTP2CanSendData(state uint8) bool {
-	return state == TsHTTP2StreamIdle || state == TsHTTP2StreamOpen || state == TsHTTP2StreamHalfClosedRemote
+	return state == TsHTTP2StreamOpen || state == TsHTTP2StreamHalfClosedRemote
 }
 
 type TsHTTP2SendWindow struct{ Remaining int64 }
@@ -76360,6 +76665,7 @@ func TsHTTP2ValidateFrameHeader(header TsHTTP2FrameHeader, maxFrameSize uint32) 
 		connectionScope = true
 	case TsHTTP2FrameWindowUpdate:
 		known = true
+		fixedLength = 4
 	case TsHTTP2FrameAltSvc, TsHTTP2FrameOrigin:
 		known = true
 	}
@@ -77232,6 +77538,7 @@ func TsNodeHTTP2SessionNew(loop *TsLoop, server bool, socket, options TsValue) T
 func TsNodeHTTP2StreamNew(loop *TsLoop, session TsValue, id int, headers TsValue) TsValue {
 	options := TsNewObject()
 	var stream TsValue
+	options.Set("read", TsNamedNativeMethod("_read", 1, func(_ *TsLoop, _ TsValue, _ ...TsValue) TsValue { return TsU }))
 	options.Set("write", TsNamedNativeMethod("_write", 3, func(loop *TsLoop, _ TsValue, args ...TsValue) TsValue {
 		return TsNodeHTTP2StreamWrite(loop, stream, args...)
 	}))
@@ -77248,11 +77555,26 @@ func TsNodeHTTP2StreamNew(loop *TsLoop, session TsValue, id int, headers TsValue
 		return 0
 	}()}
 	TsNodeHTTP2Singleton.Streams[uintptr(unsafe.Pointer(object))] = state
-	for name, value := range map[string]TsValue{"id": TsNumberValue(float64(id)), "session": session, "sentHeaders": TsNodeHTTP2EmptyObject(), "pending": TsBooleanValue(false), "closed": TsBooleanValue(false), "destroyed": TsBooleanValue(false), "rstCode": TsNumberValue(0), "headersSent": TsBooleanValue(false), "aborted": TsBooleanValue(false), "bufferSize": TsNumberValue(0), "state": TsNodeHTTP2EmptyObject(), "endAfterHeaders": TsBooleanValue(false), "headRequest": TsBooleanValue(false), "originSet": TsArrayValue(&TsArray{})} {
+	for name, value := range map[string]TsValue{"id": TsNumberValue(float64(id)), "session": session, "sentHeaders": TsNodeHTTP2EmptyObject(), "pending": TsBooleanValue(false), "destroyed": TsBooleanValue(false), "rstCode": TsNumberValue(0), "headersSent": TsBooleanValue(false), "aborted": TsBooleanValue(false), "bufferSize": TsNumberValue(0), "state": TsNodeHTTP2EmptyObject(), "endAfterHeaders": TsBooleanValue(false), "headRequest": TsBooleanValue(false), "originSet": TsArrayValue(&TsArray{})} {
 		TsNodeHTTP2Set(loop, stream, name, value)
 	}
 	TsNodeHTTP2AttachStreamReadControl(loop, stream)
 	return stream
+}
+func TsNodeHTTP2SyncStreamLifecycle(loop *TsLoop, stream TsValue, state *TsNodeHTTP2StreamState) {
+	if state == nil {
+		return
+	}
+	if readable := TsNodeReadableStateFor(stream); readable != nil {
+		readable.Destroyed = state.Destroyed
+		readable.Closed = state.Closed
+		TsNodeReadableSyncState(loop, readable)
+	}
+	if writable := TsNodeWritableStateFor(stream); writable != nil {
+		writable.Destroyed = state.Destroyed
+		writable.Closed = state.Closed
+		TsNodeWritableSync(loop, writable)
+	}
 }
 func TsNodeHTTP2SessionSetState(loop *TsLoop, state *TsNodeHTTP2SessionState, name string, value bool) {
 	if state == nil {
@@ -77492,6 +77814,9 @@ func TsNodeHTTP2SessionRequest(loop *TsLoop, receiver TsValue, args ...TsValue) 
 		return stream
 	}
 	stream := TsNodeHTTP2StreamNew(loop, receiver, id, headers)
+	if streamState := TsNodeHTTP2Stream(stream); streamState != nil {
+		streamState.Exposed = true
+	}
 	state.Streams[id] = stream
 	if !TsNullish(options) && !TsNodeHTTP2Object(options) {
 		TsNodeHTTP2FailStream(loop, state, stream, TsHTTP2ErrorInternal)
@@ -77677,10 +78002,11 @@ func TsNodeHTTP2StreamClose(loop *TsLoop, receiver, code TsValue) TsValue {
 		state.ProtocolState = TsHTTP2StreamClosed
 	}
 	state.Closed = true
+	state.Destroyed = true
 	state.Ended = true
 	TsNodeHTTP2DrainOutbound(loop, state)
 	state.RstCode = int(rst)
-	TsNodeHTTP2Set(loop, receiver, "closed", TsBooleanValue(true))
+	TsNodeHTTP2SyncStreamLifecycle(loop, receiver, state)
 	TsNodeHTTP2Set(loop, receiver, "destroyed", TsBooleanValue(true))
 	TsNodeHTTP2Set(loop, receiver, "rstCode", TsNumberValue(float64(rst)))
 	if session != nil {
@@ -77787,6 +78113,9 @@ func TsNodeHTTP2StreamPush(loop *TsLoop, receiver TsValue, args ...TsValue) TsVa
 		panic(TsThrown{TsFSException("Error", "ERR_HTTP2_OUT_OF_STREAMS", "No more stream IDs are available")})
 	}
 	stream := TsNodeHTTP2StreamNew(loop, parent.Session, id, headers)
+	if streamState := TsNodeHTTP2Stream(stream); streamState != nil {
+		streamState.Exposed = true
+	}
 	session.Streams[id] = stream
 	session.Engine.BeginHeaderBlock()
 	if !TsNodeHTTP2EncodeHeaderFields(loop, session, session.Engine, headers, uint32(id)) {
@@ -78062,7 +78391,9 @@ func TsNodeHTTP2Connect(loop *TsLoop, args []TsValue) TsValue {
 }
 
 func TsNodeHTTP2RequestCreate(loop *TsLoop, stream, headers TsValue) TsValue {
-	options := TsObjectValue(TsNewObject())
+	optionsObject := TsNewObject()
+	optionsObject.Set("read", TsNamedNativeMethod("_read", 1, func(_ *TsLoop, _ TsValue, _ ...TsValue) TsValue { return TsU }))
+	options := TsObjectValue(optionsObject)
 	request := TsNodeReadableCreate(loop, TsU, options)
 	object := (*TsObject)(request.Ref)
 	object.Prototype = TsObjectValue(TsNodeHTTP2Singleton.ServerRequestPrototype)
@@ -78181,6 +78512,9 @@ func TsNodeHTTP2ResponseEndHeaders(loop *TsLoop, receiver TsValue) TsValue {
 	return receiver
 }
 func TsNodeHTTP2StreamRespond(loop *TsLoop, stream, headers, options TsValue) TsValue {
+	if TsNullish(options) {
+		options = TsNodeHTTP2EmptyObject()
+	}
 	if !TsNullish(headers) {
 		headers = TsNodeHTTP2HeaderObject(loop, headers)
 		TsNodeHTTP2ValidateHeadersFor(loop, stream, headers)
@@ -78295,6 +78629,13 @@ func TsNodeHTTP2InstallStream(loop *TsLoop) {
 		return TsU
 	}))
 }
+func TsNodeHTTP2AttachServerSessionErrorListener(loop *TsLoop, server, session TsValue) {
+	listener := TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue {
+		TsNodeNetEmitSafe(loop, server, "sessionError", TsArg(args, 0), session)
+		return TsU
+	}))
+	TsCallReceiver(loop, TsNodeHTTP2Get(loop, session, "on"), session, TsNodeHTTP2Key("error"), listener)
+}
 func TsNodeHTTP2AttachServer(loop *TsLoop, server TsValue, secure bool, options, listener TsValue) TsValue {
 	state := &TsNodeHTTP2ServerState{Object: server, Secure: secure, Sessions: map[uintptr]TsValue{}, Options: options, Listener: listener}
 	TsNodeHTTP2Singleton.Servers[uintptr(server.Ref)] = state
@@ -78313,6 +78654,7 @@ func TsNodeHTTP2AttachServer(loop *TsLoop, server TsValue, secure bool, options,
 		TsNodeHTTP2Set(loop, session, "connecting", TsBooleanValue(false))
 		TsNodeHTTP2Set(loop, session, "alpnProtocol", TsNodeHTTP2Key("h2"))
 		state.Sessions[uintptr(session.Ref)] = session
+		TsNodeHTTP2AttachServerSessionErrorListener(loop, server, session)
 		TsNodeNetEmit(loop, server, "session", session)
 		TsNodeNetEmit(loop, session, "localSettings", sessionState.LocalSettings)
 		return TsU
@@ -78511,7 +78853,9 @@ type TsHTTP2BlockDisposition uint8
 
 const (
 	TsHTTP2BlockDeliver TsHTTP2BlockDisposition = iota
+	TsHTTP2BlockConnectionError
 	TsHTTP2BlockStreamClosed
+	TsHTTP2BlockStreamError
 	TsHTTP2BlockRefused
 )
 
@@ -78521,6 +78865,7 @@ type TsHTTP2HeaderBlockMeta struct {
 	Flags                uint8
 	EndStream, IsRequest bool
 	Disposition          TsHTTP2BlockDisposition
+	StreamErrorCode      uint32
 }
 type TsHTTP2HeaderBlockInFlight struct {
 	ContinuationStream uint32
@@ -78617,11 +78962,27 @@ type TsHTTP2Connection struct {
 	EvictBuf                                           []uint32
 	PrefaceReceived                                    uint32
 	LastStreamID                                       uint32
+	LastLocalStreamID                                  uint32
 	GoingAway                                          bool
 }
 
 func TsHTTP2NewConnection(isServer bool, local TsHTTP2SettingsState) *TsHTTP2Connection {
 	return &TsHTTP2Connection{IsServer: isServer, LocalSettings: local, RemoteSettings: TsHTTP2DefaultSettingsState(), MaxHeaderListPairs: 128, MaxInvalidFrames: 1000, AckedLocalInitialWindow: 65535, EnforcedMaxHeaderListSize: local.MaxHeaderListSize, MaxSettings: 32, SendWindow: TsHTTP2NewSendWindow(65535), RecvWindow: TsHTTP2NewRecvWindow(65535), Hpack: TsHTTP2NewHPACKCoder(TsHTTP2DefaultSettingsState().HeaderTableSize, TsHTTP2NewGoHPACKBackend(TsHTTP2DefaultSettingsState().HeaderTableSize, local.HeaderTableSize)), Streams: map[uint32]*TsHTTP2ProtocolStream{}, StreamResetLimit: TsHTTP2NewRateLimit(TsHTTP2DefaultStreamResetBurst, TsHTTP2DefaultStreamResetRate), SentResetLimit: TsHTTP2NewRateLimit(TsHTTP2DefaultStreamResetBurst, TsHTTP2DefaultStreamResetRate)}
+}
+func (connection *TsHTTP2Connection) IsLocalStreamID(streamID uint32) bool {
+	if connection.IsServer {
+		return streamID%2 == 0
+	}
+	return streamID%2 == 1
+}
+func (connection *TsHTTP2Connection) IsIdleStreamID(streamID uint32) bool {
+	if streamID == 0 {
+		return false
+	}
+	if connection.IsLocalStreamID(streamID) {
+		return streamID > connection.LastLocalStreamID
+	}
+	return streamID > connection.LastStreamID
 }
 func (connection *TsHTTP2Connection) WriteFrame(sink TsHTTP2Sink, frameType, flags uint8, streamID uint32, payload []byte) {
 	header := TsHTTP2WriteFrameHeader(TsHTTP2FrameHeader{Length: uint32(len(payload)), FrameType: frameType, Flags: flags, StreamID: streamID})
@@ -78840,6 +79201,8 @@ func (connection *TsHTTP2Connection) Dispatch(sink TsHTTP2Sink, header TsHTTP2Fr
 		return false
 	}
 	switch header.FrameType {
+	case 2:
+		return connection.HandlePriority(sink, header, payload)
 	case 4:
 		return connection.HandleSettings(sink, header, payload)
 	case 6:
@@ -78929,6 +79292,19 @@ func (connection *TsHTTP2Connection) HandleSettings(sink TsHTTP2Sink, header TsH
 	sink.OnRemoteSettings(connection.RemoteSettings)
 	return false
 }
+func (connection *TsHTTP2Connection) HandlePriority(sink TsHTTP2Sink, header TsHTTP2FrameHeader, payload []byte) bool {
+	dependency := binary.BigEndian.Uint32(payload[:4]) & 0x7fffffff
+	if dependency != header.StreamID {
+		return false
+	}
+	connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("PRIORITY frame depends on itself"))
+	connection.SendRstStream(sink, header.StreamID, TsHTTP2ErrorProtocol)
+	if stream := connection.Streams[header.StreamID]; stream != nil {
+		stream.State = TsHTTP2StreamClosed
+		sink.OnStreamReset(header.StreamID, TsHTTP2ErrorProtocol)
+	}
+	return true
+}
 func (connection *TsHTTP2Connection) HandlePing(sink TsHTTP2Sink, header TsHTTP2FrameHeader, payload []byte) bool {
 	if TsHTTP2HasFrameFlag(header.Flags, 1) {
 		sink.OnPing(payload, true)
@@ -78959,6 +79335,13 @@ func (connection *TsHTTP2Connection) HandleGoAway(sink TsHTTP2Sink, payload []by
 	return false
 }
 func (connection *TsHTTP2Connection) HandleWindowUpdate(sink TsHTTP2Sink, header TsHTTP2FrameHeader, payload []byte) bool {
+	if header.StreamID != 0 {
+		stream, exists := connection.Streams[header.StreamID]
+		if (exists && stream.State == TsHTTP2StreamIdle) || (!exists && connection.IsIdleStreamID(header.StreamID)) {
+			connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("WINDOW_UPDATE on idle stream"))
+			return true
+		}
+	}
 	increment := binary.BigEndian.Uint32(payload[:4]) & 0x7fffffff
 	if increment == 0 {
 		if header.StreamID == 0 {
@@ -78978,13 +79361,15 @@ func (connection *TsHTTP2Connection) HandleWindowUpdate(sink TsHTTP2Sink, header
 			return true
 		}
 	} else if stream := connection.Streams[header.StreamID]; stream != nil {
-		if code := stream.SendWindow.Increase(increment); code != TsHTTP2ErrorNoError {
-			connection.SendRstStream(sink, header.StreamID, uint32(code))
-			if stream = connection.Streams[header.StreamID]; stream != nil {
-				stream.State = TsHTTP2StreamClosed
+		if stream.State != TsHTTP2StreamClosed {
+			if code := stream.SendWindow.Increase(increment); code != TsHTTP2ErrorNoError {
+				connection.SendRstStream(sink, header.StreamID, uint32(code))
+				if stream = connection.Streams[header.StreamID]; stream != nil {
+					stream.State = TsHTTP2StreamClosed
+				}
+				sink.OnStreamReset(header.StreamID, uint32(code))
+				return false
 			}
-			sink.OnStreamReset(header.StreamID, uint32(code))
-			return false
 		}
 	}
 	sink.OnWindowUpdate(header.StreamID, increment)
@@ -79010,22 +79395,46 @@ func (connection *TsHTTP2Connection) HandleHeaders(sink TsHTTP2Sink, header TsHT
 			connection.SendGoAway(sink, TsHTTP2ErrorFrameSize, []byte("HEADERS priority truncated"))
 			return true
 		}
+		dependency := binary.BigEndian.Uint32(payload[offset:offset+4]) & 0x7fffffff
+		if dependency == header.StreamID {
+			connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("HEADERS priority depends on itself"))
+			connection.SendRstStream(sink, header.StreamID, TsHTTP2ErrorProtocol)
+			return true
+		}
 		offset += 5
 	}
 	endStream := TsHTTP2HasFrameFlag(header.Flags, 1)
-	sendInitial := connection.RemoteSettings.InitialWindowSize
-	recvInitial := connection.LocalSettings.InitialWindowSize
+	sendInitial, recvInitial := connection.RemoteSettings.InitialWindowSize, connection.LocalSettings.InitialWindowSize
 	_, exists := connection.Streams[header.StreamID]
 	isNew := !exists
-	if isNew && connection.IsServer && header.StreamID%2 == 0 {
-		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("invalid stream id for HEADERS"))
-		return true
-	}
-	refused := isNew && connection.IsServer && !sink.CanOpenStream()
 	disposition := TsHTTP2BlockDeliver
+	streamErrorCode := uint32(0)
+	if isNew {
+		if connection.IsLocalStreamID(header.StreamID) {
+			if header.StreamID > connection.LastLocalStreamID {
+				connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("HEADERS on idle stream"))
+				return true
+			}
+			disposition = TsHTTP2BlockConnectionError
+			streamErrorCode = TsHTTP2ErrorStreamClosed
+		} else if connection.IsServer {
+			if header.StreamID <= connection.LastStreamID {
+				disposition = TsHTTP2BlockConnectionError
+				streamErrorCode = TsHTTP2ErrorProtocol
+			}
+		} else if header.StreamID > connection.LastStreamID {
+			connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("HEADERS on idle stream"))
+			return true
+		} else {
+			disposition = TsHTTP2BlockConnectionError
+			streamErrorCode = TsHTTP2ErrorStreamClosed
+		}
+	}
+	refused := isNew && connection.IsServer && disposition == TsHTTP2BlockDeliver && !sink.CanOpenStream()
 	if refused {
 		disposition = TsHTTP2BlockRefused
-	} else {
+	}
+	if disposition == TsHTTP2BlockDeliver {
 		stream := connection.Streams[header.StreamID]
 		if stream == nil {
 			stream = TsHTTP2NewProtocolStream(sendInitial, recvInitial)
@@ -79042,29 +79451,37 @@ func (connection *TsHTTP2Connection) HandleHeaders(sink TsHTTP2Sink, header TsHT
 		next, transitionError := TsHTTP2Transition(current, event)
 		if transitionError == 0 {
 			stream.State = next
+		} else if transitionError == TsHTTP2TransitionProtocolError && current == TsHTTP2StreamIdle {
+			connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("HEADERS on idle stream"))
+			return true
 		} else if transitionError == TsHTTP2TransitionProtocolError {
-			connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("HEADERS in invalid stream state"))
-			return true
-		} else if current == TsHTTP2StreamHalfClosedRemote {
-			connection.LocalConnectionError(sink, TsHTTP2ErrorStreamClosed, -510, []byte("HEADERS: stream closed"))
-			return true
+			disposition = TsHTTP2BlockStreamError
+			streamErrorCode = TsHTTP2ErrorProtocol
+		} else if current == TsHTTP2StreamClosed {
+			disposition = TsHTTP2BlockConnectionError
+			streamErrorCode = TsHTTP2ErrorStreamClosed
 		} else {
-			disposition = TsHTTP2BlockStreamClosed
+			disposition = TsHTTP2BlockStreamError
+			streamErrorCode = TsHTTP2ErrorStreamClosed
 		}
 	}
-	if isNew {
-		if header.StreamID > connection.LastStreamID {
-			connection.LastStreamID = header.StreamID
-		}
-		if !refused {
-			sink.OnStreamOpen(header.StreamID)
-		}
+	if isNew && connection.IsServer && !connection.IsLocalStreamID(header.StreamID) && header.StreamID > connection.LastStreamID {
+		connection.LastStreamID = header.StreamID
+	}
+	if isNew && disposition == TsHTTP2BlockDeliver {
+		sink.OnStreamOpen(header.StreamID)
 	}
 	connection.HeaderBlock = append(connection.HeaderBlock[:0], payload[offset:end]...)
-	meta := TsHTTP2HeaderBlockMeta{Target: header.StreamID, Flags: header.Flags, EndStream: endStream, IsRequest: connection.IsServer && isNew, Disposition: disposition}
+	meta := TsHTTP2HeaderBlockMeta{Target: header.StreamID, Flags: header.Flags, EndStream: endStream, IsRequest: connection.IsServer && isNew, Disposition: disposition, StreamErrorCode: streamErrorCode}
 	return connection.FinishOrParkHeaderBlock(sink, header, meta)
 }
 func (connection *TsHTTP2Connection) FinishOrParkHeaderBlock(sink TsHTTP2Sink, header TsHTTP2FrameHeader, meta TsHTTP2HeaderBlockMeta) bool {
+	capSize := max(int(connection.EnforcedMaxHeaderListSize), 65536)
+	if len(connection.HeaderBlock) > capSize {
+		connection.HeaderBlock = nil
+		connection.SendGoAway(sink, TsHTTP2ErrorCompression, []byte("header block too large"))
+		return true
+	}
 	if !TsHTTP2HasFrameFlag(header.Flags, 4) {
 		connection.HeaderBlockInFlight = &TsHTTP2HeaderBlockInFlight{ContinuationStream: header.StreamID, Meta: meta}
 		return false
@@ -79080,6 +79497,7 @@ func (connection *TsHTTP2Connection) HandleContinuation(sink TsHTTP2Sink, header
 	connection.HeaderBlockInFlight = nil
 	capSize := max(int(connection.EnforcedMaxHeaderListSize), 65536)
 	if len(connection.HeaderBlock)+len(payload) > capSize {
+		connection.HeaderBlock = nil
 		connection.SendGoAway(sink, TsHTTP2ErrorCompression, []byte("header block too large"))
 		return true
 	}
@@ -79186,6 +79604,9 @@ func (connection *TsHTTP2Connection) FinishHeaderBlock(sink TsHTTP2Sink, meta Ts
 	}
 	connection.HeaderBlock = block[:0]
 	switch disposition {
+	case TsHTTP2BlockConnectionError:
+		connection.SendGoAway(sink, meta.StreamErrorCode, []byte("invalid HEADERS stream state"))
+		return true
 	case TsHTTP2BlockRefused:
 		connection.SendRstStream(sink, target, TsHTTP2ErrorEnhanceYourCalm)
 		sink.OnStreamRejected(target)
@@ -79196,6 +79617,13 @@ func (connection *TsHTTP2Connection) FinishHeaderBlock(sink TsHTTP2Sink, meta Ts
 			stream.State = TsHTTP2StreamClosed
 		}
 		sink.OnStreamReset(target, TsHTTP2ErrorStreamClosed)
+		return false
+	case TsHTTP2BlockStreamError:
+		connection.SendRstStream(sink, target, meta.StreamErrorCode)
+		if stream := connection.Streams[target]; stream != nil {
+			stream.State = TsHTTP2StreamClosed
+		}
+		sink.OnStreamReset(target, meta.StreamErrorCode)
 		return false
 	}
 	if isRequest && !rejected && !malformed {
@@ -79289,10 +79717,16 @@ func (connection *TsHTTP2Connection) BeginStreamedData(sink TsHTTP2Sink, header 
 	receiveLimit := max(connection.AckedLocalInitialWindow, connection.LocalSettings.InitialWindowSize)
 	discard := false
 	stream := connection.Streams[header.StreamID]
-	if stream == nil {
+	if stream == nil && connection.IsIdleStreamID(header.StreamID) {
+		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("DATA on idle stream"))
+		return true
+	} else if stream == nil {
 		connection.SendRstStream(sink, header.StreamID, TsHTTP2ErrorStreamClosed)
 		sink.OnStreamReset(header.StreamID, TsHTTP2ErrorStreamClosed)
 		discard = true
+	} else if stream.State == TsHTTP2StreamIdle {
+		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("DATA on idle stream"))
+		return true
 	} else if !TsHTTP2CanReceiveData(stream.State) {
 		connection.SendRstStream(sink, header.StreamID, TsHTTP2ErrorStreamClosed)
 		if stream = connection.Streams[header.StreamID]; stream != nil {
@@ -79372,10 +79806,18 @@ func (connection *TsHTTP2Connection) HandleData(sink TsHTTP2Sink, header TsHTTP2
 	}
 	receiveLimit := max(connection.AckedLocalInitialWindow, connection.LocalSettings.InitialWindowSize)
 	stream := connection.Streams[header.StreamID]
+	if stream == nil && connection.IsIdleStreamID(header.StreamID) {
+		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("DATA on idle stream"))
+		return true
+	}
 	if stream == nil {
 		connection.SendRstStream(sink, header.StreamID, TsHTTP2ErrorStreamClosed)
 		sink.OnStreamReset(header.StreamID, TsHTTP2ErrorStreamClosed)
 		return false
+	}
+	if stream.State == TsHTTP2StreamIdle {
+		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("DATA on idle stream"))
+		return true
 	}
 	if !TsHTTP2CanReceiveData(stream.State) {
 		connection.SendRstStream(sink, header.StreamID, TsHTTP2ErrorStreamClosed)
@@ -79425,30 +79867,31 @@ func (connection *TsHTTP2Connection) EnforceContentLength(sink TsHTTP2Sink, stre
 }
 func (connection *TsHTTP2Connection) HandleRstStream(sink TsHTTP2Sink, header TsHTTP2FrameHeader, payload []byte) bool {
 	code := binary.BigEndian.Uint32(payload[:4])
-	onIdle := true
-	charged := false
 	stream := connection.Streams[header.StreamID]
-	if stream != nil && stream.State != TsHTTP2StreamIdle {
-		exempt := sink.GoawaySent() && !stream.OpenedAfterGoaway
-		charged = stream.State != TsHTTP2StreamClosed && !exempt
-		stream.State = TsHTTP2StreamClosed
-		onIdle = false
-	}
-	if onIdle && sink.IsLocalStream(header.StreamID) {
-		stream = connection.Streams[header.StreamID]
-		if stream == nil {
-			stream = TsHTTP2NewProtocolStream(connection.RemoteSettings.InitialWindowSize, connection.LocalSettings.InitialWindowSize)
-			connection.Streams[header.StreamID] = stream
-		}
-		stream.State = TsHTTP2StreamClosed
-		onIdle = false
-	}
-	if onIdle && (header.StreamID <= connection.LastStreamID || header.StreamID <= sink.HighestStartedStreamID()) {
-		return false
-	}
-	if onIdle {
+	if stream != nil && stream.State == TsHTTP2StreamIdle {
 		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("RST_STREAM on idle stream"))
 		return true
+	}
+	if stream == nil && connection.IsIdleStreamID(header.StreamID) {
+		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("RST_STREAM on idle stream"))
+		return true
+	}
+	if stream != nil && stream.State == TsHTTP2StreamClosed {
+		return false
+	}
+	if stream == nil && sink.IsLocalStream(header.StreamID) {
+		stream = TsHTTP2NewProtocolStream(connection.RemoteSettings.InitialWindowSize, connection.LocalSettings.InitialWindowSize)
+		stream.State = TsHTTP2StreamClosed
+		connection.Streams[header.StreamID] = stream
+	}
+	charged := false
+	if stream != nil && stream.State != TsHTTP2StreamClosed {
+		exempt := sink.GoawaySent() && !stream.OpenedAfterGoaway
+		charged = !exempt
+		stream.State = TsHTTP2StreamClosed
+	}
+	if stream == nil {
+		return false
 	}
 	sink.OnStreamReset(header.StreamID, code)
 	if charged {
@@ -79486,16 +79929,14 @@ func (connection *TsHTTP2Connection) HandlePushPromise(sink TsHTTP2Sink, header 
 	}
 	promised := binary.BigEndian.Uint32(payload[offset:offset+4]) & 0x7fffffff
 	offset += 4
-	if promised == 0 || promised&1 == 1 || connection.Streams[promised] != nil {
+	if promised == 0 || promised&1 == 1 || promised <= connection.LastStreamID || connection.Streams[promised] != nil {
 		connection.SendGoAway(sink, TsHTTP2ErrorProtocol, []byte("PUSH_PROMISE invalid promised stream id"))
 		return true
 	}
 	stream := TsHTTP2NewProtocolStream(connection.RemoteSettings.InitialWindowSize, connection.LocalSettings.InitialWindowSize)
 	stream.State = TsHTTP2StreamReservedRemote
 	connection.Streams[promised] = stream
-	if promised > connection.LastStreamID {
-		connection.LastStreamID = promised
-	}
+	connection.LastStreamID = promised
 	connection.HeaderBlock = append(connection.HeaderBlock[:0], payload[offset:end]...)
 	meta := TsHTTP2HeaderBlockMeta{Target: promised, PushParent: header.StreamID, HasPushParent: true, IsRequest: true, Disposition: TsHTTP2BlockDeliver}
 	return connection.FinishOrParkHeaderBlock(sink, header, meta)
@@ -79624,8 +80065,8 @@ func (connection *TsHTTP2Connection) SendHeaderBlock(sink TsHTTP2Sink, streamID 
 	if next, err := TsHTTP2Transition(stream.State, event); err == 0 {
 		stream.State = next
 	}
-	if streamID > connection.LastStreamID {
-		connection.LastStreamID = streamID
+	if connection.IsLocalStreamID(streamID) && streamID > connection.LastLocalStreamID {
+		connection.LastLocalStreamID = streamID
 	}
 }
 func TsHTTP2PaddingFor(strategy uint8, frameLen, maxLen int) uint8 {
@@ -79773,8 +80214,8 @@ func (connection *TsHTTP2Connection) SendPushPromise(sink TsHTTP2Sink, parentID,
 		connection.Streams[promisedID] = stream
 	}
 	stream.State = TsHTTP2StreamReservedLocal
-	if promisedID > connection.LastStreamID {
-		connection.LastStreamID = promisedID
+	if promisedID > connection.LastLocalStreamID {
+		connection.LastLocalStreamID = promisedID
 	}
 }
 
@@ -80095,10 +80536,26 @@ func (sink *TsNodeHTTP2EngineSink) OnError(code int32, streamID uint32, debug []
 	if sink == nil || sink.Session == nil {
 		return
 	}
+	state := sink.Session
 	err := TsFSException("Error", "ERR_HTTP2_SESSION_ERROR", string(debug))
 	TsNodeHTTP2Set(sink.Loop, err, "errno", TsNumberValue(float64(code)))
 	TsNodeHTTP2Set(sink.Loop, err, "streamID", TsNumberValue(float64(streamID)))
-	TsNodeNetEmitSafe(sink.Loop, sink.Session.Object, "error", err)
+	state.GoawaySent = true
+	TsNodeNetEmitSafe(sink.Loop, state.Object, "error", err)
+	if state.Closed || state.Closing || TsNullish(state.Socket) {
+		return
+	}
+	state.Closing = true
+	loop, socket := sink.Loop, state.Socket
+	loop.Post(func() {
+		if state.Closed || TsNullish(socket) {
+			return
+		}
+		end := TsNodeHTTP2Get(loop, socket, "end")
+		if end.Kind == TsFunctionKind {
+			TsCallReceiver(loop, end, socket)
+		}
+	})
 }
 func TsNodeHTTP2SettingsValue(loop *TsLoop, settings TsHTTP2SettingsState) TsValue {
 	out := TsNodeHTTP2SettingsDefaults()
@@ -80171,9 +80628,6 @@ func (sink *TsNodeHTTP2EngineSink) OnPing(payload []byte, ack bool) {
 		return
 	}
 	if state.OutstandingPings == 0 {
-		if state.Engine != nil {
-			state.Engine.LocalConnectionError(sink, TsHTTP2ErrorProtocol, -903, []byte("unsolicited PING ACK"))
-		}
 		return
 	}
 	state.OutstandingPings--
@@ -80218,6 +80672,16 @@ func (sink *TsNodeHTTP2EngineSink) OnWindowUpdate(streamID, increment uint32) {
 func (sink *TsNodeHTTP2EngineSink) ShouldStop() bool {
 	return sink == nil || sink.Session == nil || sink.Session.Closed || sink.Session.Destroyed
 }
+func TsNodeHTTP2SessionStream(state *TsNodeHTTP2SessionState, streamID uint32) (TsValue, bool) {
+	if state == nil {
+		return TsU, false
+	}
+	stream, exists := state.Streams[int(streamID)]
+	if !exists || TsNullish(stream) {
+		return TsU, false
+	}
+	return stream, true
+}
 func (sink *TsNodeHTTP2EngineSink) OnStreamOpen(streamID uint32) {
 	loop := sink.Loop
 	_ = loop
@@ -80232,7 +80696,7 @@ func (sink *TsNodeHTTP2EngineSink) OnStreamOpen(streamID uint32) {
 	if streamID%2 == peerParity && int(streamID) > state.LastPeerStreamID {
 		state.LastPeerStreamID = int(streamID)
 	}
-	if state.Streams[int(streamID)] != TsNull {
+	if _, exists := TsNodeHTTP2SessionStream(state, streamID); exists {
 		return
 	}
 	stream := TsNodeHTTP2StreamNew(sink.Loop, state.Object, int(streamID), TsNodeHTTP2EmptyObject())
@@ -80477,10 +80941,13 @@ func (sink *TsNodeHTTP2EngineSink) OnHeadersComplete(streamID uint32, endStream 
 		return
 	}
 	state := sink.Session
-	stream := state.Streams[int(streamID)]
-	if stream == TsNull {
+	stream, exists := TsNodeHTTP2SessionStream(state, streamID)
+	if !exists {
 		sink.OnStreamOpen(streamID)
-		stream = state.Streams[int(streamID)]
+		stream, _ = TsNodeHTTP2SessionStream(state, streamID)
+	}
+	if TsNullish(stream) {
+		return
 	}
 	streamState := TsNodeHTTP2Stream(stream)
 	fields := sink.Fields[streamID]
@@ -80546,8 +81013,12 @@ func (sink *TsNodeHTTP2EngineSink) OnHeadersComplete(streamID uint32, endStream 
 		TsNodeHTTP2Set(sink.Loop, stream, "endAfterHeaders", TsBooleanValue(endStream))
 	}
 	if state.Server {
+		if streamState != nil {
+			streamState.Exposed = true
+		}
 		TsNodeNetEmitSafe(sink.Loop, state.Object, "stream", stream, headers, TsNumberValue(float64(flags)), raw)
 		if server := TsNodeHTTP2Singleton.Servers[uintptr(state.ServerObject.Ref)]; server != nil {
+			TsNodeNetEmitSafe(sink.Loop, server.Object, "stream", stream, headers, TsNumberValue(float64(flags)), raw)
 			request := TsNodeHTTP2RequestCreate(sink.Loop, stream, headers)
 			TsNodeHTTP2Set(sink.Loop, request, "headersDistinct", distinct)
 			response := TsNodeHTTP2ResponseCreate(sink.Loop, stream)
@@ -80557,6 +81028,9 @@ func (sink *TsNodeHTTP2EngineSink) OnHeadersComplete(streamID uint32, endStream 
 		}
 	} else if parentID, ok := state.PushParents[int(streamID)]; ok {
 		parent := state.Streams[parentID]
+		if streamState != nil {
+			streamState.Exposed = true
+		}
 		TsNodeNetEmitSafe(sink.Loop, parent, "push", stream, headers, TsNumberValue(float64(flags)), raw)
 		delete(state.PushParents, int(streamID))
 	} else {
@@ -80569,10 +81043,13 @@ func (sink *TsNodeHTTP2EngineSink) OnData(streamID uint32, data []byte) {
 	if sink == nil || sink.Session == nil {
 		return
 	}
-	stream := sink.Session.Streams[int(streamID)]
-	if stream == TsNull {
+	stream, exists := TsNodeHTTP2SessionStream(sink.Session, streamID)
+	if !exists {
 		sink.OnStreamOpen(streamID)
-		stream = sink.Session.Streams[int(streamID)]
+		stream, _ = TsNodeHTTP2SessionStream(sink.Session, streamID)
+	}
+	if TsNullish(stream) {
+		return
 	}
 	chunk := TsNodeBuffer(append([]byte(nil), data...))
 	if readable := TsNodeReadableStateFor(stream); readable != nil {
@@ -80591,8 +81068,8 @@ func (sink *TsNodeHTTP2EngineSink) OnStreamEnd(streamID uint32, stateCode uint8)
 	if sink == nil || sink.Session == nil {
 		return
 	}
-	stream := sink.Session.Streams[int(streamID)]
-	if stream == TsNull {
+	stream, exists := TsNodeHTTP2SessionStream(sink.Session, streamID)
+	if !exists {
 		return
 	}
 	if streamState := TsNodeHTTP2Stream(stream); streamState != nil {
@@ -80626,8 +81103,8 @@ func (sink *TsNodeHTTP2EngineSink) OnStreamReset(streamID, code uint32) {
 		return
 	}
 	state := sink.Session
-	stream := state.Streams[int(streamID)]
-	if stream == TsNull {
+	stream, exists := TsNodeHTTP2SessionStream(state, streamID)
+	if !exists {
 		return
 	}
 	TsNodeHTTP2Set(sink.Loop, stream, "rstCode", TsNumberValue(float64(code)))
@@ -80644,10 +81121,11 @@ func (sink *TsNodeHTTP2EngineSink) OnStreamReset(streamID, code uint32) {
 		}
 	}
 	loop.Post(func() {
-		if streamState := TsNodeHTTP2Stream(stream); streamState == nil || streamState.Closed {
+		streamState := TsNodeHTTP2Stream(stream)
+		if streamState == nil || streamState.Closed {
 			return
 		}
-		if code != TsHTTP2ErrorNoError && code != TsHTTP2ErrorCancel {
+		if streamState.Exposed && code != TsHTTP2ErrorNoError && code != TsHTTP2ErrorCancel {
 			TsNodeNetEmitSafe(loop, stream, "error", TsNodeHTTP2StreamResetError(code))
 		}
 		TsNodeHTTP2StreamClose(loop, stream, TsNumberValue(float64(code)))
@@ -80821,7 +81299,11 @@ func (sink *TsNodeHTTP2EngineSink) OnFrameCounters(received, sent uint64) {
 	TsNodeHTTP2RefreshPublicState(sink.Loop, sink.Session, received, sent)
 }
 func (sink *TsNodeHTTP2EngineSink) IsLocalStream(streamID uint32) bool {
-	return sink != nil && sink.Session != nil && sink.Session.Streams[int(streamID)] != TsNull
+	if sink == nil || sink.Session == nil {
+		return false
+	}
+	_, exists := TsNodeHTTP2SessionStream(sink.Session, streamID)
+	return exists
 }
 func (sink *TsNodeHTTP2EngineSink) HighestStartedStreamID() uint32 {
 	if sink == nil || sink.Session == nil {
@@ -80860,8 +81342,8 @@ func (sink *TsNodeHTTP2EngineSink) IsStreamReading(streamID uint32) bool {
 	if sink == nil || sink.Session == nil {
 		return false
 	}
-	stream := sink.Session.Streams[int(streamID)]
-	if stream == TsNull {
+	stream, exists := TsNodeHTTP2SessionStream(sink.Session, streamID)
+	if !exists {
 		return false
 	}
 	streamState := TsNodeHTTP2Stream(stream)
@@ -81326,8 +81808,10 @@ func TsNodeHTTP2SessionAltSvc(loop *TsLoop, receiver TsValue, args ...TsValue) T
 		}
 		id = uint32(TsNumber(streamID))
 	}
-	if id != 0 && state.Streams[int(id)] == TsNull {
-		return TsU
+	if id != 0 {
+		if _, exists := TsNodeHTTP2SessionStream(state, id); !exists {
+			return TsU
+		}
 	}
 	var originBytes, valueBytes []byte
 	if !TsNullish(origin) {
@@ -81382,7 +81866,7 @@ func TsNodeHTTP2DetachTransport(loop *TsLoop, state *TsNodeHTTP2SessionState) {
 			for _, entry := range []struct {
 				Event    string
 				Listener TsValue
-			}{{"data", state.TransportDataListener}, {"close", state.TransportCloseListener}, {"drain", state.TransportDrainListener}, {state.TransportStartEvent, state.TransportStartListener}} {
+			}{{"data", state.TransportDataListener}, {"close", state.TransportCloseListener}, {"drain", state.TransportDrainListener}, {"error", state.TransportErrorListener}, {state.TransportStartEvent, state.TransportStartListener}} {
 				if entry.Event != "" && entry.Listener.Kind == TsFunctionKind {
 					TsCallReceiver(loop, remove, socket, TsNodeHTTP2Key(entry.Event), entry.Listener)
 				}
@@ -81394,6 +81878,7 @@ func TsNodeHTTP2DetachTransport(loop *TsLoop, state *TsNodeHTTP2SessionState) {
 	state.TransportCloseListener = TsU
 	state.TransportStartListener = TsU
 	state.TransportDrainListener = TsU
+	state.TransportErrorListener = TsU
 	state.TransportStartEvent = ""
 	state.Incoming = nil
 	state.Outgoing = nil
@@ -81480,11 +81965,19 @@ func TsNodeHTTP2AttachTransport(loop *TsLoop, state *TsNodeHTTP2SessionState) {
 		TsNodeHTTP2FlushPendingTransportWrites(loop, state)
 		return TsU
 	}))
+	error := TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue {
+		if !state.Closed {
+			TsNodeNetEmitSafe(loop, state.Object, "error", TsArg(args, 0))
+		}
+		return TsU
+	}))
 	state.TransportDataListener = data
 	state.TransportCloseListener = close
 	state.TransportDrainListener = drain
+	state.TransportErrorListener = error
 	TsCallReceiver(loop, TsNodeHTTP2Get(loop, state.Socket, "on"), state.Socket, TsNodeHTTP2Key("data"), data)
 	TsCallReceiver(loop, TsNodeHTTP2Get(loop, state.Socket, "on"), state.Socket, TsNodeHTTP2Key("drain"), drain)
+	TsCallReceiver(loop, TsNodeHTTP2Get(loop, state.Socket, "on"), state.Socket, TsNodeHTTP2Key("error"), error)
 	TsCallReceiver(loop, TsNodeHTTP2Get(loop, state.Socket, "once"), state.Socket, TsNodeHTTP2Key("close"), close)
 	if state.Server {
 		TsNodeHTTP2StartProtocol(loop, state)
@@ -99773,7 +100266,7 @@ func TsObjectWrite(loop *TsLoop, receiver TsValue, name string, value TsValue) T
 		if descriptor := source.Descriptors[name]; descriptor != nil {
 			if descriptor.Accessor {
 				if TsIsUndefined(descriptor.Setter) {
-					TsPropertyFailure("Property has no setter")
+					TsPropertyFailure("Property has no setter: " + name)
 				}
 				TsCallReceiver(loop, descriptor.Setter, receiver, value)
 				return value
@@ -99801,7 +100294,7 @@ func TsArraySet(loop *TsLoop, value, key, item TsValue) TsValue {
 	if descriptor := array.Descriptors[name]; descriptor != nil {
 		if descriptor.Accessor {
 			if TsIsUndefined(descriptor.Setter) {
-				TsPropertyFailure("Property has no setter")
+				TsPropertyFailure("Property has no setter: " + name)
 			}
 			TsCallReceiver(loop, descriptor.Setter, value, item)
 			return item
@@ -100408,7 +100901,7 @@ func TsInstanceWrite(loop *TsLoop, receiver TsValue, name string, value TsValue)
 	}
 	if descriptor := properties.Accessors[name]; descriptor != nil && descriptor.Accessor {
 		if TsIsUndefined(descriptor.Setter) {
-			TsPropertyFailure("Property has no setter")
+			TsPropertyFailure("Property has no setter: " + name)
 		}
 		TsCallReceiver(loop, descriptor.Setter, receiver, value)
 		return value
@@ -100423,7 +100916,7 @@ func TsInstanceWrite(loop *TsLoop, receiver TsValue, name string, value TsValue)
 				if descriptor := object.Descriptors[name]; descriptor != nil {
 					if descriptor.Accessor {
 						if TsIsUndefined(descriptor.Setter) {
-							TsPropertyFailure("Property has no setter")
+							TsPropertyFailure("Property has no setter: " + name)
 						}
 						TsCallReceiver(loop, descriptor.Setter, receiver, value)
 						return value
@@ -100442,7 +100935,7 @@ func TsInstanceWrite(loop *TsLoop, receiver TsValue, name string, value TsValue)
 					if descriptor := object.Descriptors[name]; descriptor != nil {
 						if descriptor.Accessor {
 							if TsIsUndefined(descriptor.Setter) {
-								TsPropertyFailure("Property has no setter")
+								TsPropertyFailure("Property has no setter: " + name)
 							}
 							TsCallReceiver(loop, descriptor.Setter, receiver, value)
 							return value
@@ -100674,7 +101167,7 @@ func TsFunctionWrite(loop *TsLoop, receiver TsValue, name string, value TsValue)
 	}
 	if descriptor := object.Descriptors[name]; descriptor != nil && descriptor.Accessor {
 		if TsIsUndefined(descriptor.Setter) {
-			TsPropertyFailure("Property has no setter")
+			TsPropertyFailure("Property has no setter: " + name)
 		}
 		TsCallReceiver(loop, descriptor.Setter, receiver, value)
 		return value
@@ -102151,6 +102644,11 @@ func TsDelete(loop *TsLoop, receiver, key TsValue, strict bool) bool {
 	name := TsPropertyKey(loop, key)
 	ok := true
 	switch receiver.Kind {
+	case TsTaskKind:
+		task := (*TsTask)(receiver.Ref)
+		if task.Properties != nil {
+			delete(task.Properties, name)
+		}
 	case TsErrorKind:
 		return TsDelete(loop, TsObjectValue(TsErrorObject(loop, (*TsRuntimeError)(receiver.Ref))), key, strict)
 	case TsObjectKind:
@@ -103279,6 +103777,10 @@ func TsGlobalObject(loop *TsLoop) TsValue {
 		object.Set("encodeURIComponent", TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue { return TsURIEncode(loop, args, true) })))
 		object.Set("decodeURI", TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue { return TsURIDecode(loop, args, false) })))
 		object.Set("decodeURIComponent", TsFunctionValue(TsFunc(func(loop *TsLoop, args ...TsValue) TsValue { return TsURIDecode(loop, args, true) })))
+		timers := (*TsObject)(TsNodeTimersModule().Ref)
+		for _, name := range []string{"setTimeout", "clearTimeout", "setInterval", "clearInterval", "setImmediate", "clearImmediate"} {
+			object.Set(name, timers.RuntimeFieldGet(loop, name))
+		}
 		object.Set("process", TsNodeProcessModule(loop))
 		for _, name := range []string{"Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError", "AggregateError", "SuppressedError"} {
 			object.Set(name, TsErrorConstructor(name))

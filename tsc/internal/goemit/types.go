@@ -189,7 +189,7 @@ func (b *machineBuilder) returnValue(value string) string {
 		}
 		return value
 	}
-	return fmt.Sprintf("tsBoundary(%s,%s,%d,%t)", value, strconv.Quote(p.kind), p.nulls, b.e.coerce)
+	return fmt.Sprintf("tsFunctionReturnBoundary(%s,%s,%d,%t)", value, strconv.Quote(p.kind), p.nulls, b.e.coerce)
 }
 func (e *emitter) annotationPrimitive(node *ast.Node) primitive {
 	if node == nil {

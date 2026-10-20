@@ -12,8 +12,12 @@ type tsNodeHTTPParserState struct {
 	connections tsValue
 	parserType int
 	lenientFlags uint32
-	paused, closed, initialized, headerDone, messageBegun, consumed, skipBody, closeDelimited, closedByMessage, inExecute bool
+	chunkState uint8
+	chunkRemaining uint64
+	chunkTrailers []tsValue
+	paused, closed, initialized, headerDone, messageBegun, consumed, skipBody, upgrade, closeDelimited, closedByMessage, inExecute bool
 	bodyStart, bodyDelivered int
+	bodyReceived int64
 }
 
 func tsNodeHTTPCommonWordByte(value byte) bool {
@@ -146,12 +150,26 @@ func tsNodeHTTPCommonHeaderHasToken(value, token string) bool {
 	for _, item := range strings.Split(value, ",") { if strings.EqualFold(strings.TrimSpace(item), token) { return true } }
 	return false
 }
-func tsNodeHTTPCommonTransferChunked(value string) (bool, bool) {
-	if strings.TrimSpace(value) == "" { return false, false }
+func tsNodeHTTPCommonTransferChunked(value string) (bool, bool, bool) {
+	if strings.TrimSpace(value) == "" { return false, false, false }
 	items := strings.Split(strings.ToLower(value), ",")
 	hasChunked := false
-	for _, item := range items { if strings.TrimSpace(item) == "chunked" { hasChunked = true } }
-	return hasChunked, strings.TrimSpace(items[len(items)-1]) == "chunked"
+	duplicateChunked := false
+	for _, item := range items {
+		if strings.TrimSpace(item) == "chunked" {
+			if hasChunked { duplicateChunked = true }
+			hasChunked = true
+		}
+	}
+	return hasChunked, strings.TrimSpace(items[len(items)-1]) == "chunked", duplicateChunked
+}
+func tsNodeHTTPCommonParseContentLength(value string) (int64, bool) {
+	value = strings.Trim(value, " \t")
+	if value == "" { return 0, false }
+	for _, digit := range []byte(value) { if digit < '0' || digit > '9' { return 0, false } }
+	length, err := strconv.ParseInt(value, 10, 64)
+	if err != nil { return 0, false }
+	return length, true
 }
 func tsNodeHTTPCommonProtocolVersion(value string) (string, int, int, bool) {
 	protocol := ""
@@ -305,8 +323,8 @@ func tsNodeHTTPCommonParserOnBody(loop *tsLoop, parser, body tsValue) tsValue {
 func tsNodeHTTPCommonParserOnMessageComplete(loop *tsLoop, parser tsValue) tsValue {
 	state := tsNodeHTTPCommonStateFor(parser)
 	if state != nil {
-		// Bun moves completed parsers out of both connection sets, clears their
-		// deadline, then keeps them in the all-connections set as idle keep-alives.
+		// Node moves completed parsers out of active tracking, clears their
+		// deadline, and keeps them in the all-connections set while idle.
 		tsNodeHTTPCommonConnectionListPop(loop, state.connections, parser, false)
 		tsNodeHTTPCommonConnectionListPop(loop, state.connections, parser, true)
 		state.lastMessageStart = time.Time{}
@@ -331,7 +349,7 @@ func tsNodeHTTPCommonCloseParser(parser tsValue) tsValue { if state := tsNodeHTT
 func tsNodeHTTPCommonParserMessageBegin(loop *tsLoop, parser tsValue, state *tsNodeHTTPParserState) {
 	if state == nil || state.messageBegun { return }
 	// llhttp starts a fresh deadline for each message on a persistent socket.
-	// Remove and reinsert because Bun's connection sets are ordered by that time.
+	// Reinsert to retain ordering by the parser's current request-start time.
 	tsNodeHTTPCommonConnectionListPop(loop, state.connections, parser, false)
 	tsNodeHTTPCommonConnectionListPop(loop, state.connections, parser, true)
 	state.lastMessageStart = time.Now()
@@ -347,7 +365,7 @@ func tsNodeHTTPCommonCleanParser(loop *tsLoop, parser tsValue) {
 	tsNodeHTTPCommonSet(loop, parser, "maxHeaderPairs", tsNumberValue(2000))
 	tsNodeHTTPCommonSet(loop, parser, "_consumed", tsBooleanValue(false))
 	for _, index := range []int{0, 5, 6} { tsSet(loop, parser, tsNodeHTTPCommonIndex(index), tsNull) }
-	if state := tsNodeHTTPCommonStateFor(parser); state != nil { state.buffer = nil; state.current = nil; state.paused = false; state.initialized = false; state.headerDone = false; state.messageBegun = false; state.consumed = false; state.skipBody = false; state.closeDelimited = false; state.closedByMessage = false; state.bodyStart = 0; state.bodyDelivered = 0; state.started = time.Time{}; state.lastMessageStart = time.Time{}; state.connections = tsU; state.maxHeaderSize = 0; state.lenientFlags = 0 }
+	if state := tsNodeHTTPCommonStateFor(parser); state != nil { state.buffer = nil; state.current = nil; state.paused = false; state.initialized = false; state.headerDone = false; state.messageBegun = false; state.consumed = false; state.skipBody = false; state.upgrade = false; state.closeDelimited = false; state.closedByMessage = false; state.bodyStart = 0; state.bodyDelivered = 0; state.bodyReceived = 0; state.chunkState = 0; state.chunkRemaining = 0; state.chunkTrailers = nil; state.started = time.Time{}; state.lastMessageStart = time.Time{}; state.connections = tsU; state.maxHeaderSize = 0; state.lenientFlags = 0 }
 }
 func tsNodeHTTPCommonChunkLine(data []byte, offset int, lenientFlags uint32) (int, int, bool, bool) {
 	for index := offset; index < len(data); index++ {
@@ -406,65 +424,94 @@ func tsNodeHTTPCommonChunkExtensionsValid(extension []byte) bool {
 	return true
 }
 
-func tsNodeHTTPCommonChunked(data []byte, lenientFlags uint32) ([]byte, int, []tsValue, bool, string) {
+func tsNodeHTTPCommonChunkedStep(data []byte, state *tsNodeHTTPParserState, maxTrailerPairs int) ([]byte, int, []tsValue, bool, string) {
 	var body []byte
-	trailers := []tsValue{}
-	for offset := 0; ; {
-		lineEnd, lineNext, complete, invalidLineEnding := tsNodeHTTPCommonChunkLine(data, offset, lenientFlags)
-		if !complete {
-			if invalidLineEnding { return body, 0, nil, false, "Invalid chunk line ending" }
-			return body, 0, nil, false, ""
-		}
-		rawSizeLine := data[offset:lineEnd]
-		sizeEnd := len(rawSizeLine)
-		extensionStart := -1
-		if semi := bytes.IndexByte(rawSizeLine, ';'); semi >= 0 { sizeEnd = semi; extensionStart = semi + 1 }
-		sizeBytes := rawSizeLine[:sizeEnd]
-		digitsEnd := 0
-		for digitsEnd < len(sizeBytes) && (sizeBytes[digitsEnd] >= '0' && sizeBytes[digitsEnd] <= '9' || sizeBytes[digitsEnd] >= 'a' && sizeBytes[digitsEnd] <= 'f' || sizeBytes[digitsEnd] >= 'A' && sizeBytes[digitsEnd] <= 'F') { digitsEnd++ }
-		if digitsEnd == 0 { return body, 0, nil, false, "Invalid chunk size" }
-		for _, ch := range sizeBytes[digitsEnd:] {
-			if lenientFlags&512 == 0 || ch != ' ' && ch != '\t' { return body, 0, nil, false, "Invalid chunk size" }
-		}
-		if extensionStart >= 0 {
-			extension := rawSizeLine[extensionStart:]
-			if len(extension) > 16_384 { return body, 0, nil, false, "HPE_CHUNK_EXTENSIONS_OVERFLOW" }
-			if !tsNodeHTTPCommonChunkExtensionsValid(extension) { return body, 0, nil, false, "Invalid chunk extension" }
-		}
-		size, err := strconv.ParseUint(string(sizeBytes[:digitsEnd]), 16, 64)
-		if err != nil { return body, 0, nil, false, "Invalid chunk size" }
-		offset = lineNext
-		if size == 0 {
-			for {
-				end, next, lineComplete, invalid := tsNodeHTTPCommonChunkLine(data, offset, lenientFlags)
-				if !lineComplete {
-					if invalid { return body, 0, nil, false, "Invalid chunk trailer" }
-					return body, 0, nil, false, ""
-				}
-				if end == offset { return body, next, trailers, true, "" }
-				name, value, ok := strings.Cut(string(data[offset:end]), ":")
-				if !ok || !tsNodeHTTPCommonHTTPToken(name) { return body, 0, nil, false, "Invalid chunk trailer" }
-				value = strings.TrimRight(strings.TrimLeft(value, " \t"), " \t")
-				if tsNodeHTTPCommonHeaderValueInvalid(value, lenientFlags&1024 != 0) { return body, 0, nil, false, "Invalid chunk trailer" }
-				trailers = append(trailers, tsNodeHTTPCommonKey(name), tsNodeHTTPCommonKey(value))
-				offset = next
+	offset := 0
+	for {
+		switch state.chunkState {
+		case 0:
+			lineEnd, lineNext, complete, invalidLineEnding := tsNodeHTTPCommonChunkLine(data, offset, state.lenientFlags)
+			if !complete {
+				if invalidLineEnding { return body, offset, nil, false, "Invalid chunk line ending" }
+				if len(data)-offset > 16_384 { return body, offset, nil, false, "HPE_CHUNK_EXTENSIONS_OVERFLOW" }
+				return body, offset, nil, false, ""
 			}
-		}
-		if size > uint64(len(data)-offset) { body = append(body, data[offset:]...); return body, 0, nil, false, "" }
-		chunkSize := int(size)
-		body = append(body, data[offset:offset+chunkSize]...)
-		offset += chunkSize
-		if offset == len(data) { return body, 0, nil, false, "" }
-		switch data[offset] {
-		case '\r':
-			if offset+1 == len(data) { if lenientFlags&128 != 0 { offset++ } else { return body, 0, nil, false, "" } } else if data[offset+1] == '\n' { offset += 2 } else if lenientFlags&128 != 0 { offset++ } else { return body, 0, nil, false, "Invalid chunk terminator" }
-		case '\n':
-			if lenientFlags&256 != 0 { offset++ } else { return body, 0, nil, false, "Invalid chunk terminator" }
+			rawSizeLine := data[offset:lineEnd]
+			sizeEnd := len(rawSizeLine)
+			extensionStart := -1
+			if semi := bytes.IndexByte(rawSizeLine, ';'); semi >= 0 { sizeEnd = semi; extensionStart = semi + 1 }
+			sizeBytes := rawSizeLine[:sizeEnd]
+			digitsEnd := 0
+			for digitsEnd < len(sizeBytes) && (sizeBytes[digitsEnd] >= '0' && sizeBytes[digitsEnd] <= '9' || sizeBytes[digitsEnd] >= 'a' && sizeBytes[digitsEnd] <= 'f' || sizeBytes[digitsEnd] >= 'A' && sizeBytes[digitsEnd] <= 'F') { digitsEnd++ }
+			if digitsEnd == 0 { return body, offset, nil, false, "Invalid chunk size" }
+			for _, ch := range sizeBytes[digitsEnd:] {
+				if state.lenientFlags&512 == 0 || ch != ' ' && ch != '\t' { return body, offset, nil, false, "Invalid chunk size" }
+			}
+			if extensionStart >= 0 {
+				extension := rawSizeLine[extensionStart:]
+				if len(extension) > 16_384 { return body, offset, nil, false, "HPE_CHUNK_EXTENSIONS_OVERFLOW" }
+				if !tsNodeHTTPCommonChunkExtensionsValid(extension) { return body, offset, nil, false, "Invalid chunk extension" }
+			}
+			size, err := strconv.ParseUint(string(sizeBytes[:digitsEnd]), 16, 64)
+			if err != nil { return body, offset, nil, false, "Invalid chunk size" }
+			offset = lineNext
+			if size == 0 { state.chunkState = 3; continue }
+			state.chunkRemaining = size
+			state.chunkState = 1
+		case 1:
+			available := len(data) - offset
+			if available == 0 { return body, offset, nil, false, "" }
+			count := uint64(available)
+			if count > state.chunkRemaining { count = state.chunkRemaining }
+			end := offset + int(count)
+			body = append(body, data[offset:end]...)
+			offset = end
+			state.chunkRemaining -= count
+			if state.chunkRemaining > 0 { return body, offset, nil, false, "" }
+			state.chunkState = 2
+		case 2:
+			if offset == len(data) { return body, offset, nil, false, "" }
+			switch data[offset] {
+			case '\r':
+				if offset+1 == len(data) {
+					if state.lenientFlags&128 == 0 { return body, offset, nil, false, "" }
+					offset++
+				} else if data[offset+1] == '\n' { offset += 2
+				} else if state.lenientFlags&128 != 0 { offset++
+				} else { return body, offset, nil, false, "Invalid chunk terminator" }
+			case '\n':
+				if state.lenientFlags&256 == 0 { return body, offset, nil, false, "Invalid chunk terminator" }
+				offset++
+			default:
+				if state.lenientFlags&128 == 0 { return body, offset, nil, false, "Invalid chunk terminator" }
+			}
+			state.chunkState = 0
+		case 3:
+			lineEnd, lineNext, complete, invalidLineEnding := tsNodeHTTPCommonChunkLine(data, offset, state.lenientFlags)
+			if !complete {
+				if invalidLineEnding { return body, offset, nil, false, "Invalid chunk line ending" }
+				if len(data)-offset > 16_384 { return body, offset, nil, false, "Invalid chunk trailer" }
+				return body, offset, nil, false, ""
+			}
+			if lineEnd == offset {
+				offset = lineNext
+				trailers := append([]tsValue(nil), state.chunkTrailers...)
+				state.chunkTrailers = nil
+				state.chunkState = 0
+				return body, offset, trailers, true, ""
+			}
+			pairs, badLine := tsNodeHTTPCommonHeaderPairs([]string{string(data[offset:lineEnd])}, 0, state.lenientFlags)
+			if badLine != "" || len(pairs) != 2 { return body, offset, nil, false, "Invalid chunk trailer" }
+			if maxTrailerPairs <= 0 || len(state.chunkTrailers)/2 < maxTrailerPairs {
+				state.chunkTrailers = append(state.chunkTrailers, pairs...)
+			}
+			offset = lineNext
 		default:
-			if lenientFlags&128 == 0 { return body, 0, nil, false, "Invalid chunk terminator" }
+			return body, offset, nil, false, "Invalid chunk size"
 		}
 	}
 }
+
 func tsNodeHTTPCommonParserExecute(loop *tsLoop, parser tsValue, data tsValue) tsValue {
 	state := tsNodeHTTPCommonStateFor(parser)
 	if state == nil { panic(tsThrown{tsFSException("TypeError", "ERR_INVALID_THIS", "HTTPParser.execute called on an incompatible receiver")}) }
@@ -475,7 +522,14 @@ func tsNodeHTTPCommonParserExecute(loop *tsLoop, parser tsValue, data tsValue) t
 	state.inExecute = true
 	defer func() { state.inExecute = false }()
 	chunk := tsFSBytes(data)
+	bufferedBefore := len(state.buffer)
 	state.current = append(state.current[:0], chunk...); state.buffer = append(state.buffer, chunk...)
+	parsedFromCurrent := func(total int) int {
+		parsed := total - bufferedBefore
+		if parsed < 0 { return 0 }
+		if parsed > len(chunk) { return len(chunk) }
+		return parsed
+	}
 	if state.paused { return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_PAUSED", "Paused") }
 	totalParsed := 0
 parseNextMessage:
@@ -488,15 +542,27 @@ parseNextMessage:
 			return tsNumberValue(float64(len(chunk)))
 		}
 		state.buffer = nil
-		return tsNumberValue(float64(totalParsed))
+		return tsNumberValue(float64(parsedFromCurrent(totalParsed)))
 	}
 	if len(state.buffer) > 0 { tsNodeHTTPCommonParserMessageBegin(loop, parser, state); if state.paused { return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_PAUSED", "Paused") } }
 	boundary := bytes.Index(state.buffer, []byte("\r\n\r\n"))
+	http09Request := false
+	if boundary < 0 && state.parserType == 1 {
+		// HTTP/0.9 has no header section: its request line is followed directly
+		// by the end of the request. Recognize that form only after the CRLF is
+		// complete, so a fragmented request line remains buffered as usual.
+		requestLineEnd := bytes.Index(state.buffer, []byte("\r\n"))
+		if requestLineEnd >= 0 && len(strings.Fields(string(state.buffer[:requestLineEnd]))) == 2 {
+			boundary = requestLineEnd
+			http09Request = true
+		}
+	}
 	if boundary < 0 {
 		if state.maxHeaderSize > 0 && uint64(len(state.buffer)) > state.maxHeaderSize { return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_HEADER_OVERFLOW", "Header overflow") }
 		return tsNumberValue(float64(len(chunk)))
 	}
 	headerEnd := boundary + 4
+	if http09Request { headerEnd = boundary + 2 }
 	if state.maxHeaderSize > 0 && uint64(headerEnd) > state.maxHeaderSize { return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_HEADER_OVERFLOW", "Header overflow") }
 	alreadyParsedHeaders := state.headerDone
 	state.headerDone = true
@@ -512,13 +578,20 @@ parseNextMessage:
 		major, minor = parsedMajor, parsedMinor
 		if !ok { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_VERSION", "Invalid HTTP version") }
 		if !tsNodeHTTPCommonProtocolVersionSupported(major, minor) && state.lenientFlags&16 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_VERSION", "Invalid HTTP version") }
-		statusToken := parts[1]
+		line := lines[0]
+		versionEnd := strings.IndexByte(line, ' ')
+		if versionEnd < 0 || versionEnd+1 >= len(line) || line[versionEnd+1] == ' ' { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_STATUS", "Invalid status code") }
+		rest := line[versionEnd+1:]
+		statusEnd := strings.IndexByte(rest, ' ')
+		statusToken := rest
+		if statusEnd >= 0 { statusToken = rest[:statusEnd] }
 		if len(statusToken) != 3 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_STATUS", "Invalid status code") }
 		for _, digit := range []byte(statusToken) { if digit < '0' || digit > '9' { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_STATUS", "Invalid status code") } }
 		code, _ := strconv.Atoi(statusToken); status = tsNumberValue(float64(code))
 		statusMessage = tsNodeHTTPCommonKey("")
-		line := lines[0]; versionEnd := strings.IndexByte(line, ' '); rest := strings.TrimLeft(line[versionEnd+1:], " "); statusEnd := strings.IndexByte(rest, ' '); if statusEnd >= 0 { statusMessage = tsNodeHTTPCommonKey(strings.TrimLeft(rest[statusEnd+1:], " ")) }
+		if statusEnd >= 0 { statusMessage = tsNodeHTTPCommonKey(rest[statusEnd+1:]) }
 	} else {
+		if strings.ContainsAny(lines[0], "\t\v\f") || strings.HasPrefix(lines[0], " ") || strings.HasSuffix(lines[0], " ") || strings.Contains(lines[0], "  ") { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_CONSTANT", "Invalid start line") }
 		if len(parts) > 3 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_CONSTANT", "Invalid start line") }
 		methodValue = tsU
 		for index, method := range tsNodeHTTPCommonSingleton.allMethods { if method == parts[0] { methodValue = tsNumberValue(float64(index)); break } }
@@ -532,6 +605,7 @@ parseNextMessage:
 			if !ok || !tsNodeHTTPCommonProtocolVersionSupported(major, minor) && state.lenientFlags&16 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_VERSION", "Invalid HTTP version") }
 		}
 		methodName := tsNodeHTTPCommonSingleton.allMethods[int(tsNumber(methodValue))]
+		if major == 0 && minor == 9 && methodName != "GET" { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_METHOD", "HTTP/0.9 only supports GET") }
 		if protocol == "ICE" && methodName != "SOURCE" { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_CONSTANT", "Expected SOURCE method for ICE/x.x request") }
 		if protocol == "HTTP" {
 			switch methodName { case "DESCRIBE", "ANNOUNCE", "SETUP", "PLAY", "PAUSE", "TEARDOWN", "GET_PARAMETER", "SET_PARAMETER", "REDIRECT", "RECORD", "FLUSH": state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_METHOD", "Invalid method for HTTP/x.x request") }
@@ -542,18 +616,19 @@ parseNextMessage:
 	}
 	pairs, badLine := tsNodeHTTPCommonHeaderPairs(lines[1:], 0, state.lenientFlags)
 	if badLine != "" { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, 0, "HPE_INVALID_HEADER_TOKEN", "Invalid header") }
+	if state.parserType == 1 && major == 0 && minor == 9 && len(pairs) != 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_HEADER_TOKEN", "HTTP/0.9 requests cannot include headers") }
 	if state.parserType == 1 {
 		maxPairs := tsNumber(tsNodeHTTPCommonGet(loop, parser, "maxHeaderPairs"))
 		if maxPairs > 0 && float64(len(pairs)) > maxPairs { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_HEADER_OVERFLOW", "Header overflow") }
 	}
 	flat := tsArrayValue(&tsArray{values:pairs})
 	connection, transfer, lengthValue, upgradeValue := "", "", "", ""
-	contentLengthSeen := false
+	contentLengthSeen, transferEncodingSeen := false, false
 	for index := 0; index+1 < len(pairs); index += 2 {
 		key := strings.ToLower(tsText(pairs[index])); value := tsText(pairs[index+1])
 		switch key {
 		case "connection": if connection != "" { connection += "," }; connection += strings.ToLower(value)
-		case "transfer-encoding": if transfer != "" { transfer += "," }; transfer += strings.ToLower(value)
+		case "transfer-encoding": transferEncodingSeen = true; if transfer != "" { transfer += "," }; transfer += strings.ToLower(value)
 		case "content-length":
 			if contentLengthSeen { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_UNEXPECTED_CONTENT_LENGTH", "Duplicate Content-Length") }
 			contentLengthSeen = true
@@ -561,13 +636,15 @@ parseNextMessage:
 		case "upgrade": upgradeValue = value
 		}
 	}
-	hasChunked, chunkedLast := tsNodeHTTPCommonTransferChunked(transfer)
-	if state.parserType == 1 && transfer != "" && !chunkedLast && state.lenientFlags&8 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Request has invalid \x60Transfer-Encoding\x60") }
-	if transfer != "" && lengthValue != "" && state.lenientFlags&2 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_UNEXPECTED_CONTENT_LENGTH", "Content-Length can't be present with Transfer-Encoding") }
+	hasChunked, chunkedLast, duplicateChunked := tsNodeHTTPCommonTransferChunked(transfer)
+	if transferEncodingSeen && strings.TrimSpace(transfer) == "" { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Invalid \x60Transfer-Encoding\x60 header") }
+	if duplicateChunked && state.lenientFlags&8 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Chunked encoding must not be applied more than once") }
+	if state.parserType == 1 && transferEncodingSeen && !chunkedLast && state.lenientFlags&8 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_TRANSFER_ENCODING", "Request has invalid \x60Transfer-Encoding\x60") }
+	if transferEncodingSeen && contentLengthSeen && state.lenientFlags&2 == 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_UNEXPECTED_CONTENT_LENGTH", "Content-Length can't be present with Transfer-Encoding") }
 	keepAlive := major > 0 && minor > 0
 	if tsNodeHTTPCommonHeaderHasToken(connection, "close") { keepAlive = false } else if tsNodeHTTPCommonHeaderHasToken(connection, "keep-alive") { keepAlive = true }
 	noBodyStatus := status.kind == tsNumberKind && (int(tsNumber(status)) < 200 || int(tsNumber(status)) == 204 || int(tsNumber(status)) == 304)
-	needsEOF := state.parserType == 2 && !noBodyStatus && (transfer != "" && !chunkedLast || transfer == "" && lengthValue == "")
+	needsEOF := state.parserType == 2 && !noBodyStatus && (transferEncodingSeen && !chunkedLast || !transferEncodingSeen && !contentLengthSeen)
 	if needsEOF { keepAlive = false }
 	upgrade := tsNodeHTTPCommonHeaderHasToken(connection, "upgrade") && upgradeValue != "" && (state.parserType == 1 || int(tsNumber(status)) == 101)
 	if state.parserType == 1 && methodValue.kind == tsNumberKind && tsNodeHTTPCommonSingleton.allMethods[int(tsNumber(methodValue))] == "CONNECT" { upgrade = true }
@@ -576,8 +653,8 @@ parseNextMessage:
 		tsNodeHTTPCommonParserMessageBegin(loop, parser, state)
 		headersValue, callbackURL := flat, urlValue
 		if headerCount := len(pairs)/2; headerCount > 31 {
-			// Bun's native parser flushes its 32-slot field buffer as it fills.
-			// Preserve the wrapper's slow-path accumulation across those flushes.
+			// The native binding may flush its fixed-size header buffer more than
+			// once. Keep the callback sequence and original field order intact.
 			for start := 0; start < len(pairs); {
 				end := start + 31*2; if end > len(pairs) { end = len(pairs) }
 				urlChunk := callbackURL; if start > 0 { urlChunk = tsNodeHTTPCommonKey("") }
@@ -589,24 +666,39 @@ parseNextMessage:
 		completeArgs := []tsValue{tsNumberValue(float64(major)), tsNumberValue(float64(minor)), headersValue, methodValue, callbackURL, status, statusMessage, upgrade, shouldKeepAlive}
 		callbackResult := tsNodeHTTPCommonCallback(loop, parser, 2, completeArgs...)
 		state.skipBody = tsTruthy(callbackResult)
+		state.upgrade = tsNumber(callbackResult) == 2
 		if state.paused { return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_PAUSED", "Paused") }
 	}
 	bodyStart := headerEnd
 	if !alreadyParsedHeaders {
 		state.bodyStart = bodyStart
 		state.bodyDelivered = 0
+		state.bodyReceived = 0
+		state.chunkState = 0
+		state.chunkRemaining = 0
+		state.chunkTrailers = nil
 		noBodyStatus := status.kind == tsNumberKind && (int(tsNumber(status)) < 200 || int(tsNumber(status)) == 204 || int(tsNumber(status)) == 304)
-		state.closeDelimited = state.parserType == 2 && lengthValue == "" && !chunkedLast && !noBodyStatus
+		state.closeDelimited = state.parserType == 2 && !contentLengthSeen && !chunkedLast && !noBodyStatus
 	}
 	consumedBody := 0; var body []byte; var trailers []tsValue; var chunkError string; bodyComplete := false
-	if chunkedLast {
-		body, consumedBody, trailers, bodyComplete, chunkError = tsNodeHTTPCommonChunked(state.buffer[bodyStart:], state.lenientFlags)
-	} else if lengthValue != "" {
-		length, err := strconv.Atoi(strings.TrimSpace(lengthValue)); if err != nil || length < 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_CONTENT_LENGTH", "Invalid content length") }
+	if state.upgrade {
+		// Node hands accepted upgrades and CONNECT tunnels to the application at
+		// the end of the headers. Bytes after that boundary belong to the new
+		// protocol even when the HTTP request advertised a body length.
+		bodyComplete = true
+	} else if chunkedLast {
+		maxTrailerPairs := int(tsNumber(tsNodeHTTPCommonGet(loop, parser, "maxHeaderPairs")))
+		body, consumedBody, trailers, bodyComplete, chunkError = tsNodeHTTPCommonChunkedStep(state.buffer[bodyStart:], state, maxTrailerPairs)
+	} else if contentLengthSeen {
+		length, validLength := tsNodeHTTPCommonParseContentLength(lengthValue); if !validLength { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_CONTENT_LENGTH", "Invalid content length") }
 		available := len(state.buffer)-bodyStart
-		bodyLength := available; if bodyLength > length { bodyLength = length }
+		remaining := length - state.bodyReceived
+		if remaining < 0 { state.headerDone = false; return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_INVALID_CONTENT_LENGTH", "Invalid content length") }
+		bodyLength := available; if int64(bodyLength) > remaining { bodyLength = int(remaining) }
 		if bodyLength > 0 { body = append([]byte(nil), state.buffer[bodyStart:bodyStart+bodyLength]...) }
-		if available >= length { consumedBody = length; bodyComplete = true }
+		consumedBody = bodyLength
+		state.bodyReceived += int64(bodyLength)
+		bodyComplete = int64(available) >= remaining
 	} else if state.closeDelimited {
 		if bodyStart < len(state.buffer) { body = append([]byte(nil), state.buffer[bodyStart:]...) }
 	} else if state.parserType == 1 || status.kind == tsNumberKind && (int(tsNumber(status)) < 200 || int(tsNumber(status)) == 204 || int(tsNumber(status)) == 304) {
@@ -628,19 +720,32 @@ parseNextMessage:
 			}
 			return tsNodeHTTPCommonParseError(loop, parser, boundary, code, reason)
 		}
-	if !bodyComplete { return tsNumberValue(float64(len(chunk))) }
+	if !bodyComplete {
+		if chunkedLast || contentLengthSeen && !state.closeDelimited {
+			// Once body bytes have been delivered, keep the request headers and
+			// unread bytes only. Chunk framing state and parsed trailers live in
+			// the parser state, so consumed wire bytes can be discarded here too.
+			remaining := bodyStart + consumedBody
+			if remaining > len(state.buffer) { remaining = len(state.buffer) }
+			buffer := append([]byte(nil), state.buffer[:bodyStart]...)
+			state.buffer = append(buffer, state.buffer[remaining:]...)
+			state.bodyDelivered = 0
+		}
+		return tsNumberValue(float64(len(chunk)))
+	}
 	if len(trailers) > 0 { tsNodeHTTPCommonSet(loop, parser, "_headers", tsArrayValue(&tsArray{values:trailers})) }
 	messageComplete := tsGet(loop, parser, tsNodeHTTPCommonIndex(4)); if messageComplete.kind == tsFunctionKind { tsCallReceiver(loop, messageComplete, parser) }
 	if state.paused { return tsNodeHTTPCommonParseError(loop, parser, boundary, "HPE_PAUSED", "Paused") }
 	parsed := bodyStart + consumedBody
 	if hasChunked { parsed = bodyStart + consumedBody }
 	if parsed > len(state.buffer) { parsed = len(state.buffer) }
-	state.buffer = append([]byte(nil), state.buffer[parsed:]...); state.headerDone = false; state.skipBody = false; state.closeDelimited = false; state.bodyStart = 0; state.bodyDelivered = 0
-	if execute := tsGet(loop, parser, tsNodeHTTPCommonIndex(5)); execute.kind == tsFunctionKind { tsCallReceiver(loop, execute, parser, tsNumberValue(float64(parsed))) }
+	upgraded := state.upgrade
+	state.buffer = append([]byte(nil), state.buffer[parsed:]...); state.headerDone = false; state.skipBody = false; state.upgrade = false; state.closeDelimited = false; state.bodyStart = 0; state.bodyDelivered = 0; state.bodyReceived = 0; state.chunkState = 0; state.chunkRemaining = 0; state.chunkTrailers = nil
+	if execute := tsGet(loop, parser, tsNodeHTTPCommonIndex(5)); execute.kind == tsFunctionKind { tsCallReceiver(loop, execute, parser, tsNumberValue(float64(parsedFromCurrent(parsed)))) }
 	totalParsed += parsed
-	if tsTruthy(upgrade) { return tsNumberValue(float64(totalParsed)) }
+	if upgraded { return tsNumberValue(float64(parsedFromCurrent(totalParsed))) }
 	if !keepAlive { state.closedByMessage = true }
-	if len(state.buffer) == 0 { return tsNumberValue(float64(totalParsed)) }
+	if len(state.buffer) == 0 { return tsNumberValue(float64(parsedFromCurrent(totalParsed))) }
 	goto parseNextMessage
 }
 func tsNodeHTTPCommonParserCreate(loop *tsLoop) tsValue {
@@ -724,8 +829,8 @@ func tsNodeHTTPCommonParserMethod(loop *tsLoop, parser tsValue, name string, arg
 			state.parserType=int(tsNumber(tsArg(args,0)));state.lenientFlags=uint32(tsToUint32(tsArg(args,3)));state.initialized=true;state.closed=false;state.started=time.Now();state.lastMessageStart=time.Time{};state.connections=connections
 			state.maxHeaderSize=0
 			if maxValue:=tsArg(args,2);maxValue.kind==tsNumberKind&&tsNumber(maxValue)>0{state.maxHeaderSize=uint64(tsNumber(maxValue))}
-			if state.maxHeaderSize==0{if maxValue:=tsInternalHTTPGet(loop,tsInternalHTTPModule(loop),"getMaxHTTPHeaderSize");tsNumber(maxValue)>0{state.maxHeaderSize=uint64(tsNumber(maxValue))}}
-			state.buffer=nil;state.current=nil;state.paused=false;state.headerDone=false;state.messageBegun=false;state.consumed=false;state.skipBody=false;state.closeDelimited=false;state.closedByMessage=false;state.bodyStart=0;state.bodyDelivered=0
+			if state.maxHeaderSize==0{if maxValue:=tsCall(loop,tsInternalHTTPGet(loop,tsInternalHTTPModule(loop),"getMaxHTTPHeaderSize"));tsNumber(maxValue)>0{state.maxHeaderSize=uint64(tsNumber(maxValue))}}
+			state.buffer=nil;state.current=nil;state.paused=false;state.headerDone=false;state.messageBegun=false;state.consumed=false;state.skipBody=false;state.upgrade=false;state.closeDelimited=false;state.closedByMessage=false;state.bodyStart=0;state.bodyDelivered=0;state.bodyReceived=0;state.chunkState=0;state.chunkRemaining=0;state.chunkTrailers=nil
 			if !tsNullish(state.connections){state.lastMessageStart=state.started;tsNodeHTTPCommonConnectionListPush(loop,state.connections,parser,false);tsNodeHTTPCommonConnectionListPush(loop,state.connections,parser,true)}else{state.connections=tsU}
 			tsNodeHTTPCommonSet(loop, parser, "_type", tsArg(args, 0)); tsNodeHTTPCommonSet(loop, parser, "socket", tsArg(args, 1)); tsNodeHTTPCommonSet(loop, parser, "maxHeaderSize", tsArg(args, 2)); tsNodeHTTPCommonSet(loop, parser, "lenientFlags", tsArg(args, 3))
 		}

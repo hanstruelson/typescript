@@ -4,30 +4,13 @@ package tsruntime
 
 import (
 	"strconv"
-	"sync"
 	"sync/atomic"
 
 	"github.com/microsoft/TypeScript/tsc/internal/regexpengine"
 	"jit"
 )
 
-type tsJITRegexRequest struct {
-	matcher TsRegExpMatcher
-}
-
-var tsJITRegexRequests sync.Map
 var tsJITRegexRequestID atomic.Uint64
-
-// TsStoreJITRegexMatcher is the host-package bridge referenced by the
-// in-memory snippet. Keeping it as an ordinary package function lets the Go
-// linker retain and relocate the symbol for jit.Eval.
-func TsStoreJITRegexMatcher(id uint64, matcher TsRegExpMatcher) {
-	value, ok := tsJITRegexRequests.Load(id)
-	if !ok {
-		panic("tsruntime: unknown dynamic-regexp compilation request")
-	}
-	value.(*tsJITRegexRequest).matcher = matcher
-}
 
 func init() {
 	TsDynamicRegExpCompiler = TsCompileDynamicRegExp
@@ -50,11 +33,9 @@ func TsCompileDynamicRegExp(loop *TsLoop, source *TsString, flags string) TsValu
 		TsPropertyFailure("Dynamic RegExp compilation ID space exhausted")
 		return TsU
 	}
-	request := &tsJITRegexRequest{}
-	tsJITRegexRequests.Store(id, request)
-	defer tsJITRegexRequests.Delete(id)
+	defer regexpengine.DeleteJITMatcher(id)
 
-	snippet := "TsStoreJITRegexMatcher(" + strconv.FormatUint(id, 10) + ", " + expression + ")"
+	snippet := "regexpengine.StoreJITMatcher(" + strconv.FormatUint(id, 10) + ", " + expression + ")"
 	code, err := jit.Eval(snippet)
 	if err != nil {
 		if code != nil {
@@ -63,7 +44,8 @@ func TsCompileDynamicRegExp(loop *TsLoop, source *TsString, flags string) TsValu
 		TsPropertyFailure("Dynamic RegExp JIT compilation failed: " + err.Error())
 		return TsU
 	}
-	if request.matcher == nil {
+	matcher, ok := regexpengine.LoadJITMatcher(id)
+	if !ok {
 		_ = code.Close()
 		TsPropertyFailure("Dynamic RegExp JIT did not install its matcher")
 		return TsU
@@ -82,7 +64,7 @@ func TsCompileDynamicRegExp(loop *TsLoop, source *TsString, flags string) TsValu
 			Indices: append([]int(nil), named.Indices...),
 		})
 	}
-	value := TsNewCompiledRegExp(loop, source, TsStringUTF8(flags), request.matcher, captureSlots, namedCaptures)
+	value := TsNewCompiledRegExp(loop, source, TsStringUTF8(flags), matcher, captureSlots, namedCaptures)
 	TsRegExpFromValue(value).JitCode = code
 	return value
 }

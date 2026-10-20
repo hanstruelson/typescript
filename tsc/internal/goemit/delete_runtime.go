@@ -4,6 +4,7 @@ const deleteRuntime = `
 func tsDelete(loop *tsLoop,receiver,key tsValue,strict bool)bool{
  if tsNullish(receiver){tsPropertyFailure("Cannot delete property of null or undefined")};name:=tsPropertyKey(key);ok:=true
  switch receiver.kind{
+ case tsTaskKind:task:=(*tsTask)(receiver.ref);if task.properties!=nil{delete(task.properties,name)}
  case tsErrorKind:return tsDelete(loop,tsObjectValue(tsErrorObject(loop,(*tsRuntimeError)(receiver.ref))),key,strict)
  case tsObjectKind:object:=(*tsObject)(receiver.ref);if object==tsRegExpIntrinsics.prototype{tsRegExpIntrinsics.modified.Store(true)};if descriptor:=object.descriptors[name];descriptor!=nil&&!descriptor.configurable{ok=false;break};delete(object.argumentMap,name);delete(object.values,name);delete(object.descriptors,name);for i,k:=range object.order{if k==name{object.order=append(object.order[:i],object.order[i+1:]...);break}}
  case tsFunctionKind:object:=(*tsFunction)(receiver.ref).metadata();return tsDelete(loop,tsObjectValue(object),key,strict)

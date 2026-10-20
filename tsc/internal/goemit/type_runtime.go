@@ -33,6 +33,10 @@ func tsTypeFailure(kind string){panic(tsThrown{&tsRuntimeError{name:"TypeError",
 func tsRestArgs(args []tsValue,index int)*tsArray {if index>=len(args){return &tsArray{}};return &tsArray{values:append([]tsValue{},args[index:]...)}}
 func tsTypeOf(value tsValue)*tsString {name:="object";switch value.kind{case tsSymbolKind:name="symbol";case tsBigIntKind:name="bigint";case tsUndefinedKind:name="undefined";case tsStringKind:name="string";case tsNumberKind,tsFloat32Kind,tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind,tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:name="number";case tsBooleanKind:name="boolean";case tsFunctionKind,tsClassKind:name="function"};return tsStringUTF8(name)}
 func tsBoundary(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsNullKind&&nulls&1!=0{return value};if value.kind==tsUndefinedKind&&nulls&2!=0{return value};return tsConvertValue(value,kind,coerce)}
+// JavaScript function returns preserve nullish values even when annotations
+// describe only the non-nullish result type. JSDoc and unchecked JavaScript
+// commonly omit this case, but callers still observe the original value.
+func tsFunctionReturnBoundary(value tsValue,kind string,nulls uint8,coerce bool)tsValue{if value.kind==tsNullKind||value.kind==tsUndefinedKind{return value};return tsBoundary(value,kind,nulls,coerce)}
 func tsIsSigned(value tsValue)bool {switch value.kind {case tsIntKind,tsInt8Kind,tsInt16Kind,tsInt32Kind,tsInt64Kind:return true};return false}
 func tsIsUnsigned(value tsValue)bool {switch value.kind {case tsUintKind,tsUint8Kind,tsUint16Kind,tsUint32Kind,tsUint64Kind:return true};return false}
 func tsIsNumeric(value tsValue)bool{return value.kind==tsNumberKind||value.kind==tsFloat32Kind||tsIsSigned(value)||tsIsUnsigned(value)}
